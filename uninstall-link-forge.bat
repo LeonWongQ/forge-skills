@@ -3,7 +3,7 @@ setlocal
 set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
 set "SCRIPT_DIR=%~dp0"
-pushd "%SCRIPT_DIR%\.claude\forge"
+pushd "%SCRIPT_DIR%\.forge-skill\forge"
 if errorlevel 1 (
   echo [ERROR] Forge source directory is unavailable.
   pause

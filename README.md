@@ -27,9 +27,9 @@ install-skills.bat --client cursor --scope global
 macOS or Linux:
 
 ```bash
-python .claude/forge/scripts/sync-agent-skills.py --client codex --scope global
-python .claude/forge/scripts/sync-agent-skills.py --client claude --scope global
-python .claude/forge/scripts/sync-agent-skills.py --client cursor --scope global
+python .forge-skill/forge/scripts/sync-agent-skills.py --client codex --scope global
+python .forge-skill/forge/scripts/sync-agent-skills.py --client claude --scope global
+python .forge-skill/forge/scripts/sync-agent-skills.py --client cursor --scope global
 ```
 
 For one existing project, add `--scope project --project <path>`. Use `--check` first for a read-only installation report.
@@ -38,10 +38,10 @@ Default roots are `~/.codex/skills`, `~/.claude/skills`, and `~/.cursor/skills`.
 
 ## Validate
 
-Install deterministic development dependencies from `.claude/forge`, then run:
+Install deterministic development dependencies from `.forge-skill/forge`, then run:
 
 ```bash
-python .claude/forge/scripts/run-local-checks.py --full
+python .forge-skill/forge/scripts/run-local-checks.py --full
 ```
 
 The full gate validates UTF-8 text, sensitive-content rules, Skill quality, behavior-corpus structure, registries, paths, references, packs, contracts, routes, documentation facts, and tests. CI runs it on Windows, Ubuntu, and macOS.
@@ -50,7 +50,7 @@ The full gate validates UTF-8 text, sensitive-content rules, Skill quality, beha
 
 Real model evaluation is opt-in and user assessed. The runner never chooses a backend automatically, and a completed model response remains unscored until a human or calibrated judge applies the versioned rubric. Cursor supports prepared manual evaluation; automated Cursor execution remains disabled until a stable CLI contract is available.
 
-See [.claude/forge/README.md](.claude/forge/README.md), [.claude/forge/BOOTSTRAP.md](.claude/forge/BOOTSTRAP.md), and [.claude/forge/scripts/README.md](.claude/forge/scripts/README.md) for architecture, project linking, and advanced commands.
+See [.forge-skill/forge/README.md](.forge-skill/forge/README.md), [.forge-skill/forge/BOOTSTRAP.md](.forge-skill/forge/BOOTSTRAP.md), and [.forge-skill/forge/scripts/README.md](.forge-skill/forge/scripts/README.md) for architecture, project linking, and advanced commands.
 
 ## Publication Note
 

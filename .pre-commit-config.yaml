@@ -9,7 +9,7 @@ repos:
     hooks:
       - id: forge-local-quality-gate
         name: Forge - quick commit quality gate
-        entry: python .claude/forge/scripts/run-local-checks.py --quick
+        entry: python .forge-skill/forge/scripts/run-local-checks.py --quick
         language: system
         files: ^(\.claude/(forge|skills)/|\.github/|README\.md$|\.gitignore$|\.pre-commit-config\.yaml$|.*\.(env|key|pem|p12|pfx|jks|keystore)$|(?:install-skills|install-link-forge|uninstall-link-forge)\.bat$)
         pass_filenames: false

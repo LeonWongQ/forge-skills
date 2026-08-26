@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 # forge.py is at .claude/skills/forge/forge.py
-# forge_cli package is at .claude/forge/forge_cli/
+# forge_cli package is at .forge-skill/forge/forge_cli/
 # parents[0] = .claude/skills/forge/
 # parents[1] = .claude/skills/
 # parents[2] = .claude/

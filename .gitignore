@@ -32,9 +32,9 @@ node_modules/
 *.sqlite3
 
 # Forge — generated validation reports (CI / local-check artifacts)
-# Fresh reports may live at repo-root out/ (CI cwd) or under .claude/forge/out/
+# Fresh reports may live at repo-root out/ (CI cwd) or under .forge-skill/forge/out/
 out/
-.claude/forge/out/*.fresh.json
+.forge-skill/forge/out/*.fresh.json
 
 # IDE
 .idea/
