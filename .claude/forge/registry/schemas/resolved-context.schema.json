@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "registry/schemas/resolved-context.schema.json",
+  "title": "Resolved Context Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "mode", "project", "source", "selection", "context", "resolution"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "mode": {"const": "resolve"},
+    "project": {"type": "object"},
+    "source": {"type": "object"},
+    "selection": {"type": "object"},
+    "context": {
+      "type": "object",
+      "additionalProperties": {"type": "array", "items": {"type": "object"}}
+    },
+    "resolution": {
+      "type": "object",
+      "required": ["ok", "errors", "warnings"],
+      "properties": {
+        "ok": {"type": "boolean"},
+        "errors": {"type": "array", "items": {"type": "object"}},
+        "warnings": {"type": "array"}
+      }
+    }
+  }
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test Implementation"
+  short_description: "Implement focused automated tests for important behavior."
+  default_prompt: "Use $test-implementation to add focused automated tests for this behavior."

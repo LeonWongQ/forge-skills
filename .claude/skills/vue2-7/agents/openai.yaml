@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vue 2.7"
+  short_description: "Implement changes in confirmed Vue 2.7 applications."
+  default_prompt: "Use $vue2-7 to implement this change in the confirmed Vue 2.7 application."

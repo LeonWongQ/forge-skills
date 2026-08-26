@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bailian Workflow"
+  short_description: "Safely edit, validate, and rebuild Bailian workflow imports."
+  default_prompt: "Use $bailian-workflow to safely inspect and update this Bailian workflow import."

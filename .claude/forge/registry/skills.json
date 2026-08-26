@@ -1,0 +1,1247 @@
+{
+  "version": "1.1.0",
+  "description": "Registry of general-purpose skills that compose forge modules into ready-to-execute workflows. Skill paths use .claude/ prefix (e.g., '.claude/skills/code-review/SKILL.md') because skills live outside the forge root at .claude/skills/. The resolve_registered_path function strips the .claude/ prefix to avoid double nesting. This is a simplified index; the canonical composition is defined in each skill's SKILL.md body.",
+  "skills": [
+    {
+      "id": "skill.code_review",
+      "name": "code-review",
+      "path": ".claude/skills/code-review/SKILL.md",
+      "description": "Review local code diffs and artifacts with domain-aware structured output.",
+      "triggers": [
+        "review",
+        "code review",
+        "CR",
+        "帮我 review",
+        "帮我看下改动",
+        "评审",
+        "审一下",
+        "审查"
+      ],
+      "behavior": "behavior.review",
+      "routing": "runtime/review-routing/",
+      "domains": [
+        "domain.java",
+        "domain.spring",
+        "domain.mysql",
+        "domain.redis",
+        "domain.testing",
+        "domain.vue3_vite",
+        "domain.vue2",
+        "domain.vue2_7"
+      ],
+      "template": "template.review_report",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.review",
+        "checklist.verification",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.full_default",
+      "context": "fork"
+    },
+    {
+      "id": "skill.debug",
+      "name": "debug",
+      "path": ".claude/skills/debug/SKILL.md",
+      "description": "Diagnose failures with hypothesis-driven root-cause analysis.",
+      "triggers": [
+        "debug",
+        "why is this failing",
+        "root cause",
+        "排查",
+        "诊断",
+        "定位问题"
+      ],
+      "behavior": "behavior.debug",
+      "domains": [
+        "domain.java",
+        "domain.spring",
+        "domain.mysql",
+        "domain.redis",
+        "domain.testing",
+        "domain.playwright",
+        "domain.vue3_vite",
+        "domain.vue2",
+        "domain.vue2_7"
+      ],
+      "template": "template.debug_report",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.debug",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.debug_analysis",
+      "context": "fork"
+    },
+    {
+      "id": "skill.plan",
+      "name": "plan",
+      "path": ".claude/skills/plan/SKILL.md",
+      "description": "Create structured implementation or refactor plans with domain-aware sequencing. Has two variants depending on plan type.",
+      "triggers": [
+        "plan",
+        "implementation plan",
+        "方案",
+        "计划",
+        "设计一下",
+        "怎么做"
+      ],
+      "domains": [
+        "domain.java",
+        "domain.spring",
+        "domain.mysql",
+        "domain.redis",
+        "domain.testing"
+      ],
+      "workflow": "workflow.full_default",
+      "context": "inherit",
+      "variants": [
+        {
+          "type": "implementation",
+          "behavior": null,
+          "template": "template.implementation_plan",
+          "checklists": [
+            "checklist.general_quality",
+            "checklist.verification",
+            "checklist.delivery"
+          ]
+        },
+        {
+          "type": "refactor",
+          "behavior": "behavior.refactor",
+          "template": "template.refactor_plan",
+          "checklists": [
+            "checklist.general_quality",
+            "checklist.refactor",
+            "checklist.verification",
+            "checklist.delivery"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "skill.error_analysis",
+      "name": "error-analysis",
+      "path": ".claude/skills/error-analysis/SKILL.md",
+      "description": "Analyze errors, stack traces, and logs to extract root causes and remediation.",
+      "triggers": [
+        "analyze this error",
+        "stack trace",
+        "分析报错",
+        "错误分析",
+        "日志分析"
+      ],
+      "behavior": "behavior.debug",
+      "domains": [
+        "domain.java",
+        "domain.spring",
+        "domain.mysql",
+        "domain.redis",
+        "domain.testing"
+      ],
+      "template": "template.debug_report",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.debug",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.debug_analysis",
+      "context": "fork"
+    },
+    {
+      "id": "skill.report",
+      "name": "report",
+      "path": ".claude/skills/report/SKILL.md",
+      "description": "Generate structured reports (test, incident, review summary, task). Has four variants depending on report type.",
+      "triggers": [
+        "generate report",
+        "test report",
+        "incident report",
+        "报告",
+        "总结报告",
+        "复盘"
+      ],
+      "workflow": "workflow.full_default",
+      "context": "inherit",
+      "variants": [
+        {
+          "type": "test_report",
+          "behavior": null,
+          "domains": [
+            "domain.testing"
+          ],
+          "template": "template.test_report",
+          "report_artifact": "report.task",
+          "checklists": [
+            "checklist.general_quality",
+            "checklist.test_report",
+            "checklist.delivery"
+          ]
+        },
+        {
+          "type": "incident_report",
+          "behavior": "behavior.debug",
+          "domains": [
+            "domain.java",
+            "domain.spring",
+            "domain.mysql",
+            "domain.redis"
+          ],
+          "template": null,
+          "report_artifact": "report.incident",
+          "checklists": [
+            "checklist.general_quality",
+            "checklist.verification",
+            "checklist.delivery"
+          ]
+        },
+        {
+          "type": "review_summary",
+          "behavior": "behavior.review",
+          "domains": [
+            "domain.java",
+            "domain.spring"
+          ],
+          "template": null,
+          "report_artifact": "report.review_summary",
+          "checklists": [
+            "checklist.general_quality",
+            "checklist.review",
+            "checklist.delivery"
+          ]
+        },
+        {
+          "type": "task_report",
+          "behavior": null,
+          "domains": [],
+          "template": null,
+          "report_artifact": "report.task",
+          "checklists": [
+            "checklist.general_quality",
+            "checklist.delivery"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "skill.explain",
+      "name": "explain",
+      "path": ".claude/skills/explain/SKILL.md",
+      "description": "Explain concepts with progressive depth and domain-aware context.",
+      "triggers": [
+        "explain",
+        "how does this work",
+        "解释",
+        "讲解",
+        "说明一下",
+        "帮我理解"
+      ],
+      "behavior": "behavior.explain",
+      "domains": [
+        "domain.java",
+        "domain.spring",
+        "domain.mysql",
+        "domain.redis",
+        "domain.testing"
+      ],
+      "template": "template.explanation",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.light_explanation",
+      "context": "inherit"
+    },
+    {
+      "id": "skill.refactor",
+      "name": "refactor",
+      "path": ".claude/skills/refactor/SKILL.md",
+      "description": "Plan structural code improvements with behavior-preservation discipline.",
+      "triggers": [
+        "refactor",
+        "clean up",
+        "restructure",
+        "重构",
+        "整理代码",
+        "改善设计"
+      ],
+      "behavior": "behavior.refactor",
+      "domains": [
+        "domain.java",
+        "domain.spring",
+        "domain.mysql",
+        "domain.vue3_vite",
+        "domain.vue2",
+        "domain.vue2_7"
+      ],
+      "template": "template.refactor_plan",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.refactor",
+        "checklist.verification",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.full_default",
+      "context": "fork"
+    },
+    {
+      "id": "skill.optimize",
+      "name": "optimize",
+      "path": ".claude/skills/optimize/SKILL.md",
+      "description": "Optimize performance with measurement-driven bottleneck analysis and verified improvement planning.",
+      "triggers": [
+        "optimize",
+        "make this faster",
+        "improve performance",
+        "speed up",
+        "bottleneck",
+        "优化",
+        "性能优化",
+        "加速"
+      ],
+      "behavior": "behavior.optimize",
+      "domains": [
+        "domain.java",
+        "domain.spring",
+        "domain.mysql",
+        "domain.redis",
+        "domain.vue3_vite",
+        "domain.vue2",
+        "domain.vue2_7"
+      ],
+      "template": "template.implementation_plan",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.verification",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.full_default",
+      "context": "fork"
+    },
+    {
+      "id": "skill.document",
+      "name": "document",
+      "path": ".claude/skills/document/SKILL.md",
+      "description": "Create or improve documentation with accuracy, clarity, and audience-fit discipline.",
+      "triggers": [
+        "document this",
+        "write documentation",
+        "create docs",
+        "generate javadoc",
+        "write README",
+        "写文档",
+        "生成文档",
+        "加注释",
+        "API文档",
+        "API 文档",
+        "写 API"
+      ],
+      "behavior": "behavior.document",
+      "domains": [
+        "domain.java",
+        "domain.spring"
+      ],
+      "template": "template.default",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.full_default",
+      "context": "inherit"
+    },
+    {
+      "id": "skill.test_design",
+      "name": "test-design",
+      "path": ".claude/skills/test-design/SKILL.md",
+      "description": "Design structured test strategies, scopes, scenarios, risk priorities, and entry/exit criteria.",
+      "triggers": [
+        "test design",
+        "design test cases",
+        "test strategy",
+        "test scope",
+        "testing plan",
+        "测试设计",
+        "测试方案",
+        "测试策略",
+        "测试用例设计",
+        "怎么测",
+        "如何测试",
+        "补测试方案",
+        "覆盖哪些场景",
+        "设计测试点"
+      ],
+      "behavior": null,
+      "domains": [
+        "domain.testing",
+        "domain.java",
+        "domain.spring",
+        "domain.mysql",
+        "domain.redis",
+        "domain.playwright",
+        "domain.vue3_vite",
+        "domain.vue2",
+        "domain.vue2_7"
+      ],
+      "template": "template.test_plan",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.test_plan",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.full_default",
+      "context": "inherit"
+    },
+    {
+      "id": "skill.incident",
+      "name": "incident",
+      "path": ".claude/skills/incident/SKILL.md",
+      "description": "Analyze production incidents with impact assessment, timeline, root cause hypotheses, mitigation options, and postmortem follow-ups.",
+      "triggers": [
+        "incident",
+        "production issue",
+        "outage",
+        "service degradation",
+        "postmortem",
+        "incident analysis",
+        "线上故障",
+        "事故排查",
+        "故障排查",
+        "线上异常",
+        "生产问题",
+        "事故分析",
+        "事故复盘",
+        "线上告警",
+        "服务异常",
+        "故障复盘"
+      ],
+      "behavior": "behavior.debug",
+      "domains": [
+        "domain.java",
+        "domain.spring",
+        "domain.mysql",
+        "domain.redis",
+        "domain.testing"
+      ],
+      "template": "template.debug_report",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.debug",
+        "checklist.verification",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.debug_analysis",
+      "context": "fork"
+    },
+    {
+      "id": "skill.test_implementation",
+      "name": "test-implementation",
+      "path": ".claude/skills/test-implementation/SKILL.md",
+      "description": "Implement missing or improved automated tests with focus on scope, layering, fixtures, failure modes, and verification.",
+      "triggers": [
+        "write tests",
+        "add tests",
+        "implement tests",
+        "add unit tests",
+        "add integration tests",
+        "create test cases",
+        "补测试",
+        "写测试",
+        "补单测",
+        "补单元测试",
+        "写单元测试",
+        "补集成测试",
+        "加测试用例",
+        "实现测试",
+        "补回归测试",
+        "帮我写测试",
+        "帮我补"
+      ],
+      "behavior": null,
+      "domains": [
+        "domain.testing",
+        "domain.java",
+        "domain.spring",
+        "domain.mysql",
+        "domain.redis",
+        "domain.playwright",
+        "domain.vue3_vite",
+        "domain.vue2",
+        "domain.vue2_7"
+      ],
+      "template": "template.test_plan",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.verification",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.full_default",
+      "context": "fork"
+    },
+    {
+      "id": "skill.migration",
+      "name": "migration",
+      "path": ".claude/skills/migration/SKILL.md",
+      "description": "Plan and assess migrations, upgrades, and compatibility changes with risk evaluation, rollout phasing, rollback strategy, and verification.",
+      "triggers": [
+        "migration",
+        "upgrade plan",
+        "upgrade",
+        "compatibility",
+        "rollout plan",
+        "framework migration",
+        "版本升级",
+        "迁移方案",
+        "升级方案",
+        "兼容性评估",
+        "怎么迁移",
+        "升级计划",
+        "框架迁移",
+        "平滑迁移",
+        "回滚方案"
+      ],
+      "behavior": null,
+      "domains": [
+        "domain.java",
+        "domain.spring",
+        "domain.spring_ai",
+        "domain.mysql",
+        "domain.redis",
+        "domain.testing"
+      ],
+      "template": "template.implementation_plan",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.verification",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.full_default",
+      "context": "fork",
+      "variants": [
+        {
+          "type": "vue2_to_vue2_7",
+          "selection": {
+            "keyword_sets_any": [
+              "vue2_to_vue2_7"
+            ],
+            "priority": 20
+          },
+          "domains": [
+            "domain.vue2",
+            "domain.vue2_7",
+            "domain.testing"
+          ]
+        },
+        {
+          "type": "vue2_7_to_vue3",
+          "selection": {
+            "keyword_sets_any": [
+              "vue2_7_to_vue3"
+            ],
+            "priority": 20
+          },
+          "domains": [
+            "domain.vue2_7",
+            "domain.vue3_vite",
+            "domain.testing"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "skill.explore",
+      "name": "explore",
+      "path": ".claude/skills/explore/SKILL.md",
+      "description": "Pre-orientation exploration mode — scope discovery, option enumeration, and situational assessment before committing to a specific task mode.",
+      "triggers": [
+        "explore",
+        "investigate options",
+        "scoping",
+        "discovery",
+        "recon",
+        "look into",
+        "先看看",
+        "先分析下情况",
+        "先摸清楚",
+        "摸清楚",
+        "先调研一下",
+        "先探索一下",
+        "帮我梳理一下",
+        "梳理一下",
+        "先盘点一下",
+        "先看下现状",
+        "先别急着实现",
+        "分析一下",
+        "帮我分析",
+        "分析现状",
+        "分析当前项目",
+        "进步空间",
+        "改进方向",
+        "帮忙看看有什么问题"
+      ],
+      "behavior": null,
+      "domains": [
+        "domain.java",
+        "domain.spring",
+        "domain.mysql",
+        "domain.redis",
+        "domain.testing",
+        "domain.playwright",
+        "domain.spring_ai"
+      ],
+      "template": "template.exploration",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.blocked_task",
+      "context": "inherit"
+    },
+    {
+      "id": "skill.page_test",
+      "name": "page-test",
+      "path": ".claude/skills/page-test/SKILL.md",
+      "description": "Write, review, auto-execute, and diagnose page/UI E2E tests, or perform read-only page content extraction with a standalone Playwright runtime and an existing local browser. Covers test design, execution efficiency, CI resilience, and flaky test diagnosis.",
+      "triggers": [
+        "write a page test",
+        "create a UI test",
+        "add Playwright test",
+        "write E2E test",
+        "test this page",
+        "read page content with Playwright",
+        "extract page content",
+        "use Playwright to visit a URL",
+        "使用 Playwright 访问",
+        "获取页面正文",
+        "写页面测试",
+        "写UI测试",
+        "写E2E测试",
+        "Playwright测试",
+        "页面测试",
+        "前端测试",
+        "写 Playwright E2E"
+      ],
+      "workflow": "workflow.full_default",
+      "context": "inherit",
+      "variants": [
+        {
+          "type": "write",
+          "behavior": "behavior.document",
+          "domains": [
+            "domain.playwright",
+            "domain.testing"
+          ],
+          "template": null,
+          "checklists": [
+            "checklist.general_quality",
+            "checklist.verification",
+            "checklist.delivery"
+          ]
+        },
+        {
+          "type": "debug",
+          "behavior": "behavior.debug",
+          "domains": [
+            "domain.playwright",
+            "domain.testing"
+          ],
+          "template": "template.debug_report",
+          "checklists": [
+            "checklist.general_quality",
+            "checklist.debug",
+            "checklist.delivery"
+          ]
+        },
+        {
+          "type": "auto_diagnosis",
+          "behavior": "behavior.debug",
+          "domains": [
+            "domain.playwright",
+            "domain.testing"
+          ],
+          "template": "template.debug_report",
+          "checklists": [
+            "checklist.general_quality",
+            "checklist.debug",
+            "checklist.delivery"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "skill.test_strategy",
+      "name": "test-strategy",
+      "path": ".claude/skills/test-strategy/SKILL.md",
+      "description": "Analyze existing test reports, execution results, and defect data to formulate testing strategy, design targeted test cases, define auto-assertion rules, and diagnose test gaps. Has four variants depending on task focus.",
+      "triggers": [
+        "analyze test report",
+        "review test results",
+        "formulate test strategy",
+        "design test cases from report",
+        "test gap analysis",
+        "auto-assertion strategy",
+        "测试策略",
+        "测试报告分析",
+        "测试缺口",
+        "断言策略",
+        "测试优化方案",
+        "基于报告设计测试"
+      ],
+      "behavior": "behavior.review",
+      "domains": [
+        "domain.testing",
+        "domain.java",
+        "domain.spring",
+        "domain.playwright",
+        "domain.mysql",
+        "domain.redis"
+      ],
+      "template": "template.test_plan",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.review",
+        "checklist.test_plan",
+        "checklist.verification",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.full_default",
+      "context": "inherit"
+    },
+    {
+      "id": "skill.implement",
+      "name": "implement",
+      "path": ".claude/skills/implement/SKILL.md",
+      "description": "Implement features, interfaces, services, endpoints, modules, or any code changes based on requirements, design docs, plan output, or direct instructions. Follows existing code conventions, produces compilable and verifiable code.",
+      "triggers": [
+        "implement this",
+        "build this feature",
+        "write the code",
+        "create this service",
+        "add this endpoint",
+        "implement this interface",
+        "code this up",
+        "make this work",
+        "根据方案实现",
+        "帮我实现",
+        "写代码",
+        "实现这个功能",
+        "按方案落地",
+        "实现接口",
+        "开发这个",
+        "把这个做了",
+        "代码实现一下"
+      ],
+      "behavior": null,
+      "domains": [
+        "domain.java",
+        "domain.spring",
+        "domain.mysql",
+        "domain.redis",
+        "domain.testing",
+        "domain.playwright",
+        "domain.vue3_vite",
+        "domain.vue2",
+        "domain.vue2_7"
+      ],
+      "template": "template.implementation_plan",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.verification",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.full_default",
+      "context": "fork"
+    },
+    {
+      "id": "skill.architecture_design",
+      "name": "architecture-design",
+      "path": ".claude/skills/architecture-design/SKILL.md",
+      "description": "Design system architecture, component topology, API contracts, data models, integration patterns, and technical decision frameworks with structured tradeoff analysis and ADR-style decision records.",
+      "triggers": [
+        "design the architecture",
+        "system design",
+        "design this system",
+        "architecture review",
+        "component design",
+        "how should I structure this",
+        "design the API",
+        "data model design",
+        "database schema design",
+        "microservice design",
+        "integration design",
+        "tech stack evaluation",
+        "architectural decision",
+        "design the components",
+        "how to split this",
+        "架构设计",
+        "系统设计",
+        "技术方案",
+        "组件设计",
+        "API设计",
+        "数据库设计",
+        "技术选型",
+        "怎么拆分",
+        "架构评审",
+        "接口设计",
+        "如何设计架构"
+      ],
+      "behavior": null,
+      "domains": [
+        "domain.java",
+        "domain.spring",
+        "domain.mysql",
+        "domain.redis",
+        "domain.spring_ai",
+        "domain.testing"
+      ],
+      "template": "template.implementation_plan",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.verification",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.full_default",
+      "context": "inherit"
+    },
+    {
+      "id": "skill.security_review",
+      "name": "security-review",
+      "path": ".claude/skills/security-review/SKILL.md",
+      "description": "Security-focused code and design review — OWASP Top 10 vulnerability detection, authentication/authorization analysis, injection attack surface assessment, sensitive data exposure, cryptography misuse, and security configuration review with structured threat severity and exploitability assessment.",
+      "triggers": [
+        "security review",
+        "check for vulnerabilities",
+        "is this secure",
+        "security audit",
+        "find security issues",
+        "check for injection",
+        "security assessment",
+        "安全审查",
+        "安全检查",
+        "漏洞扫描",
+        "安全审计",
+        "权限检查",
+        "是否有安全问题",
+        "安全评估",
+        "代码安全",
+        "安全风险"
+      ],
+      "behavior": "behavior.review",
+      "domains": [
+        "domain.java",
+        "domain.spring",
+        "domain.mysql",
+        "domain.redis"
+      ],
+      "template": "template.review_report",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.review",
+        "checklist.verification",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.full_default",
+      "context": "fork"
+    },
+    {
+      "id": "skill.data_design",
+      "name": "data-design",
+      "path": ".claude/skills/data-design/SKILL.md",
+      "description": "Design database schemas, index strategies, query patterns, data integrity constraints, migration scripts, and data architecture with domain-driven modeling and normalization/denormalization tradeoffs. Deeper than architecture-design's data section.",
+      "triggers": [
+        "design database schema",
+        "design table structure",
+        "create index strategy",
+        "data model design",
+        "database design",
+        "schema review",
+        "optimize queries",
+        "design data migration",
+        "entity design",
+        "normalize this",
+        "denormalize this",
+        "database architecture",
+        "数据库设计",
+        "表结构设计",
+        "索引设计",
+        "数据模型设计",
+        "建表",
+        "Schema设计",
+        "存储方案",
+        "数据架构",
+        "索引优化",
+        "SQL优化",
+        "数据迁移方案"
+      ],
+      "behavior": null,
+      "domains": [
+        "domain.mysql",
+        "domain.java",
+        "domain.spring",
+        "domain.redis",
+        "domain.testing"
+      ],
+      "template": "template.implementation_plan",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.verification",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.full_default",
+      "context": "inherit"
+    },
+    {
+      "id": "skill.dependency_audit",
+      "name": "dependency-audit",
+      "path": ".claude/skills/dependency-audit/SKILL.md",
+      "description": "Audit project dependencies — analyze dependency trees, detect version conflicts, identify known CVE vulnerabilities, check license compliance, find unused/outdated dependencies, and recommend safe upgrade paths with impact assessment.",
+      "triggers": [
+        "dependency audit",
+        "check dependencies",
+        "scan for vulnerabilities",
+        "dependency analysis",
+        "check for CVEs",
+        "outdated dependencies",
+        "version conflict",
+        "dependency tree",
+        "license check",
+        "audit libraries",
+        "upgrade dependencies",
+        "npm audit",
+        "依赖审计",
+        "依赖检查",
+        "漏洞扫描",
+        "依赖分析",
+        "CVE扫描",
+        "依赖冲突",
+        "版本冲突",
+        "安全依赖检查",
+        "依赖升级",
+        "过期依赖",
+        "许可证合规",
+        "第三方库审计"
+      ],
+      "behavior": "behavior.review",
+      "domains": [
+        "domain.java",
+        "domain.spring",
+        "domain.mysql",
+        "domain.redis"
+      ],
+      "template": "template.review_report",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.review",
+        "checklist.verification",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.light_review",
+      "context": "fork"
+    },
+    {
+      "id": "skill.release_readiness",
+      "name": "release-readiness",
+      "path": ".claude/skills/release-readiness/SKILL.md",
+      "description": "Assess release go/no-go readiness through test evidence, compatibility, observability, rollout, rollback, ownership, and unresolved risk.",
+      "triggers": [
+        "release readiness",
+        "go no-go",
+        "go/no-go",
+        "release gate",
+        "deployment review",
+        "发版就绪",
+        "发布评审",
+        "上线检查",
+        "发布门禁",
+        "上线前评估"
+      ],
+      "behavior": null,
+      "domains": [
+        "domain.testing",
+        "domain.observability_reliability"
+      ],
+      "template": "template.test_report",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.release_readiness",
+        "checklist.verification",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.full_default",
+      "context": "inherit"
+    },
+    {
+      "id": "skill.contract_compatibility",
+      "name": "contract-compatibility",
+      "path": ".claude/skills/contract-compatibility/SKILL.md",
+      "description": "Assess API and event producer/consumer compatibility against declared baselines and fixture-backed contract evidence.",
+      "triggers": [
+        "API contract compatibility",
+        "event contract compatibility",
+        "event schema compatibility",
+        "consumer compatibility",
+        "breaking API change",
+        "breaking event change",
+        "接口契约兼容性",
+        "事件契约兼容性",
+        "事件模式兼容性",
+        "消费者兼容性",
+        "接口破坏性变更",
+        "事件破坏性变更"
+      ],
+      "behavior": null,
+      "domains": [
+        "domain.api_event_contracts",
+        "domain.testing"
+      ],
+      "template": "template.implementation_plan",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.contract_compatibility",
+        "checklist.verification",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.full_default",
+      "context": "inherit"
+    },
+    {
+      "id": "skill.auto_compact",
+      "name": "auto-compact",
+      "path": ".claude/skills/auto-compact/SKILL.md",
+      "description": "Proactive context management — monitors context-pressure signals and triggers compaction at optimal thresholds before performance degrades.",
+      "triggers": [
+        "compact",
+        "compress",
+        "context limit",
+        "token limit",
+        "上下文要满了",
+        "压缩",
+        "summarize conversation",
+        "context is getting full",
+        "memory pressure"
+      ],
+      "behavior": null,
+      "domains": [],
+      "template": null,
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.light_explanation",
+      "context": "inherit"
+    },
+    {
+      "id": "skill.vite_vue3",
+      "name": "vite-vue3",
+      "path": ".claude/skills/vite-vue3/SKILL.md",
+      "description": "Implement confirmed Vue 3 and Vite features, components, composables, routes, stores, and configuration from target-project evidence.",
+      "triggers": [
+        "Vue 3 component",
+        "Vue 3 feature",
+        "Vue 3 Vite config",
+        "Vue3组件",
+        "Vue3功能开发",
+        "Vue 3配置",
+        "实现 Vue 3",
+        "实现Vue3",
+        "帮我实现 Vue 3",
+        "帮我实现Vue3"
+      ],
+      "behavior": null,
+      "domains": [
+        "domain.vue3_vite"
+      ],
+      "template": "template.implementation_plan",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.verification",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.full_default",
+      "context": "fork"
+    },
+    {
+      "id": "skill.vue2",
+      "name": "vue2",
+      "path": ".claude/skills/vue2/SKILL.md",
+      "description": "Implement confirmed Vue 2.0-2.6 features, Vue CLI/Webpack configuration, and verified vmd-ui integrations.",
+      "triggers": [
+        "Vue 2 component",
+        "Vue2 component",
+        "Vue 2 feature",
+        "VMD UI",
+        "vmd-ui",
+        "Vue CLI Webpack",
+        "Vue2组件",
+        "Vue 2功能开发",
+        "VMD UI组件",
+        "实现 Vue 2",
+        "实现Vue2",
+        "帮我实现 Vue 2",
+        "帮我实现Vue2"
+      ],
+      "behavior": null,
+      "domains": [
+        "domain.vue2"
+      ],
+      "template": "template.implementation_plan",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.verification",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.full_default",
+      "context": "fork"
+    },
+    {
+      "id": "skill.vue2_7",
+      "name": "vue2-7",
+      "path": ".claude/skills/vue2-7/SKILL.md",
+      "description": "Implement confirmed Vue 2.7 features, including verified Vue 2.7 and Vite-compatible applications.",
+      "triggers": [
+        "Vue 2.7 component",
+        "Vue2.7 component",
+        "Vue 2.7 Vite",
+        "Vue2.7 Vite",
+        "Vue 2.7功能",
+        "Vue2.7组件",
+        "Vue 2.7",
+        "实现 Vue 2.7",
+        "实现Vue2.7",
+        "帮我实现 Vue 2.7",
+        "帮我实现Vue2.7"
+      ],
+      "behavior": null,
+      "domains": [
+        "domain.vue2_7"
+      ],
+      "template": "template.implementation_plan",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.verification",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.full_default",
+      "context": "fork"
+    },
+    {
+      "id": "skill.llm_evaluation",
+      "name": "llm-evaluation",
+      "path": ".claude/skills/llm-evaluation/SKILL.md",
+      "description": "Design and run evidence-based LLM evaluations, regressions, and release gates for prompt, model, RAG, tool-calling, and agent changes.",
+      "triggers": [
+        "llm evaluation",
+        "llm eval",
+        "prompt evaluation",
+        "prompt regression",
+        "model benchmark",
+        "大模型评测",
+        "LLM评测",
+        "提示词评测",
+        "提示词回归",
+        "模型评测",
+        "回归评测"
+      ],
+      "behavior": null,
+      "domains": [
+        "domain.spring_ai",
+        "domain.testing",
+        "domain.observability_reliability"
+      ],
+      "template": "template.test_plan",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.test_plan",
+        "checklist.verification",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.full_default",
+      "context": "fork"
+    },
+    {
+      "id": "skill.bailian_workflow",
+      "name": "bailian-workflow",
+      "path": ".claude/skills/bailian-workflow/SKILL.md",
+      "description": "Safely orchestrate, decrypt, edit, validate, rebuild, and encrypt Bailian workflow import artifacts with explicit import-key confirmation.",
+      "triggers": [
+        "bailian workflow",
+        "dashscope workflow",
+        "bailian encrypted workflow",
+        "百炼工作流",
+        "百炼编排",
+        "百炼加密",
+        "百炼解密",
+        "百炼导入配置",
+        "百炼工作流编排"
+      ],
+      "behavior": null,
+      "domains": [
+        "domain.spring_ai",
+        "domain.api_event_contracts",
+        "domain.testing"
+      ],
+      "template": "template.implementation_plan",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.verification",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.full_default",
+      "context": "fork"
+    },
+    {
+      "id": "skill.bailian_api",
+      "name": "bailian-api",
+      "path": ".claude/skills/bailian-api/SKILL.md",
+      "description": "Design, implement, debug, and review Bailian and DashScope API integrations while keeping credentials out of chat and source code.",
+      "triggers": [
+        "bailian api",
+        "dashscope api",
+        "dashscope sdk",
+        "bailian sdk",
+        "百炼 API",
+        "百炼模型 API",
+        "百炼模型调用",
+        "百炼 SDK"
+      ],
+      "behavior": null,
+      "domains": [
+        "domain.spring_ai",
+        "domain.api_event_contracts",
+        "domain.testing"
+      ],
+      "template": "template.implementation_plan",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.verification",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.full_default",
+      "context": "fork"
+    },
+    {
+      "id": "skill.forge",
+      "name": "forge",
+      "path": ".claude/skills/forge/SKILL.md",
+      "description": "Operate the Forge CLI for validation, inspection, and persisted Runtime lifecycle commands.",
+      "triggers": [
+        "forge validate",
+        "forge status",
+        "forge doctor",
+        "forge version",
+        "forge runtime",
+        "runtime-list-paused",
+        "runtime-suspend"
+      ],
+      "behavior": null,
+      "domains": [],
+      "template": "template.default",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.verification",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.full_default",
+      "context": "inherit"
+    }
+  ]
+}

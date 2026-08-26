@@ -1,0 +1,57 @@
+{
+  "id": "pack.spring_review",
+  "name": "Spring Service Review Pack",
+  "purpose": "Review Java/Spring service logic for correctness, maintainability, transactional risk, and testing confidence.",
+  "when_to_use": [
+    "reviewing a Spring Boot service",
+    "reviewing controller/service/repository interactions",
+    "checking transaction or dependency-injection related code quality",
+    "performing a focused backend service review"
+  ],
+  "modules": {
+    "kernel": [
+      "kernel.claude"
+    ],
+    "runtime": [
+      "runtime.router",
+      "runtime.contract",
+      "runtime.conflict_resolution"
+    ],
+    "behaviors": [
+      "behavior.review"
+    ],
+    "domains": [
+      "domain.java",
+      "domain.spring",
+      "domain.testing"
+    ]
+  },
+  "workflow": "workflow.light_review",
+  "template": "template.review_report",
+  "checklists": [
+    "checklist.general_quality",
+    "checklist.review",
+    "checklist.verification",
+    "checklist.delivery"
+  ],
+  "reports": [
+    "report.review_summary"
+  ],
+  "notes": [
+    "Add domain.mysql when repository/query behavior materially affects the review.",
+    "Add domain.redis when cache semantics are part of the service logic.",
+    "Escalate to workflow.full_default if the review becomes change-oriented or correctness-critical."
+  ],
+  "routing": {
+    "preferred_skill": "skill.code_review",
+    "score_bonus": 12,
+    "keywords_any": [
+      "spring", "service", "transaction", "cache", "review",
+      "代码评审", "评审", "审一下"
+    ],
+    "keywords_all_groups": [
+      ["spring"],
+      ["review", "评审", "审一下", "code review"]
+    ]
+  }
+}

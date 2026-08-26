@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "registry/schemas/template-explanation-output.schema.json",
+  "title": "Explanation Template Output Schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["what_it_is", "why_it_matters", "how_it_works"],
+  "properties": {
+    "what_it_is": {
+      "type": "string",
+      "minLength": 1
+    },
+    "why_it_matters": {
+      "type": "string",
+      "minLength": 1
+    },
+    "how_it_works": {
+      "type": "string",
+      "minLength": 1
+    },
+    "example": {
+      "type": "string"
+    },
+    "common_pitfalls_or_misunderstandings": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "optional_deeper_detail": {
+      "type": "string"
+    }
+  }
+}

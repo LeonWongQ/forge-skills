@@ -1,0 +1,4 @@
+interface:
+  display_name: "Error Analysis"
+  short_description: "Analyze logs and stack traces to explain failures."
+  default_prompt: "Use $error-analysis to analyze this error evidence and recommend remediation."

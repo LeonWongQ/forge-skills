@@ -1,0 +1,534 @@
+{
+  "version": "1.1.0",
+  "description": "Registry of major modules in the repository, grouped by architectural layer.",
+  "layers": {
+    "kernel": [
+      {
+        "id": "kernel.claude",
+        "path": "CLAUDE.md",
+        "name": "CLAUDE",
+        "role": "global-principles"
+      }
+    ],
+    "engine": [
+      {
+        "id": "engine.discover",
+        "path": "engine/discover.md",
+        "name": "Discover",
+        "role": "task-framing-stage"
+      },
+      {
+        "id": "engine.evidence",
+        "path": "engine/evidence.md",
+        "name": "Evidence",
+        "role": "fact-collection-stage"
+      },
+      {
+        "id": "engine.context",
+        "path": "engine/context.md",
+        "name": "Context",
+        "role": "situational-understanding-stage"
+      },
+      {
+        "id": "engine.reasoning",
+        "path": "engine/reasoning.md",
+        "name": "Reasoning",
+        "role": "conclusion-building-stage"
+      },
+      {
+        "id": "engine.planning",
+        "path": "engine/planning.md",
+        "name": "Planning",
+        "role": "action-design-stage"
+      },
+      {
+        "id": "engine.execution",
+        "path": "engine/execution.md",
+        "name": "Execution",
+        "role": "change-application-stage"
+      },
+      {
+        "id": "engine.verification",
+        "path": "engine/verification.md",
+        "name": "Verification",
+        "role": "result-validation-stage"
+      },
+      {
+        "id": "engine.delivery",
+        "path": "engine/delivery.md",
+        "name": "Delivery",
+        "role": "final-output-stage"
+      },
+      {
+        "id": "engine.transitions",
+        "path": "engine/transitions.md",
+        "name": "Transitions",
+        "role": "stage-transition-rules"
+      }
+    ],
+    "runtime": [
+      {
+        "id": "runtime.readme",
+        "path": "runtime/README.md",
+        "name": "Runtime README",
+        "role": "runtime-entrypoint"
+      },
+      {
+        "id": "runtime.router",
+        "path": "runtime/router.md",
+        "name": "Router",
+        "role": "task-routing-and-module-selection"
+      },
+      {
+        "id": "runtime.contract",
+        "path": "runtime/runtime-contract.md",
+        "name": "Runtime Contract",
+        "role": "runtime-execution-contract"
+      },
+      {
+        "id": "runtime.conflict_resolution",
+        "path": "runtime/conflict-resolution.md",
+        "name": "Conflict Resolution",
+        "role": "runtime-priority-and-tradeoff-policy"
+      }
+    ],
+    "skills": [
+      {
+        "id": "skill.code_review",
+        "path": ".claude/skills/code-review/SKILL.md",
+        "name": "Code Review",
+        "role": "domain-aware-review-workflow"
+      },
+      {
+        "id": "skill.debug",
+        "path": ".claude/skills/debug/SKILL.md",
+        "name": "Debug",
+        "role": "hypothesis-driven-diagnosis-workflow"
+      },
+      {
+        "id": "skill.plan",
+        "path": ".claude/skills/plan/SKILL.md",
+        "name": "Plan",
+        "role": "structured-implementation-planning-workflow"
+      },
+      {
+        "id": "skill.error_analysis",
+        "path": ".claude/skills/error-analysis/SKILL.md",
+        "name": "Error Analysis",
+        "role": "error-artifact-analysis-workflow"
+      },
+      {
+        "id": "skill.report",
+        "path": ".claude/skills/report/SKILL.md",
+        "name": "Report",
+        "role": "multi-format-report-generation-workflow"
+      },
+      {
+        "id": "skill.explain",
+        "path": ".claude/skills/explain/SKILL.md",
+        "name": "Explain",
+        "role": "progressive-depth-explanation-workflow"
+      },
+      {
+        "id": "skill.refactor",
+        "path": ".claude/skills/refactor/SKILL.md",
+        "name": "Refactor",
+        "role": "behavior-preserving-refactoring-workflow"
+      },
+      {
+        "id": "skill.optimize",
+        "path": ".claude/skills/optimize/SKILL.md",
+        "name": "Optimize",
+        "role": "measurement-driven-optimization-workflow"
+      },
+      {
+        "id": "skill.document",
+        "path": ".claude/skills/document/SKILL.md",
+        "name": "Document",
+        "role": "audience-focused-documentation-workflow"
+      },
+      {
+        "id": "skill.test_design",
+        "path": ".claude/skills/test-design/SKILL.md",
+        "name": "Test Design",
+        "role": "structured-test-strategy-design-workflow"
+      },
+      {
+        "id": "skill.incident",
+        "path": ".claude/skills/incident/SKILL.md",
+        "name": "Incident",
+        "role": "production-incident-analysis-workflow"
+      },
+      {
+        "id": "skill.test_implementation",
+        "path": ".claude/skills/test-implementation/SKILL.md",
+        "name": "Test Implementation",
+        "role": "test-implementation-planning-and-execution-workflow"
+      },
+      {
+        "id": "skill.migration",
+        "path": ".claude/skills/migration/SKILL.md",
+        "name": "Migration",
+        "role": "migration-planning-and-compatibility-assessment-workflow"
+      },
+      {
+        "id": "skill.explore",
+        "path": ".claude/skills/explore/SKILL.md",
+        "name": "Explore",
+        "role": "pre-orientation-exploration-and-scope-discovery-workflow"
+      },
+      {
+        "id": "skill.page_test",
+        "path": ".claude/skills/page-test/SKILL.md",
+        "name": "Page Test",
+        "role": "playwright-page-test-authoring-and-diagnosis-workflow"
+      },
+      {
+        "id": "skill.test_strategy",
+        "path": ".claude/skills/test-strategy/SKILL.md",
+        "name": "Test Strategy",
+        "role": "test-strategy-design-and-gap-analysis-workflow"
+      },
+      {
+        "id": "skill.implement",
+        "path": ".claude/skills/implement/SKILL.md",
+        "name": "Implement",
+        "role": "Implement features, interfaces, services, endpoints, modules, or any code changes based on requirements, design docs, plan output, or direct instructions. Follows existing code conventions, produces compilable and verifiable code."
+      },
+      {
+        "id": "skill.architecture_design",
+        "path": ".claude/skills/architecture-design/SKILL.md",
+        "name": "Architecture Design",
+        "role": "Design system architecture, component topology, API contracts, data models, integration patterns, and technical decision frameworks with structured tradeoff analysis and ADR-style decision records."
+      },
+      {
+        "id": "skill.security_review",
+        "path": ".claude/skills/security-review/SKILL.md",
+        "name": "Security Review",
+        "role": "Security-focused code and design review — OWASP Top 10 vulnerability detection, authentication/authorization analysis, injection attack surface assessment, sensitive data exposure, cryptography misuse, and security configuration review with structured threat severity and exploitability assessment."
+      },
+      {
+        "id": "skill.data_design",
+        "path": ".claude/skills/data-design/SKILL.md",
+        "name": "Data Design",
+        "role": "Design database schemas, index strategies, query patterns, data integrity constraints, migration scripts, and data architecture with domain-driven modeling and normalization/denormalization tradeoffs. Deeper than architecture-design's data section."
+      },
+      {
+        "id": "skill.dependency_audit",
+        "path": ".claude/skills/dependency-audit/SKILL.md",
+        "name": "Dependency Audit",
+        "role": "Audit project dependencies — analyze dependency trees, detect version conflicts, identify known CVE vulnerabilities, check license compliance, find unused/outdated dependencies, and recommend safe upgrade paths with impact assessment."
+      },
+      {
+        "id": "skill.release_readiness",
+        "path": ".claude/skills/release-readiness/SKILL.md",
+        "name": "Release Readiness",
+        "role": "production-release-go-no-go-assessment-workflow"
+      },
+      {
+        "id": "skill.contract_compatibility",
+        "path": ".claude/skills/contract-compatibility/SKILL.md",
+        "name": "Contract Compatibility",
+        "role": "api-event-producer-consumer-compatibility-assessment"
+      },
+      {
+        "id": "skill.auto_compact",
+        "path": ".claude/skills/auto-compact/SKILL.md",
+        "name": "Auto Compact",
+        "role": "proactive-context-management-workflow"
+      },
+      {
+        "id": "skill.vite_vue3",
+        "path": ".claude/skills/vite-vue3/SKILL.md",
+        "name": "Vite + Vue 3",
+        "role": "vue3-and-vite-feature-configuration-workflow"
+      },
+      {
+        "id": "skill.vue2",
+        "path": ".claude/skills/vue2/SKILL.md",
+        "name": "Vue 2",
+        "role": "vue2-and-vmd-ui-feature-configuration-workflow"
+      },
+      {
+        "id": "skill.vue2_7",
+        "path": ".claude/skills/vue2-7/SKILL.md",
+        "name": "Vue 2.7",
+        "role": "vue2-7-feature-configuration-workflow"
+      },
+      {
+        "id": "skill.llm_evaluation",
+        "path": ".claude/skills/llm-evaluation/SKILL.md",
+        "name": "LLM Evaluation",
+        "role": "llm-evaluation-and-regression-gate-workflow"
+      },
+      {
+        "id": "skill.bailian_workflow",
+        "path": ".claude/skills/bailian-workflow/SKILL.md",
+        "name": "Bailian Workflow",
+        "role": "bailian-workflow-orchestration-and-encrypted-artifact-workflow"
+      },
+      {
+        "id": "skill.bailian_api",
+        "path": ".claude/skills/bailian-api/SKILL.md",
+        "name": "Bailian API",
+        "role": "bailian-and-dashscope-api-integration-workflow"
+      },
+      {
+        "id": "skill.forge",
+        "path": ".claude/skills/forge/SKILL.md",
+        "name": "Forge CLI",
+        "role": "forge-validation-and-runtime-tooling-workflow"
+      }
+    ],
+    "behaviors": [
+      {
+        "id": "behavior.review",
+        "path": "behaviors/review.md",
+        "name": "Review",
+        "role": "quality-and-risk-evaluation"
+      },
+      {
+        "id": "behavior.debug",
+        "path": "behaviors/debug.md",
+        "name": "Debug",
+        "role": "diagnosis-and-root-cause-analysis"
+      },
+      {
+        "id": "behavior.refactor",
+        "path": "behaviors/refactor.md",
+        "name": "Refactor",
+        "role": "structural-improvement"
+      },
+      {
+        "id": "behavior.optimize",
+        "path": "behaviors/optimize.md",
+        "name": "Optimize",
+        "role": "performance-and-efficiency-improvement"
+      },
+      {
+        "id": "behavior.document",
+        "path": "behaviors/document.md",
+        "name": "Document",
+        "role": "documentation-authoring"
+      },
+      {
+        "id": "behavior.explain",
+        "path": "behaviors/explain.md",
+        "name": "Explain",
+        "role": "conceptual-clarification"
+      }
+    ],
+    "domains": [
+      {
+        "id": "domain.java",
+        "path": "domains/java.md",
+        "name": "Java",
+        "role": "language-and-runtime-heuristics"
+      },
+      {
+        "id": "domain.spring",
+        "path": "domains/spring.md",
+        "name": "Spring",
+        "role": "framework-and-container-heuristics"
+      },
+      {
+        "id": "domain.spring_ai",
+        "path": "domains/spring-ai.md",
+        "name": "Spring AI",
+        "role": "llm-integration-heuristics"
+      },
+      {
+        "id": "domain.playwright",
+        "path": "domains/playwright.md",
+        "name": "Playwright",
+        "role": "browser-test-automation-heuristics"
+      },
+      {
+        "id": "domain.mysql",
+        "path": "domains/mysql.md",
+        "name": "MySQL",
+        "role": "database-query-and-schema-heuristics"
+      },
+      {
+        "id": "domain.redis",
+        "path": "domains/redis.md",
+        "name": "Redis",
+        "role": "cache-and-coordination-heuristics"
+      },
+      {
+        "id": "domain.observability_reliability",
+        "path": "domains/observability-reliability.md",
+        "name": "Observability & Reliability",
+        "role": "production-observability-and-reliability-heuristics"
+      },
+      {
+        "id": "domain.api_event_contracts",
+        "path": "domains/api-event-contracts.md",
+        "name": "API & Event Contracts",
+        "role": "producer-consumer-contract-compatibility-heuristics"
+      },
+      {
+        "id": "domain.testing",
+        "path": "domains/testing.md",
+        "name": "Testing",
+        "role": "test-quality-and-confidence-heuristics"
+      },
+      {
+        "id": "domain.vue3_vite",
+        "path": "domains/vue3-vite.md",
+        "name": "Vue 3 & Vite",
+        "role": "vue3-framework-and-vite-build-heuristics"
+      },
+      {
+        "id": "domain.vue2",
+        "path": "domains/vue2.md",
+        "name": "Vue 2",
+        "role": "legacy-vue2-and-vmd-ui-heuristics"
+      },
+      {
+        "id": "domain.vue2_7",
+        "path": "domains/vue2-7.md",
+        "name": "Vue 2.7",
+        "role": "vue2-7-compatibility-and-build-heuristics"
+      }
+    ],
+    "templates": [
+      {
+        "id": "template.default",
+        "path": "templates/default.md",
+        "name": "Default",
+        "role": "generic-output-shape"
+      },
+      {
+        "id": "template.review_report",
+        "path": "templates/review-report.md",
+        "name": "Review Report",
+        "role": "review-output-shape"
+      },
+      {
+        "id": "template.debug_report",
+        "path": "templates/debug-report.md",
+        "name": "Debug Report",
+        "role": "debug-output-shape"
+      },
+      {
+        "id": "template.refactor_plan",
+        "path": "templates/refactor-plan.md",
+        "name": "Refactor Plan",
+        "role": "refactor-output-shape"
+      },
+      {
+        "id": "template.implementation_plan",
+        "path": "templates/implementation-plan.md",
+        "name": "Implementation Plan",
+        "role": "implementation-output-shape"
+      },
+      {
+        "id": "template.explanation",
+        "path": "templates/explanation.md",
+        "name": "Explanation",
+        "role": "concept-explanation-output-shape"
+      },
+      {
+        "id": "template.test_plan",
+        "path": "templates/test-plan.md",
+        "name": "Test Plan",
+        "role": "test-planning-output-shape"
+      },
+      {
+        "id": "template.test_report",
+        "path": "templates/test-report.md",
+        "name": "Test Report",
+        "role": "test-report-output-shape"
+      },
+      {
+        "id": "template.exploration",
+        "path": "templates/exploration.md",
+        "name": "Exploration",
+        "role": "exploration-and-scope-discovery-output-shape"
+      }
+    ],
+    "checklists": [
+      {
+        "id": "checklist.general_quality",
+        "path": "checklists/general-quality.md",
+        "name": "General Quality",
+        "role": "baseline-quality-gate"
+      },
+      {
+        "id": "checklist.review",
+        "path": "checklists/review-checklist.md",
+        "name": "Review Checklist",
+        "role": "review-quality-gate"
+      },
+      {
+        "id": "checklist.debug",
+        "path": "checklists/debug-checklist.md",
+        "name": "Debug Checklist",
+        "role": "debug-quality-gate"
+      },
+      {
+        "id": "checklist.refactor",
+        "path": "checklists/refactor-checklist.md",
+        "name": "Refactor Checklist",
+        "role": "refactor-quality-gate"
+      },
+      {
+        "id": "checklist.verification",
+        "path": "checklists/verification-checklist.md",
+        "name": "Verification Checklist",
+        "role": "verification-quality-gate"
+      },
+      {
+        "id": "checklist.delivery",
+        "path": "checklists/delivery-checklist.md",
+        "name": "Delivery Checklist",
+        "role": "delivery-quality-gate"
+      },
+      {
+        "id": "checklist.test_plan",
+        "path": "checklists/test-plan-checklist.md",
+        "name": "Test Plan Checklist",
+        "role": "test-plan-quality-gate"
+      },
+      {
+        "id": "checklist.release_readiness",
+        "path": "checklists/release-readiness-checklist.md",
+        "name": "Release Readiness Checklist",
+        "role": "production-release-readiness-quality-gate"
+      },
+      {
+        "id": "checklist.contract_compatibility",
+        "path": "checklists/contract-compatibility-checklist.md",
+        "name": "Contract Compatibility Checklist",
+        "role": "api-event-contract-change-quality-gate"
+      },
+      {
+        "id": "checklist.test_report",
+        "path": "checklists/test-report-checklist.md",
+        "name": "Test Report Checklist",
+        "role": "test-report-quality-gate"
+      }
+    ],
+    "reports": [
+      {
+        "id": "report.task",
+        "path": "reports/task-report.md",
+        "name": "Task Report",
+        "role": "general-persistent-task-artifact"
+      },
+      {
+        "id": "report.incident",
+        "path": "reports/incident-report.md",
+        "name": "Incident Report",
+        "role": "incident-persistent-artifact"
+      },
+      {
+        "id": "report.review_summary",
+        "path": "reports/review-summary.md",
+        "name": "Review Summary",
+        "role": "review-summary-artifact"
+      }
+    ]
+  }
+}

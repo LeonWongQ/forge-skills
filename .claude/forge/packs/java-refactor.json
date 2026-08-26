@@ -1,0 +1,60 @@
+{
+  "id": "pack.java_refactor",
+  "name": "Java Refactor Pack",
+  "purpose": "Plan or execute safe Java-focused refactoring for maintainability, structure, and testability improvement.",
+  "when_to_use": [
+    "a Java class is too large or mixed in responsibility",
+    "duplication should be reduced without changing behavior",
+    "testability needs improvement",
+    "structural cleanup is the main task"
+  ],
+  "modules": {
+    "kernel": [
+      "kernel.claude"
+    ],
+    "runtime": [
+      "runtime.router",
+      "runtime.contract",
+      "runtime.conflict_resolution"
+    ],
+    "behaviors": [
+      "behavior.refactor"
+    ],
+    "domains": [
+      "domain.java",
+      "domain.testing"
+    ],
+    "engine": [
+      "engine.planning",
+      "engine.execution",
+      "engine.verification"
+    ]
+  },
+  "workflow": "workflow.full_default",
+  "template": "template.refactor_plan",
+  "checklists": [
+    "checklist.general_quality",
+    "checklist.refactor",
+    "checklist.verification",
+    "checklist.delivery"
+  ],
+  "reports": [
+    "report.task"
+  ],
+  "notes": [
+    "Add domain.spring if the class is framework-managed or transactional.",
+    "Prefer incremental transformations with clear behavior-preservation checks.",
+    "Do not mix broad rewrite ambitions into a local refactor unless explicitly requested."
+  ],
+  "routing": {
+    "preferred_skill": "skill.refactor",
+    "score_bonus": 12,
+    "keywords_any": [
+      "java", "refactor", "重构", "整理代码", "结构优化"
+    ],
+    "keywords_all_groups": [
+      ["java"],
+      ["refactor", "重构", "整理代码"]
+    ]
+  }
+}

@@ -1,0 +1,1456 @@
+{
+  "version": "2.1.0",
+  "description": "Canonical route/recommend regression corpus with calibrated confidence and diagnostic assertions.",
+  "cases": [
+    {
+      "id": "route.test_design.basic",
+      "mode": "route",
+      "input": "帮我设计测试方案",
+      "expected": {
+        "skill": "skill.test_design",
+        "pack": "pack.general_test_plan",
+        "matched": true,
+        "confidence": {
+          "min": "medium",
+          "max": "high"
+        }
+      },
+      "notes": "Basic test-design routing.",
+      "category": "canonical_intent"
+    },
+    {
+      "id": "route.test_implementation.unit_test",
+      "mode": "route",
+      "input": "帮我补一组单元测试",
+      "expected": {
+        "skill": "skill.test_implementation",
+        "forbidden_skills": [
+          "skill.test_design"
+        ],
+        "matched": true,
+        "pack": null,
+        "confidence": {
+          "min": "medium",
+          "max": "high"
+        }
+      },
+      "notes": "Test implementation wins the documented test-design collision through direct trigger and tie-break evidence.",
+      "category": "skill_collision"
+    },
+    {
+      "id": "route.migration.spring_boot_upgrade",
+      "mode": "route",
+      "input": "给我一个 spring boot 升级迁移方案",
+      "expected": {
+        "skill": "skill.migration",
+        "forbidden_packs": [
+          "pack.spring_review"
+        ],
+        "matched": true,
+        "pack": null,
+        "confidence": {
+          "min": "medium",
+          "max": "high"
+        }
+      },
+      "notes": "Migration should not merge into spring review pack. Verified fixed by PACK_CROSS_SKILL_ALLOWED.",
+      "category": "skill_collision"
+    },
+    {
+      "id": "route.incident.production_issue",
+      "mode": "route",
+      "input": "生产环境服务异常，帮我做事故分析",
+      "expected": {
+        "skill": "skill.incident",
+        "forbidden_skills": [
+          "skill.debug",
+          "skill.error_analysis"
+        ],
+        "matched": true,
+        "pack": null,
+        "confidence": {
+          "min": "medium",
+          "max": "high"
+        }
+      },
+      "notes": "Incident should win over debug/error-analysis for production incident wording.",
+      "category": "canonical_intent"
+    },
+    {
+      "id": "route.explore.discovery",
+      "mode": "route",
+      "input": "先帮我摸清楚这个模块现状",
+      "expected": {
+        "skill": "skill.explore",
+        "forbidden_skills": [
+          "skill.plan"
+        ],
+        "matched": true,
+        "pack": "pack.general_exploration",
+        "confidence": {
+          "min": "medium",
+          "max": "high"
+        }
+      },
+      "notes": "Explore should win for discovery/scoping wording.",
+      "category": "pack_selection"
+    },
+    {
+      "id": "route.review.spring_service",
+      "mode": "route",
+      "input": "帮我 review 一个 spring service 改动",
+      "expected": {
+        "skill": "skill.code_review",
+        "pack": "pack.spring_review",
+        "matched": true,
+        "confidence": {
+          "min": "medium",
+          "max": "high"
+        }
+      },
+      "notes": "Review pack should be selected for spring review scenario.",
+      "category": "canonical_intent"
+    },
+    {
+      "id": "route.debug.playwright_flaky",
+      "mode": "route",
+      "input": "这个 playwright 用例在 CI 上 flaky，帮我定位下",
+      "expected": {
+        "skill": "skill.debug",
+        "pack": "pack.playwright_debug",
+        "forbidden_skills": [
+          "skill.test_design"
+        ],
+        "matched": true,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Playwright flaky scenario should route to debug, not test design. Verified fixed by playwright_debug keyword_set + test_design penalty.",
+      "category": "canonical_intent"
+    },
+    {
+      "id": "route.incident.redis_stale_read",
+      "mode": "route",
+      "input": "帮我分析一个线上 redis 旧数据事故",
+      "expected": {
+        "skill": "skill.incident",
+        "pack": "pack.redis_incident",
+        "matched": true,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Redis stale-read incident should select incident + redis incident pack.",
+      "category": "canonical_intent"
+    },
+    {
+      "id": "route.refactor.java_service",
+      "mode": "route",
+      "input": "帮我重构这个 java service",
+      "expected": {
+        "skill": "skill.refactor",
+        "pack": "pack.java_refactor",
+        "matched": true,
+        "confidence": {
+          "min": "medium",
+          "max": "high"
+        }
+      },
+      "notes": "Java refactor scenario.",
+      "category": "canonical_intent"
+    },
+    {
+      "id": "route.report.test_report",
+      "mode": "route",
+      "input": "帮我整理测试报告和发布建议",
+      "expected": {
+        "skill": "skill.report",
+        "pack": "pack.general_test_report",
+        "forbidden_skills": [
+          "skill.test_design"
+        ],
+        "matched": true,
+        "confidence": {
+          "min": "medium",
+          "max": "high"
+        }
+      },
+      "notes": "Report should win over test design for explicit report wording. Verified fixed by report keyword_set + bias + tie-break.",
+      "category": "canonical_intent"
+    },
+    {
+      "id": "recommend.report.generate_test_report",
+      "mode": "recommend",
+      "input": "生成测试报告",
+      "expected": {
+        "skill": "skill.report",
+        "pack": "pack.general_test_report",
+        "forbidden_skills": [
+          "skill.test_design"
+        ],
+        "matched": true,
+        "confidence": {
+          "min": "medium",
+          "max": "high"
+        }
+      },
+      "notes": "Historical regression #1: report should not be captured by test design. VERIFIED FIXED.",
+      "category": "canonical_intent"
+    },
+    {
+      "id": "recommend.debug.playwright_e2e_ci_flaky",
+      "mode": "recommend",
+      "input": "Playwright e2e CI 不稳定",
+      "expected": {
+        "skill": "skill.debug",
+        "pack": "pack.playwright_debug",
+        "forbidden_skills": [
+          "skill.test_design"
+        ],
+        "matched": true,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Historical regression #2: playwright/e2e should not be captured by test design. VERIFIED FIXED.",
+      "category": "canonical_intent"
+    },
+    {
+      "id": "recommend.test_implementation.regression",
+      "mode": "recommend",
+      "input": "帮我补一组单元测试",
+      "expected": {
+        "skill": "skill.test_implementation",
+        "forbidden_skills": [
+          "skill.test_design"
+        ],
+        "matched": true,
+        "pack": null,
+        "confidence": {
+          "min": "medium",
+          "max": "high"
+        }
+      },
+      "notes": "Historical regression #3: direct trigger and tie-break evidence retain test implementation over test design.",
+      "category": "historical_regression"
+    },
+    {
+      "id": "recommend.migration.no_review_pack",
+      "mode": "recommend",
+      "input": "给我一个 spring boot 升级迁移方案",
+      "expected": {
+        "skill": "skill.migration",
+        "forbidden_packs": [
+          "pack.spring_review"
+        ],
+        "matched": true,
+        "pack": null,
+        "confidence": {
+          "min": "medium",
+          "max": "high"
+        }
+      },
+      "notes": "Historical regression #4: migration should not merge into spring review pack. VERIFIED FIXED.",
+      "category": "canonical_intent"
+    },
+    {
+      "id": "route.explain.spring_transaction",
+      "mode": "route",
+      "input": "解释一下 spring 事务传播机制",
+      "expected": {
+        "skill": "skill.explain",
+        "matched": true,
+        "pack": null,
+        "confidence": {
+          "min": "medium",
+          "max": "high"
+        }
+      },
+      "notes": "Explain skill coverage for framework mechanism explanation.",
+      "category": "canonical_intent"
+    },
+    {
+      "id": "route.document.generate_docs",
+      "mode": "route",
+      "input": "帮这个类生成文档",
+      "expected": {
+        "skill": "skill.document",
+        "matched": true,
+        "pack": null,
+        "confidence": {
+          "min": "medium",
+          "max": "high"
+        }
+      },
+      "notes": "Document skill coverage for doc generation request.",
+      "category": "canonical_intent"
+    },
+    {
+      "id": "route.optimize.slow_query",
+      "mode": "route",
+      "input": "这个 SQL 查询太慢了，帮我优化",
+      "expected": {
+        "skill": "skill.optimize",
+        "forbidden_skills": [
+          "skill.plan"
+        ],
+        "matched": true,
+        "pack": null,
+        "confidence": {
+          "min": "medium",
+          "max": "high"
+        }
+      },
+      "notes": "Optimize skill coverage for performance optimization request.",
+      "category": "canonical_intent"
+    },
+    {
+      "id": "route.plan.implementation",
+      "mode": "route",
+      "input": "怎么实现这个导出功能",
+      "expected": {
+        "skill": "skill.implement",
+        "forbidden_skills": [
+          "skill.test_design"
+        ],
+        "matched": true,
+        "pack": null,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "\"怎么实现\" strongly implies implementation, not planning. Routing to implement is correct; confidence=low is expected because the query is short and ambiguous between implement and plan.",
+      "category": "canonical_intent"
+    },
+    {
+      "id": "recommend.explore.project_structure",
+      "mode": "recommend",
+      "input": "先看看这个项目结构",
+      "expected": {
+        "skill": "skill.explore",
+        "forbidden_skills": [
+          "skill.plan"
+        ],
+        "matched": true,
+        "pack": "pack.general_exploration",
+        "confidence": {
+          "min": "medium",
+          "max": "high"
+        }
+      },
+      "notes": "Explore should win for project discovery wording in recommend mode.",
+      "category": "pack_selection"
+    },
+    {
+      "id": "recommend.error_analysis.log",
+      "mode": "recommend",
+      "input": "帮我分析这段报错日志",
+      "expected": {
+        "skill": "skill.error_analysis",
+        "forbidden_skills": [
+          "skill.incident"
+        ],
+        "matched": true,
+        "pack": null,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Error analysis should win over incident for non-production error log analysis.",
+      "category": "canonical_intent"
+    },
+    {
+      "id": "route.page_test.write_playwright",
+      "mode": "route",
+      "input": "帮我写一个页面测试用 Playwright",
+      "expected": {
+        "skill": "skill.page_test",
+        "pack": null,
+        "matched": true,
+        "confidence": {
+          "min": "medium",
+          "max": "high"
+        }
+      },
+      "notes": "Page test write scenario should route to page_test skill. Pack requires full contextual keyword-group evidence; generic authoring/refactor wording selects no technology pack.",
+      "category": "canonical_intent"
+    },
+    {
+      "id": "route.test_strategy.analyze_report",
+      "mode": "route",
+      "input": "分析测试报告，制定测试策略",
+      "expected": {
+        "skill": "skill.test_strategy",
+        "forbidden_skills": [
+          "skill.test_design"
+        ],
+        "matched": true,
+        "pack": "pack.general_test_plan",
+        "confidence": {
+          "min": "medium",
+          "max": "high"
+        }
+      },
+      "notes": "Test strategy from report analysis should win over test design.",
+      "category": "pack_selection"
+    },
+    {
+      "id": "recommend.page_test.debug_flaky_ui",
+      "mode": "recommend",
+      "input": "这个页面测试在 CI 上不稳定",
+      "expected": {
+        "skill": "skill.page_test",
+        "pack": null,
+        "matched": true,
+        "confidence": {
+          "min": "medium",
+          "max": "high"
+        }
+      },
+      "notes": "Page/UI test flaky diagnosis should route to page_test skill. The debug pack is reserved for the debug skill; page-test retains its own composition.",
+      "category": "canonical_intent"
+    },
+    {
+      "id": "recommend.test_strategy.gap_analysis",
+      "mode": "recommend",
+      "input": "基于这份测试报告做缺口分析",
+      "expected": {
+        "skill": "skill.test_strategy",
+        "forbidden_skills": [
+          "skill.test_design"
+        ],
+        "matched": true,
+        "pack": "pack.general_test_report",
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Test gap analysis from report should route to test_strategy, not test_design.",
+      "category": "pack_selection"
+    },
+    {
+      "id": "route.plan.design_export_feature",
+      "mode": "route",
+      "input": "分阶段设计一下导出功能怎么做",
+      "expected": {
+        "skill": "skill.plan",
+        "forbidden_skills": [
+          "skill.test_design"
+        ],
+        "matched": true,
+        "pack": null,
+        "confidence": {
+          "min": "medium",
+          "max": "high"
+        }
+      },
+      "notes": "Phase-by-phase planning language (分阶段设计一下/怎么做) should route to plan skill. Uses multiple plan triggers for unambiguous routing.",
+      "category": "canonical_intent"
+    },
+    {
+      "id": "route.release_readiness.go_no_go",
+      "mode": "route",
+      "input": "请做一次发版就绪发布评审，给出 go/no-go 结论",
+      "expected": {
+        "skill": "skill.release_readiness",
+        "pack": "pack.release_readiness",
+        "forbidden_skills": [
+          "skill.report",
+          "skill.migration",
+          "skill.incident"
+        ],
+        "matched": true,
+        "confidence": {
+          "min": "medium",
+          "max": "high"
+        }
+      },
+      "notes": "Release readiness must own explicit go/no-go assessment.",
+      "category": "canonical_intent"
+    },
+    {
+      "id": "recommend.release_readiness.release_gate",
+      "mode": "recommend",
+      "input": "这个变更能过发布门禁吗，需要看测试、监控和回滚",
+      "expected": {
+        "skill": "skill.release_readiness",
+        "pack": "pack.release_readiness",
+        "forbidden_skills": [
+          "skill.test_design",
+          "skill.report"
+        ],
+        "matched": true,
+        "confidence": {
+          "min": "medium",
+          "max": "high"
+        }
+      },
+      "notes": "Release gate combines evidence, observability, and rollback readiness.",
+      "category": "canonical_intent"
+    },
+    {
+      "id": "route.contract_compatibility.api",
+      "mode": "route",
+      "input": "评估这个 API contract compatibility，哪些消费者会受 breaking API change 影响？",
+      "expected": {
+        "skill": "skill.contract_compatibility",
+        "forbidden_skills": [
+          "skill.migration",
+          "skill.architecture_design"
+        ],
+        "matched": true,
+        "pack": null,
+        "confidence": {
+          "min": "medium",
+          "max": "high"
+        }
+      },
+      "notes": "Explicit API consumer-impact assessment belongs to contract compatibility.",
+      "category": "skill_collision"
+    },
+    {
+      "id": "recommend.contract_compatibility.event",
+      "mode": "recommend",
+      "input": "帮我做事件模式兼容性评估，判断新 producer 是否兼容旧 consumer",
+      "expected": {
+        "skill": "skill.contract_compatibility",
+        "forbidden_skills": [
+          "skill.migration",
+          "skill.data_design"
+        ],
+        "matched": true,
+        "pack": null,
+        "confidence": {
+          "min": "medium",
+          "max": "high"
+        }
+      },
+      "notes": "Event payload compatibility is not relational schema design.",
+      "category": "skill_collision"
+    },
+    {
+      "id": "route.architecture_design.api_versioning",
+      "mode": "route",
+      "input": "设计 API versioning strategy 和版本化接口架构",
+      "expected": {
+        "skill": "skill.architecture_design",
+        "forbidden_skills": [
+          "skill.contract_compatibility"
+        ],
+        "matched": true,
+        "pack": null,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Future API topology and versioning design remains architecture-owned.",
+      "category": "skill_collision"
+    },
+    {
+      "id": "route.calibration.no_match",
+      "category": "no_match",
+      "mode": "route",
+      "input": "aether unclassified prompt",
+      "expected": {
+        "matched": false,
+        "skill": null,
+        "pack": null,
+        "confidence": {
+          "min": "low",
+          "max": "low"
+        },
+        "diagnostics": {
+          "selection_mode": "unmatched",
+          "base_confidence": "low",
+          "final_confidence": "low",
+          "candidate_count": 0,
+          "margin": null,
+          "caps": [
+            "unmatched"
+          ]
+        }
+      },
+      "notes": "No natural routing evidence remains an unmatched low-confidence result."
+    },
+    {
+      "id": "route.calibration.prefer_fallback",
+      "category": "confidence_calibration",
+      "mode": "route",
+      "input": "aether unclassified prompt",
+      "preferred_skill": "skill.code_review",
+      "expected": {
+        "matched": true,
+        "skill": "skill.code_review",
+        "pack": null,
+        "confidence": {
+          "min": "low",
+          "max": "low"
+        },
+        "diagnostics": {
+          "selection_mode": "prefer_fallback",
+          "base_confidence": "low",
+          "final_confidence": "low",
+          "candidate_count": 0,
+          "margin": null,
+          "caps": [
+            "fallback"
+          ]
+        }
+      },
+      "notes": "Explicit fallback is policy-controlled and does not claim evidence-backed confidence."
+    },
+    {
+      "id": "recommend.calibration.prefer_fallback",
+      "category": "confidence_calibration",
+      "mode": "recommend",
+      "input": "aether unclassified prompt",
+      "preferred_skill": "skill.code_review",
+      "expected": {
+        "matched": true,
+        "skill": "skill.code_review",
+        "pack": null,
+        "confidence": {
+          "min": "low",
+          "max": "low"
+        },
+        "diagnostics": {
+          "selection_mode": "prefer_fallback",
+          "final_confidence": "low",
+          "caps": [
+            "fallback"
+          ]
+        }
+      },
+      "notes": "Recommend projects the same fallback confidence diagnostics as route."
+    },
+    {
+      "id": "route.calibration.single_candidate",
+      "category": "confidence_calibration",
+      "mode": "route",
+      "input": "准备数据库升级迁移、灰度切流和回滚方案",
+      "expected": {
+        "matched": true,
+        "skill": "skill.migration",
+        "pack": null,
+        "confidence": {
+          "min": "medium",
+          "max": "medium"
+        },
+        "diagnostics": {
+          "selection_mode": "ordinary",
+          "candidate_count": 1,
+          "base_confidence": "medium",
+          "final_confidence": "medium",
+          "caps": [
+            "single_candidate"
+          ]
+        }
+      },
+      "notes": "A direct single-candidate migration route is capped by policy."
+    },
+    {
+      "id": "route.calibration.keyword_only",
+      "category": "confidence_calibration",
+      "mode": "route",
+      "input": "设计 API versioning strategy 和版本化接口架构",
+      "expected": {
+        "matched": true,
+        "skill": "skill.architecture_design",
+        "pack": null,
+        "confidence": {
+          "min": "low",
+          "max": "low"
+        },
+        "forbidden_skills": [
+          "skill.contract_compatibility"
+        ],
+        "diagnostics": {
+          "selection_mode": "ordinary",
+          "base_confidence": "medium",
+          "final_confidence": "low",
+          "matched_trigger_count": 0,
+          "caps": [
+            "single_candidate",
+            "keyword_only"
+          ]
+        }
+      },
+      "notes": "Keyword-only architecture intent cannot exceed the configured low-confidence cap."
+    },
+    {
+      "id": "route.calibration.tie_break",
+      "category": "confidence_calibration",
+      "mode": "route",
+      "input": "帮我补一组单元测试",
+      "expected": {
+        "matched": true,
+        "skill": "skill.test_implementation",
+        "pack": null,
+        "confidence": {
+          "min": "medium",
+          "max": "medium"
+        },
+        "forbidden_skills": [
+          "skill.test_design"
+        ],
+        "diagnostics": {
+          "selection_mode": "tie_break",
+          "base_confidence": "medium",
+          "final_confidence": "medium",
+          "margin": 4,
+          "caps": [
+            "tie_break"
+          ]
+        }
+      },
+      "notes": "Tie-break uses the original top-two margin, never a negative post-selection difference."
+    },
+    {
+      "id": "route.calibration.pack_non_promotion",
+      "category": "confidence_calibration",
+      "mode": "route",
+      "input": "上线前发布门禁评审，需要确认迁移回滚和 go/no-go",
+      "expected": {
+        "matched": true,
+        "skill": "skill.release_readiness",
+        "pack": "pack.release_readiness",
+        "confidence": {
+          "min": "high",
+          "max": "high"
+        },
+        "forbidden_skills": [
+          "skill.migration"
+        ],
+        "diagnostics": {
+          "selection_mode": "ordinary",
+          "base_confidence": "high",
+          "final_confidence": "high",
+          "pack_promotion": "disabled_by_policy"
+        }
+      },
+      "notes": "The release-readiness pack contributes composition but does not promote confidence."
+    },
+    {
+      "id": "route.collision.migration_cutover_rollback",
+      "category": "skill_collision",
+      "mode": "route",
+      "input": "准备数据库升级迁移、灰度切流和回滚方案",
+      "expected": {
+        "matched": true,
+        "skill": "skill.migration",
+        "pack": null,
+        "confidence": {
+          "min": "medium",
+          "max": "medium"
+        },
+        "forbidden_skills": [
+          "skill.release_readiness",
+          "skill.contract_compatibility"
+        ]
+      },
+      "notes": "Explicit upgrade/cutover/rollback work remains migration-owned, not a release decision."
+    },
+    {
+      "id": "route.collision.contract_migration",
+      "category": "skill_collision",
+      "mode": "route",
+      "input": "评估 API contract compatibility，消费者兼容升级迁移",
+      "expected": {
+        "matched": true,
+        "skill": "skill.contract_compatibility",
+        "pack": null,
+        "confidence": {
+          "min": "low",
+          "max": "low"
+        },
+        "forbidden_skills": [
+          "skill.migration"
+        ],
+        "diagnostics": {
+          "selection_mode": "tie_break",
+          "margin": 1,
+          "caps": [
+            "tie_break"
+          ]
+        }
+      },
+      "notes": "Explicit consumer contract compatibility wins a close migration collision."
+    },
+    {
+      "id": "route.vite_vue3.component_feature",
+      "mode": "route",
+      "input": "为 Vue 3 用户卡片新增编辑功能",
+      "expected": {
+        "skill": "skill.vite_vue3",
+        "forbidden_skills": [
+          "skill.implement"
+        ],
+        "pack": null,
+        "matched": true,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Vue feature implementation selects the dedicated skill.",
+      "category": "skill_collision"
+    },
+    {
+      "id": "recommend.vite_vue3.vite_config",
+      "mode": "recommend",
+      "input": "修复 Vue 3 Vite 配置中的生产资源路径",
+      "expected": {
+        "skill": "skill.vite_vue3",
+        "forbidden_skills": [
+          "skill.debug"
+        ],
+        "pack": null,
+        "matched": true,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Vite configuration work selects the dedicated skill.",
+      "category": "skill_collision"
+    },
+    {
+      "id": "route.vue.debug_reactivity",
+      "mode": "route",
+      "input": "排查 Vue 页面数据不更新",
+      "expected": {
+        "skill": "skill.debug",
+        "forbidden_skills": [
+          "skill.vite_vue3"
+        ],
+        "pack": null,
+        "matched": true,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Explicit diagnosis retains debug ownership.",
+      "category": "skill_collision"
+    },
+    {
+      "id": "route.vue.test_component",
+      "mode": "route",
+      "input": "为 Vue 组件补 Vitest 测试",
+      "expected": {
+        "skill": "skill.test_implementation",
+        "forbidden_skills": [
+          "skill.vite_vue3"
+        ],
+        "pack": null,
+        "matched": true,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Component test implementation retains test ownership.",
+      "category": "skill_collision"
+    },
+    {
+      "id": "route.vue.page_e2e",
+      "mode": "route",
+      "input": "为 Vue 页面写 Playwright E2E",
+      "expected": {
+        "skill": "skill.page_test",
+        "forbidden_skills": [
+          "skill.vite_vue3"
+        ],
+        "pack": null,
+        "matched": true,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Browser E2E retains page-test ownership. Pack requires full contextual keyword-group evidence; generic authoring/refactor wording selects no technology pack.",
+      "category": "skill_collision"
+    },
+    {
+      "id": "route.vue.refactor_composable",
+      "mode": "route",
+      "input": "重构 Vue composable",
+      "expected": {
+        "skill": "skill.refactor",
+        "forbidden_skills": [
+          "skill.vite_vue3"
+        ],
+        "pack": null,
+        "matched": true,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Explicit refactor retains refactor ownership. Pack requires full contextual keyword-group evidence; generic authoring/refactor wording selects no technology pack.",
+      "category": "skill_collision"
+    },
+    {
+      "id": "route.vue.review_component",
+      "mode": "route",
+      "input": "审查 Vue 组件改动",
+      "expected": {
+        "skill": "skill.code_review",
+        "forbidden_skills": [
+          "skill.vite_vue3"
+        ],
+        "pack": null,
+        "matched": true,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Explicit review retains code-review ownership.",
+      "category": "skill_collision"
+    },
+    {
+      "id": "route.vue2.feature",
+      "mode": "route",
+      "input": "为 Vue 2 用户卡片新增编辑功能",
+      "expected": {
+        "skill": "skill.vue2",
+        "forbidden_skills": [
+          "skill.vue2_7",
+          "skill.vite_vue3"
+        ],
+        "pack": null,
+        "matched": true,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Explicit Vue 2 text routes to the Vue 2 implementation skill. Text routing is version-word based; skills verify package evidence before implementation.",
+      "category": "skill_collision"
+    },
+    {
+      "id": "recommend.vue2.vmd_ui",
+      "mode": "recommend",
+      "input": "用 VMD UI 实现订单筛选表单",
+      "expected": {
+        "skill": "skill.vue2",
+        "forbidden_skills": [
+          "skill.vue2_7",
+          "skill.vite_vue3"
+        ],
+        "pack": null,
+        "matched": true,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "vmd-ui text routes to Vue 2; installed package evidence is still required before API guidance. Text routing is version-word based; skills verify package evidence before implementation.",
+      "category": "skill_collision"
+    },
+    {
+      "id": "route.vue2_7.feature",
+      "mode": "route",
+      "input": "为 Vue 2.7 用户卡片新增编辑功能",
+      "expected": {
+        "skill": "skill.vue2_7",
+        "forbidden_skills": [
+          "skill.vue2",
+          "skill.vite_vue3"
+        ],
+        "pack": null,
+        "matched": true,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Explicit Vue 2.7 text routes to the matching compatibility skill. Text routing is version-word based; skills verify package evidence before implementation.",
+      "category": "skill_collision"
+    },
+    {
+      "id": "recommend.vue2_7.vite",
+      "mode": "recommend",
+      "input": "修改 Vue 2.7 Vite 的资源路径",
+      "expected": {
+        "skill": "skill.vue2_7",
+        "forbidden_skills": [
+          "skill.vue2",
+          "skill.vite_vue3"
+        ],
+        "pack": null,
+        "matched": true,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Explicit Vue 2.7 plus Vite does not route to Vue 3. Text routing is version-word based; skills verify package evidence before implementation.",
+      "category": "skill_collision"
+    },
+    {
+      "id": "route.vue.generic_component",
+      "mode": "route",
+      "input": "实现 Vue 组件编辑功能",
+      "expected": {
+        "skill": "skill.implement",
+        "forbidden_skills": [
+          "skill.vue2",
+          "skill.vue2_7",
+          "skill.vite_vue3"
+        ],
+        "pack": null,
+        "matched": true,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Version-unresolved Vue text must not select a version-specific implementation skill. Text routing is version-word based; skills verify package evidence before implementation.",
+      "category": "skill_collision"
+    },
+    {
+      "id": "route.vite.generic_config",
+      "mode": "route",
+      "input": "修改 Vite config",
+      "expected": {
+        "skill": null,
+        "forbidden_skills": [
+          "skill.vue2",
+          "skill.vue2_7",
+          "skill.vite_vue3"
+        ],
+        "pack": null,
+        "matched": false,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Vite alone is version-unresolved. Text routing is version-word based; skills verify package evidence before implementation.",
+      "category": "skill_collision"
+    },
+    {
+      "id": "route.vue2.debug",
+      "mode": "route",
+      "input": "排查 Vue 2 页面数据不更新",
+      "expected": {
+        "skill": "skill.debug",
+        "forbidden_skills": [
+          "skill.vue2",
+          "skill.vue2_7",
+          "skill.vite_vue3"
+        ],
+        "pack": null,
+        "matched": true,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Debug intent retains ownership despite Vue version text. Text routing is version-word based; skills verify package evidence before implementation.",
+      "category": "skill_collision"
+    },
+    {
+      "id": "route.vue2_7.test",
+      "mode": "route",
+      "input": "为 Vue 2.7 组件补测试",
+      "expected": {
+        "skill": "skill.test_implementation",
+        "forbidden_skills": [
+          "skill.vue2",
+          "skill.vue2_7",
+          "skill.vite_vue3"
+        ],
+        "pack": null,
+        "matched": true,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Test implementation retains ownership. Text routing is version-word based; skills verify package evidence before implementation.",
+      "category": "skill_collision"
+    },
+    {
+      "id": "route.vue3.review",
+      "mode": "route",
+      "input": "审查 Vue 3 组件改动",
+      "expected": {
+        "skill": "skill.code_review",
+        "forbidden_skills": [
+          "skill.vue2",
+          "skill.vue2_7",
+          "skill.vite_vue3"
+        ],
+        "pack": null,
+        "matched": true,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Review retains ownership. Text routing is version-word based; skills verify package evidence before implementation.",
+      "category": "skill_collision"
+    },
+    {
+      "id": "route.review.generic_no_pack",
+      "mode": "route",
+      "input": "review this change",
+      "expected": {
+        "skill": "skill.code_review",
+        "pack": null,
+        "matched": true,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Generic review must not select the Spring-specific pack.",
+      "category": "pack_selection"
+    },
+    {
+      "id": "route.refactor.java_pack",
+      "mode": "route",
+      "input": "refactor this Java service",
+      "expected": {
+        "skill": "skill.refactor",
+        "pack": "pack.java_refactor",
+        "matched": true,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Java evidence retains Java refactor pack selection.",
+      "category": "pack_selection"
+    },
+    {
+      "id": "route.debug.playwright_flaky_pack",
+      "mode": "route",
+      "input": "debug this Playwright test, it is flaky in CI",
+      "expected": {
+        "skill": "skill.debug",
+        "pack": "pack.playwright_debug",
+        "matched": true,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Playwright failure evidence retains debug pack selection.",
+      "category": "pack_selection"
+    },
+    {
+      "id": "route.vue2.chinese_implement",
+      "category": "skill_collision",
+      "mode": "route",
+      "input": "帮我实现 Vue 2 用户卡片编辑功能",
+      "expected": {
+        "matched": true,
+        "skill": "skill.vue2",
+        "pack": null,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        },
+        "forbidden_skills": [
+          "skill.implement",
+          "skill.vue2_7",
+          "skill.vite_vue3"
+        ]
+      },
+      "notes": "Explicit Vue 2 implementation wording selects the Vue 2 skill."
+    },
+    {
+      "id": "route.vue2_7.chinese_implement",
+      "category": "skill_collision",
+      "mode": "route",
+      "input": "帮我实现 Vue 2.7 用户卡片编辑功能",
+      "expected": {
+        "matched": true,
+        "skill": "skill.vue2_7",
+        "pack": null,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        },
+        "forbidden_skills": [
+          "skill.implement",
+          "skill.vue2",
+          "skill.vite_vue3"
+        ]
+      },
+      "notes": "Explicit Vue 2.7 implementation wording excludes legacy Vue 2."
+    },
+    {
+      "id": "recommend.vue3.chinese_implement",
+      "category": "skill_collision",
+      "mode": "recommend",
+      "input": "帮我实现Vue3用户卡片编辑功能",
+      "expected": {
+        "matched": true,
+        "skill": "skill.vite_vue3",
+        "pack": null,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        },
+        "forbidden_skills": [
+          "skill.implement",
+          "skill.vue2",
+          "skill.vue2_7"
+        ]
+      },
+      "notes": "Compact explicit Vue 3 implementation wording selects the Vue 3 skill."
+    },
+    {
+      "id": "route.migration.vue2_to_vue2_7",
+      "category": "skill_collision",
+      "mode": "route",
+      "input": "规划 Vue 2 升级到 Vue 2.7 的迁移方案",
+      "expected": {
+        "matched": true,
+        "skill": "skill.migration",
+        "pack": null,
+        "variant": "vue2_to_vue2_7",
+        "domains": [
+          "domain.vue2",
+          "domain.vue2_7",
+          "domain.testing"
+        ],
+        "forbidden_domains": [
+          "domain.vue3_vite"
+        ],
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Directional Vue 2 to Vue 2.7 migration uses only source and target domains."
+    },
+    {
+      "id": "recommend.migration.vue2_7_to_vue3",
+      "category": "skill_collision",
+      "mode": "recommend",
+      "input": "规划 Vue2.7迁移到Vue3 的升级方案",
+      "expected": {
+        "matched": true,
+        "skill": "skill.migration",
+        "pack": null,
+        "variant": "vue2_7_to_vue3",
+        "domains": [
+          "domain.vue2_7",
+          "domain.vue3_vite",
+          "domain.testing"
+        ],
+        "forbidden_domains": [
+          "domain.vue2"
+        ],
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Directional Vue 2.7 to Vue 3 migration uses source and target domains."
+    },
+    {
+      "id": "route.migration.vue_ambiguous",
+      "category": "skill_collision",
+      "mode": "route",
+      "input": "制定 Vue 升级迁移方案",
+      "expected": {
+        "matched": true,
+        "skill": "skill.migration",
+        "pack": null,
+        "variant": null,
+        "confidence": {
+          "min": "low",
+          "max": "high"
+        }
+      },
+      "notes": "Direction-ambiguous Vue upgrade keeps generic migration composition."
+    },
+    {
+      "id": "ask.forge_local_review",
+      "mode": "ask",
+      "input": "review spring service",
+      "expected": {"matched": true, "skill": "skill.code_review", "pack": "pack.spring_review", "decision": "forge_route", "host_action": "use_forge_composition", "confidence": {"min": "low", "max": "high"}},
+      "notes": "Local review remains Forge-first.",
+      "category": "ask_ownership"
+    },
+    {
+      "id": "ask.native_github_pr",
+      "mode": "ask",
+      "input": "review this pull request",
+      "expected": {"matched": true, "decision": "native_route", "host_action": "use_native_claude", "reason_code": "native_specialist_matched", "native_id": "native.review", "confidence": {"min": "medium", "max": "medium"}},
+      "notes": "GitHub PR review remains native-first.",
+      "category": "ask_ownership"
+    },
+    {
+      "id": "ask.explicit_skill",
+      "mode": "ask",
+      "input": "/review spring service",
+      "expected": {"matched": false, "decision": "explicit_skill_passthrough", "host_action": "use_native_claude", "reason_code": "explicit_skill", "native_id": null, "confidence": {"min": "low", "max": "low"}},
+      "notes": "Explicit slash input is host-owned.",
+      "category": "ask_ownership"
+    },
+    {
+      "id": "ask.native_fallback",
+      "mode": "ask",
+      "input": "xyzzy nothing",
+      "expected": {"matched": false, "decision": "native_fallback", "host_action": "use_native_claude", "reason_code": "no_forge_match", "native_id": null, "confidence": {"min": "low", "max": "low"}},
+      "notes": "No Forge match is an intentional native fallback.",
+      "category": "ask_ownership"
+    },
+    {
+      "id": "ask.every_endpoint_forge_test_implementation",
+      "mode": "ask",
+      "input": "write tests for every endpoint",
+      "expected": {"matched": true, "skill": "skill.test_implementation", "pack": null, "decision": "forge_route", "host_action": "use_forge_composition", "confidence": {"min": "low", "max": "high"}},
+      "notes": "A quantifier must not be mistaken for a recurring loop request.",
+      "category": "ask_ownership"
+    },
+    {
+      "id": "ask.mcp_native_claude_api",
+      "mode": "ask",
+      "input": "help me build an MCP server",
+      "expected": {"matched": true, "decision": "native_route", "host_action": "use_native_claude", "reason_code": "native_specialist_matched", "native_id": "native.claude_api", "confidence": {"min": "medium", "max": "medium"}},
+      "notes": "MCP work remains native Claude API routing.",
+      "category": "ask_ownership"
+    },
+    {
+      "id": "route.forge.validate",
+      "mode": "route",
+      "input": "forge validate",
+      "expected": {"matched": true, "skill": "skill.forge", "pack": null, "confidence": {"min": "low", "max": "high"}},
+      "notes": "An explicit Forge CLI validation command selects the Forge tooling skill.",
+      "category": "canonical_intent"
+    },
+    {
+      "id": "ask.forge.validate",
+      "mode": "ask",
+      "input": "forge validate",
+      "expected": {"matched": true, "skill": "skill.forge", "pack": null, "decision": "forge_route", "host_action": "use_forge_composition", "confidence": {"min": "low", "max": "high"}},
+      "notes": "Explicit Forge CLI operations remain Forge-first.",
+      "category": "ask_ownership"
+    },
+    {
+      "id": "route.llm_evaluation",
+      "mode": "route",
+      "input": "为提示词改动设计大模型评测和回归门禁",
+      "expected": {
+        "skill": "skill.llm_evaluation",
+        "pack": null,
+        "matched": true,
+        "confidence": {"min": "low", "max": "high"}
+      },
+      "notes": "Explicit LLM evaluation wording selects the dedicated skill rather than generic test design.",
+      "category": "skill_collision"
+    },
+    {
+      "id": "route.bailian_workflow",
+      "mode": "route",
+      "input": "百炼工作流加密解密与编排",
+      "expected": {
+        "skill": "skill.bailian_workflow",
+        "pack": null,
+        "matched": true,
+        "confidence": {"min": "low", "max": "high"}
+      },
+      "notes": "Explicit Bailian workflow wording selects the compatibility-preserving workflow skill.",
+      "category": "skill_collision"
+    },
+    {
+      "id": "ask.forge_bailian_workflow",
+      "mode": "ask",
+      "input": "百炼工作流导入配置加密",
+      "expected": {"matched": true, "skill": "skill.bailian_workflow", "pack": null, "decision": "forge_route", "host_action": "use_forge_composition", "confidence": {"min": "low", "max": "high"}},
+      "notes": "Bailian workflow operations are Forge-first after explicit routing.",
+      "category": "ask_ownership"
+    },
+    {
+      "id": "route.bailian.api_integration",
+      "mode": "route",
+      "input": "\u5982\u4f55\u8c03\u7528\u767e\u70bc\u6a21\u578b API",
+      "expected": {
+        "matched": true,
+        "skill": "skill.bailian_api",
+        "pack": null,
+        "confidence": {"min": "medium", "max": "medium"}
+      },
+      "notes": "Bailian model API work selects the API skill, never the encrypted workflow skill.",
+      "category": "skill_collision"
+    },
+    {
+      "id": "ask.forge_bailian_api",
+      "mode": "ask",
+      "input": "如何调用百炼模型 API",
+      "expected": {"matched": true, "skill": "skill.bailian_api", "pack": null, "decision": "forge_route", "host_action": "use_forge_composition", "confidence": {"min": "low", "max": "high"}},
+      "notes": "Explicit Bailian API work is Forge-first through the dedicated API skill.",
+      "category": "ask_ownership"
+    },
+    {
+      "id": "route.bailian.security_review",
+      "mode": "route",
+      "input": "\u5b89\u5168\u5ba1\u67e5\u767e\u70bc API \u7684\u6743\u9650\u548c\u5bc6\u94a5\u6cc4\u9732\u98ce\u9669",
+      "expected": {
+        "matched": true,
+        "skill": "skill.security_review",
+        "pack": null,
+        "confidence": {"min": "low", "max": "high"},
+        "forbidden_skills": ["skill.bailian_workflow", "skill.bailian_api"]
+      },
+      "notes": "Security review must retain ownership for Bailian API security concerns.",
+      "category": "skill_collision"
+    },
+    {
+      "id": "route.data_design.schema_index",
+      "mode": "route",
+      "input": "设计订单表结构和索引",
+      "expected": {
+        "matched": true,
+        "skill": "skill.data_design",
+        "pack": null,
+        "confidence": {"min": "low", "max": "high"}
+      },
+      "notes": "Schema and index design selects the data-design skill.",
+      "category": "canonical_intent"
+    },
+    {
+      "id": "route.dependency_audit.security_license",
+      "mode": "route",
+      "input": "审计项目依赖版本、CVE 和许可证",
+      "expected": {
+        "matched": true,
+        "skill": "skill.dependency_audit",
+        "pack": null,
+        "confidence": {"min": "low", "max": "high"}
+      },
+      "notes": "Dependency CVE and license analysis selects dependency-audit.",
+      "category": "canonical_intent"
+    },
+    {
+      "id": "route.auto_compact.context_pressure",
+      "mode": "route",
+      "input": "上下文要满了，压缩一下",
+      "expected": {
+        "matched": true,
+        "skill": "skill.auto_compact",
+        "pack": null,
+        "confidence": {"min": "medium", "max": "medium"}
+      },
+      "notes": "Explicit context-pressure wording selects auto-compact.",
+      "category": "canonical_intent"
+    }
+  ]
+}

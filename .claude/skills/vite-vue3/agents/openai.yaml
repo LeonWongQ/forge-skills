@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vite Vue 3"
+  short_description: "Implement verified Vue 3 and Vite application changes."
+  default_prompt: "Use $vite-vue3 to implement this change in the confirmed Vue 3 and Vite project."

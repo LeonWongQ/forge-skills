@@ -1,0 +1,101 @@
+{
+  "version": "1.1.0",
+  "description": "Template registry and intended usage mapping.",
+  "templates": [
+    {
+      "id": "template.default",
+      "path": "templates/default.md",
+      "name": "Default",
+      "best_for": [
+        "short answer",
+        "compact recommendation",
+        "general fallback"
+      ]
+    },
+    {
+      "id": "template.review_report",
+      "path": "templates/review-report.md",
+      "name": "Review Report",
+      "best_for": [
+        "code review",
+        "change review",
+        "risk review"
+      ]
+    },
+    {
+      "id": "template.debug_report",
+      "path": "templates/debug-report.md",
+      "name": "Debug Report",
+      "best_for": [
+        "root cause analysis",
+        "failure diagnosis",
+        "incident investigation"
+      ]
+    },
+    {
+      "id": "template.refactor_plan",
+      "path": "templates/refactor-plan.md",
+      "name": "Refactor Plan",
+      "best_for": [
+        "structural cleanup plan",
+        "safe refactor sequence"
+      ]
+    },
+    {
+      "id": "template.implementation_plan",
+      "path": "templates/implementation-plan.md",
+      "name": "Implementation Plan",
+      "best_for": [
+        "feature plan",
+        "fix plan",
+        "optimization rollout plan"
+      ]
+    },
+    {
+      "id": "template.explanation",
+      "path": "templates/explanation.md",
+      "name": "Explanation",
+      "best_for": [
+        "mechanism explanation",
+        "concept teaching",
+        "compare-and-contrast explanation"
+      ]
+    },
+    {
+      "id": "template.test_plan",
+      "path": "templates/test-plan.md",
+      "name": "Test Plan",
+      "best_for": [
+        "backend test planning",
+        "feature test planning",
+        "page/UI test planning",
+        "regression planning",
+        "release readiness test planning"
+      ]
+    },
+    {
+      "id": "template.test_report",
+      "path": "templates/test-report.md",
+      "name": "Test Report",
+      "best_for": [
+        "feature test reports",
+        "regression test reports",
+        "page/UI test reports",
+        "backend validation reports",
+        "release readiness summaries"
+      ]
+    },
+    {
+      "id": "template.exploration",
+      "path": "templates/exploration.md",
+      "name": "Exploration",
+      "best_for": [
+        "scope discovery",
+        "option enumeration",
+        "situation assessment",
+        "pre-orientation exploration",
+        "先看看 / 摸清现状 / 梳理一下"
+      ]
+    }
+  ]
+}

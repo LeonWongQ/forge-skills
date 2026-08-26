@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "registry/schemas/claude-code-host-result.schema.json",
+  "title": "Forge Claude Code Host Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "runtime_id", "request_id", "request_digest", "adapter_id", "adapter_version", "stage_id", "stage_index", "attempt", "generic_linkage", "status", "linkage", "output", "evidence", "diagnostics", "metadata"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "runtime_id": {"type": "string", "minLength": 1},
+    "request_id": {"type": "string", "minLength": 1},
+    "request_digest": {"$ref": "#/$defs/digest"},
+    "adapter_id": {"const": "forge.claude_code_host"},
+    "adapter_version": {"const": "1.0"},
+    "stage_id": {"type": "string", "pattern": "^engine\\.[a-z0-9_]+$"},
+    "stage_index": {"type": "integer", "minimum": 0},
+    "attempt": {"type": "integer", "minimum": 1},
+    "generic_linkage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["request_id", "request_digest"],
+      "properties": {
+        "request_id": {"type": "string", "minLength": 1},
+        "request_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "status": {"type": "string", "enum": ["succeeded", "failed", "blocked", "skipped"]},
+    "linkage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resolved_context_digest", "context_bundle_digest"],
+      "properties": {
+        "resolved_context_digest": {"$ref": "#/$defs/digest"},
+        "context_bundle_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "output": {},
+    "evidence": {"type": "array", "items": {"type": "object"}},
+    "diagnostics": {"type": "array", "items": {"type": "object"}},
+    "metadata": {"type": "object"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
+  }
+}

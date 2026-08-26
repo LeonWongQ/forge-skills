@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forge.local/registry/schemas/template-outputs.schema.json",
+  "title": "Forge Template Outputs Registry",
+  "description": "Schema for forge template-outputs.json — maps template ids to output schema files.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "description", "template_outputs"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "template_outputs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/templateOutputEntry"
+      }
+    }
+  },
+  "$defs": {
+    "templateId": {
+      "type": "string",
+      "pattern": "^template\\.[A-Za-z0-9_]+$"
+    },
+    "templateOutputSchemaPath": {
+      "type": "string",
+      "pattern": "^registry\\/schemas\\/template-[A-Za-z0-9._-]+-output\\.schema\\.json$"
+    },
+    "templateOutputEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["template_id", "schema"],
+      "properties": {
+        "template_id": {
+          "$ref": "#/$defs/templateId"
+        },
+        "schema": {
+          "$ref": "#/$defs/templateOutputSchemaPath"
+        }
+      }
+    }
+  }
+}

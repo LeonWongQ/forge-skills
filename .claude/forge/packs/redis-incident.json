@@ -1,0 +1,60 @@
+{
+  "id": "pack.redis_incident",
+  "name": "Redis Stale-Read Incident Pack",
+  "purpose": "Investigate stale-read or cache consistency incidents involving Redis, Spring, and MySQL style persistence flows.",
+  "when_to_use": [
+    "users see stale data after updates",
+    "cache invalidation appears incorrect",
+    "Redis consistency is part of an operational incident",
+    "write/read races or cache repopulation behavior are under investigation"
+  ],
+  "modules": {
+    "kernel": [
+      "kernel.claude"
+    ],
+    "runtime": [
+      "runtime.router",
+      "runtime.contract",
+      "runtime.conflict_resolution"
+    ],
+    "behaviors": [
+      "behavior.debug",
+      "behavior.review"
+    ],
+    "domains": [
+      "domain.java",
+      "domain.spring",
+      "domain.mysql",
+      "domain.redis",
+      "domain.testing"
+    ]
+  },
+  "workflow": "workflow.debug_analysis",
+  "template": "template.debug_report",
+  "checklists": [
+    "checklist.general_quality",
+    "checklist.debug",
+    "checklist.verification",
+    "checklist.delivery"
+  ],
+  "reports": [
+    "report.incident"
+  ],
+  "notes": [
+    "Promote verification rigor if a fix recommendation is proposed.",
+    "Audit write ordering, invalidation timing, and concurrent repopulation assumptions.",
+    "Escalate to workflow.full_default if remediation sequencing is required."
+  ],
+  "routing": {
+    "preferred_skill": "skill.incident",
+    "score_bonus": 15,
+    "keywords_any": [
+      "redis", "stale", "stale read", "旧数据", "缓存一致性",
+      "cache consistency", "incident", "陈旧"
+    ],
+    "keywords_all_groups": [
+      ["redis"],
+      ["stale", "旧数据", "陈旧", "一致性", "stale read"]
+    ]
+  }
+}

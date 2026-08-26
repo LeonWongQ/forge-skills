@@ -1,0 +1,4 @@
+interface:
+  display_name: "Incident Analysis"
+  short_description: "Investigate production incidents and plan mitigation."
+  default_prompt: "Use $incident to assess this production incident and determine next actions."

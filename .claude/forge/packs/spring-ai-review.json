@@ -1,0 +1,90 @@
+{
+  "id": "pack.spring_ai_review",
+  "name": "Spring AI Tool-Calling Review Pack",
+  "purpose": "Review Spring AI integrations for prompt construction quality, tool-calling safety, output handling reliability, observability, and security/privacy. Covers ChatClient, ToolCallback, @Tool, prompt templates, VectorStore, and structured output converter patterns.",
+  "when_to_use": [
+    "When reviewing or assessing Spring AI workflow code",
+    "When evaluating tool-calling definitions for safety",
+    "When reviewing prompt template construction",
+    "When assessing AI integration reliability and observability"
+  ],
+  "modules": {
+    "kernel": [
+      "kernel.claude"
+    ],
+    "runtime": [
+      "runtime.router",
+      "runtime.contract",
+      "runtime.conflict_resolution"
+    ],
+    "behaviors": [
+      "behavior.review"
+    ],
+    "domains": [
+      "domain.spring_ai",
+      "domain.spring",
+      "domain.java",
+      "domain.testing"
+    ]
+  },
+  "workflow": "workflow.light_review",
+  "template": "template.review_report",
+  "checklists": [
+    "checklist.general_quality",
+    "checklist.review",
+    "checklist.verification",
+    "checklist.delivery"
+  ],
+  "reports": [
+    "report.review_summary"
+  ],
+  "notes": [
+    "Add domain.mysql or domain.redis when repository/query or cache semantics are part of the AI workflow",
+    "Escalate to workflow.full_default if review becomes change-oriented",
+    "This pack provides the routing entry that domain.spring-ai needs to be discoverable through pack-first routing"
+  ],
+  "routing": {
+    "preferred_skill": "skill.code_review",
+    "score_bonus": 14,
+    "keywords_any": [
+      "spring ai",
+      "spring-ai",
+      "ai review",
+      "tool calling",
+      "prompt template",
+      "chat client",
+      "chat model",
+      "vector store",
+      "advisor",
+      "AI workflow review",
+      "LLM integration",
+      "AI 安全",
+      "AI 安全审查",
+      "AI集成评审",
+      "工具调用安全",
+      "prompt 审查",
+      "模型调用审查",
+      "AI工作流评审"
+    ],
+    "keywords_all_groups": [
+      [
+        "spring ai",
+        "spring-ai",
+        "ai",
+        "llm",
+        "AI",
+        "LLM"
+      ],
+      [
+        "review",
+        "评审",
+        "审一下",
+        "code review",
+        "安全",
+        "安全审查",
+        "review this",
+        "review code"
+      ]
+    ]
+  }
+}

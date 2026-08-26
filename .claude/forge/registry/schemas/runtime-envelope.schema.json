@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "registry/schemas/runtime-envelope.schema.json",
+  "title": "Forge Runtime Envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "runtime_id",
+    "status",
+    "resolved_context",
+    "resolved_context_digest",
+    "runtime_state",
+    "domain_resolution",
+    "ledger",
+    "adapter_request",
+    "adapter_result",
+    "stage_progress",
+    "output_validation"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.1"},
+    "runtime_id": {"type": "string", "minLength": 1},
+    "status": {"type": "string", "enum": ["initialized", "ready", "awaiting_adapter", "result_imported", "ready_for_validation", "completed", "validation_failed", "failed"]},
+    "created_at": {"type": ["string", "null"]},
+    "updated_at": {"type": ["string", "null"]},
+    "resolved_context": {"type": "object"},
+    "resolved_context_digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "runtime_state": {"type": "object"},
+    "domain_resolution": {"type": "object"},
+    "ledger": {"type": "object"},
+    "adapter_request": {"type": ["object", "null"]},
+    "adapter_result": {"type": ["object", "null"]},
+    "stage_progress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workflow_stages", "current_stage_index", "active_request", "attempts"],
+      "properties": {
+        "workflow_stages": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^engine\\.[a-z0-9_]+$"}},
+        "current_stage_index": {"type": "integer", "minimum": 0},
+        "active_request": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["request_id", "request_digest", "stage_id", "stage_index", "attempt"],
+          "properties": {
+            "request_id": {"type": "string", "minLength": 1},
+            "request_digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+            "stage_id": {"type": "string", "pattern": "^engine\\.[a-z0-9_]+$"},
+            "stage_index": {"type": "integer", "minimum": 0},
+            "attempt": {"type": "integer", "minimum": 1}
+          }
+        },
+        "attempts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}
+      }
+    },
+    "output_validation": {"type": ["object", "null"]}
+  }
+}

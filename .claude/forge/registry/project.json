@@ -1,0 +1,6 @@
+{
+  "name": "forge",
+  "display_name": "forge — Modular AI Engineering Operating System",
+  "version": "1.2.1",
+  "description": "A modular operating model for AI engineering assistants. Composable architecture: kernel → engine → behavior → domain → template → checklist."
+}

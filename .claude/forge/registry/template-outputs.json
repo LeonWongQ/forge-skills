@@ -1,0 +1,42 @@
+{
+  "version": "1.0.0",
+  "description": "Mapping of template ids to structured output schemas.",
+  "template_outputs": [
+    {
+      "template_id": "template.default",
+      "schema": "registry/schemas/template-default-output.schema.json"
+    },
+    {
+      "template_id": "template.review_report",
+      "schema": "registry/schemas/template-review-report-output.schema.json"
+    },
+    {
+      "template_id": "template.debug_report",
+      "schema": "registry/schemas/template-debug-report-output.schema.json"
+    },
+    {
+      "template_id": "template.refactor_plan",
+      "schema": "registry/schemas/template-refactor-plan-output.schema.json"
+    },
+    {
+      "template_id": "template.implementation_plan",
+      "schema": "registry/schemas/template-implementation-plan-output.schema.json"
+    },
+    {
+      "template_id": "template.explanation",
+      "schema": "registry/schemas/template-explanation-output.schema.json"
+    },
+    {
+      "template_id": "template.test_plan",
+      "schema": "registry/schemas/template-test-plan-output.schema.json"
+    },
+    {
+      "template_id": "template.test_report",
+      "schema": "registry/schemas/template-test-report-output.schema.json"
+    },
+    {
+      "template_id": "template.exploration",
+      "schema": "registry/schemas/template-exploration-output.schema.json"
+    }
+  ]
+}

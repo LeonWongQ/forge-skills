@@ -1,0 +1,173 @@
+{
+  "version": "1.1.0",
+  "description": "Predefined common task compositions built on current behavior, domain, and workflow ids.",
+  "compositions": [
+    {
+      "id": "composition.spring_cache_review",
+      "name": "Spring Cache Review",
+      "match_hints": [
+        "review spring cache",
+        "redis consistency review",
+        "stale data review"
+      ],
+      "primary_behavior": "behavior.review",
+      "secondary_behaviors": ["behavior.explain"],
+      "domains": [
+        "domain.java",
+        "domain.spring",
+        "domain.redis",
+        "domain.testing"
+      ],
+      "workflow": "workflow.light_review",
+      "template": "template.review_report",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.review",
+        "checklist.verification",
+        "checklist.delivery"
+      ]
+    },
+    {
+      "id": "composition.playwright_flaky_debug",
+      "name": "Playwright Flaky Test Debug",
+      "match_hints": [
+        "playwright flaky",
+        "ci test fail intermittently",
+        "browser test timeout"
+      ],
+      "primary_behavior": "behavior.debug",
+      "secondary_behaviors": [],
+      "domains": [
+        "domain.playwright",
+        "domain.testing"
+      ],
+      "workflow": "workflow.debug_analysis",
+      "template": "template.debug_report",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.debug",
+        "checklist.delivery"
+      ]
+    },
+    {
+      "id": "composition.spring_service_refactor",
+      "name": "Spring Service Refactor",
+      "match_hints": [
+        "refactor spring service",
+        "reduce duplication",
+        "make easier to test"
+      ],
+      "primary_behavior": "behavior.refactor",
+      "secondary_behaviors": ["behavior.review"],
+      "domains": [
+        "domain.java",
+        "domain.spring",
+        "domain.testing"
+      ],
+      "workflow": "workflow.full_default",
+      "template": "template.refactor_plan",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.refactor",
+        "checklist.verification",
+        "checklist.delivery"
+      ]
+    },
+    {
+      "id": "composition.spring_transaction_explanation",
+      "name": "Spring Transaction Explanation",
+      "match_hints": [
+        "explain transactional",
+        "self invocation",
+        "spring proxy explain"
+      ],
+      "primary_behavior": "behavior.explain",
+      "secondary_behaviors": [],
+      "domains": [
+        "domain.spring",
+        "domain.java"
+      ],
+      "workflow": "workflow.light_explanation",
+      "template": "template.explanation",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.delivery"
+      ]
+    },
+    {
+      "id": "composition.mysql_query_optimization",
+      "name": "MySQL Query Optimization",
+      "match_hints": [
+        "optimize query",
+        "mysql slow query",
+        "large tenant slow"
+      ],
+      "primary_behavior": "behavior.optimize",
+      "secondary_behaviors": ["behavior.explain"],
+      "domains": [
+        "domain.mysql",
+        "domain.testing"
+      ],
+      "workflow": "workflow.full_default",
+      "template": "template.implementation_plan",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.verification",
+        "checklist.delivery"
+      ]
+    },
+    {
+      "id": "composition.redis_stale_read_debug",
+      "name": "Redis Stale Read Debug",
+      "match_hints": [
+        "stale data after update",
+        "redis stale read",
+        "cache inconsistency"
+      ],
+      "primary_behavior": "behavior.debug",
+      "secondary_behaviors": ["behavior.review"],
+      "domains": [
+        "domain.java",
+        "domain.spring",
+        "domain.mysql",
+        "domain.redis",
+        "domain.testing"
+      ],
+      "workflow": "workflow.debug_analysis",
+      "template": "template.debug_report",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.debug",
+        "checklist.verification",
+        "checklist.delivery"
+      ]
+    },
+    {
+      "id": "composition.spring_ai_tool_calling_review",
+      "name": "Spring AI Tool-Calling Review",
+      "match_hints": [
+        "review spring ai",
+        "ai tool calling safety",
+        "prompt template review",
+        "chat client review",
+        "llm integration review"
+      ],
+      "primary_behavior": "behavior.review",
+      "secondary_behaviors": ["behavior.explain"],
+      "domains": [
+        "domain.spring_ai",
+        "domain.spring",
+        "domain.java",
+        "domain.testing"
+      ],
+      "workflow": "workflow.light_review",
+      "template": "template.review_report",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.review",
+        "checklist.verification",
+        "checklist.delivery"
+      ]
+    }
+  ]
+}

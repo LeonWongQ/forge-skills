@@ -1,0 +1,36 @@
+{
+  "version": "1.0.0",
+  "description": "Report registry and persistent artifact mapping.",
+  "reports": [
+    {
+      "id": "report.task",
+      "path": "reports/task-report.md",
+      "name": "Task Report",
+      "best_for": [
+        "task handoff",
+        "reusable engineering note",
+        "persistent task outcome"
+      ]
+    },
+    {
+      "id": "report.incident",
+      "path": "reports/incident-report.md",
+      "name": "Incident Report",
+      "best_for": [
+        "production incident",
+        "operational regression",
+        "postmortem-style artifact"
+      ]
+    },
+    {
+      "id": "report.review_summary",
+      "path": "reports/review-summary.md",
+      "name": "Review Summary",
+      "best_for": [
+        "compact reusable review artifact",
+        "team-facing review digest",
+        "PR outcome summary"
+      ]
+    }
+  ]
+}

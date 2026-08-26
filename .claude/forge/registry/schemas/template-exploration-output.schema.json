@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "registry/schemas/template-exploration-output.schema.json",
+  "title": "Exploration Output Schema",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "current_understanding",
+    "landscape",
+    "observations",
+    "possible_directions",
+    "recommended_next_step"
+  ],
+  "properties": {
+    "current_understanding": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["clarified_question", "known", "unknown"],
+      "properties": {
+        "clarified_question": {
+          "type": "string",
+          "minLength": 1
+        },
+        "known": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "unknown": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "landscape": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["components", "relationships", "scope_boundaries"],
+      "properties": {
+        "components": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["name", "role"],
+            "properties": {
+              "name": { "type": "string" },
+              "role": { "type": "string" }
+            }
+          }
+        },
+        "relationships": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "scope_boundaries": {
+          "type": "string"
+        }
+      }
+    },
+    "observations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["finding", "implication"],
+        "properties": {
+          "finding": { "type": "string" },
+          "implication": { "type": "string" }
+        }
+      }
+    },
+    "possible_directions": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["label", "description", "best_when", "tradeoff"],
+        "properties": {
+          "label": { "type": "string" },
+          "description": { "type": "string" },
+          "best_when": { "type": "string" },
+          "tradeoff": { "type": "string" }
+        }
+      }
+    },
+    "recommended_next_step": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["suggested_mode", "action"],
+      "properties": {
+        "suggested_mode": { "type": "string" },
+        "additional_info_needed": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "action": { "type": "string" }
+      }
+    }
+  }
+}

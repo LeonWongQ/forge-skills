@@ -1,0 +1,4 @@
+interface:
+  display_name: "Auto Compact"
+  short_description: "Manage long conversation context before limits are reached."
+  default_prompt: "Use $auto-compact to assess and manage the current context pressure."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Architecture Design"
+  short_description: "Design reliable system architecture and technical contracts."
+  default_prompt: "Use $architecture-design to design a reliable architecture for this system."

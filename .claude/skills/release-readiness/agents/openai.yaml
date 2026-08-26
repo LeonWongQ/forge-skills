@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release Readiness"
+  short_description: "Assess evidence, rollout, rollback, and release risk."
+  default_prompt: "Use $release-readiness to determine whether this change is ready to release."

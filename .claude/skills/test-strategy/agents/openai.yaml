@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test Strategy"
+  short_description: "Turn test evidence into targeted coverage decisions."
+  default_prompt: "Use $test-strategy to analyze these results and define the next testing priorities."

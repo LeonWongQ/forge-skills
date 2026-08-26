@@ -1,0 +1,4 @@
+interface:
+  display_name: "Dependency Audit"
+  short_description: "Audit dependencies for risk, conflicts, and upgrades."
+  default_prompt: "Use $dependency-audit to assess this project dependency set and recommend safe actions."

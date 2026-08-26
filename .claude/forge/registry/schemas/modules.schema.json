@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "registry/schemas/modules.schema.json",
+  "title": "Modules Registry Schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "description", "layers"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "layers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kernel",
+        "engine",
+        "runtime",
+        "behaviors",
+        "domains",
+        "templates",
+        "checklists",
+        "reports"
+      ],
+      "properties": {
+        "kernel": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/moduleEntry" }
+        },
+        "engine": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/moduleEntry" }
+        },
+        "runtime": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/moduleEntry" }
+        },
+        "behaviors": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/moduleEntry" }
+        },
+        "domains": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/moduleEntry" }
+        },
+        "templates": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/moduleEntry" }
+        },
+        "checklists": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/moduleEntry" }
+        },
+        "reports": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/moduleEntry" }
+        },
+        "skills": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/moduleEntry" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "moduleEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "name", "role"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z]+(\\.[a-z0-9_]+)+$"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

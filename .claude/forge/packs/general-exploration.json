@@ -1,0 +1,53 @@
+{
+  "id": "pack.general_exploration",
+  "name": "General Exploration Pack",
+  "purpose": "Pre-orientation exploration — scope discovery, option enumeration, situation assessment, and problem-space mapping before committing to a specific task mode. Covers the common \"let me look first / understand the current state / take stock\" pattern (Chinese equivalents: 先看看 / 摸清现状 / 梳理一下).",
+  "when_to_use": [
+    "user asks to explore or understand a codebase area before acting",
+    "user says let me look first / understand the current state / take stock / scope it (Chinese: 先看看 / 先摸清楚 / 先梳理一下 / 先调研 / 先盘点)",
+    "the problem space is ambiguous and needs scoping before committing",
+    "user wants options enumerated without premature narrowing",
+    "pre-orientation discovery before switching to plan/debug/refactor modes"
+  ],
+  "modules": {
+    "kernel": [
+      "kernel.claude"
+    ],
+    "runtime": [
+      "runtime.router",
+      "runtime.contract",
+      "runtime.conflict_resolution"
+    ],
+    "behaviors": [],
+    "domains": []
+  },
+  "workflow": "workflow.blocked_task",
+  "template": "template.exploration",
+  "checklists": [
+    "checklist.general_quality",
+    "checklist.delivery"
+  ],
+  "notes": [
+    "Domains are intentionally left empty — exploration discovers relevant domains dynamically from codebase context.",
+    "When exploration reveals a clear task mode, escalate to the appropriate skill (plan/debug/refactor/etc.).",
+    "The pack provides lightweight structure without forcing premature conclusions."
+  ],
+  "routing": {
+    "preferred_skill": "skill.explore",
+    "score_bonus": 10,
+    "keywords_any": [
+      "explore", "discovery", "scoping", "scope it", "investigate options",
+      "recon", "look into", "survey", "assess current state",
+      "先看看", "先分析下情况", "先摸清楚", "摸清楚",
+      "先调研一下", "先探索一下", "帮我梳理一下", "梳理一下",
+      "先盘点一下", "先看下现状", "先别急着实现", "先做个摸底",
+      "先了解一下", "现状", "梳理", "摸底", "调研", "探索",
+      "分析一下", "帮我分析", "分析现状", "分析当前项目",
+      "进步空间", "改进方向", "帮忙看看有什么问题"
+    ],
+    "keywords_all_groups": [
+      ["先", "explore", "discovery", "scoping", "exploration", "分析", "进步"],
+      ["看看", "摸清楚", "梳理", "盘点", "调研", "摸底", "了解", "现状", "一下", "改进", "帮忙"]
+    ]
+  }
+}

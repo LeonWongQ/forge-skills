@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forge.local/registry/schemas/reports.schema.json",
+  "title": "Forge Reports Registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "reports"],
+  "properties": {
+    "version": { "type": "string", "minLength": 1 },
+    "description": { "type": "string" },
+    "reports": {
+      "type": "array", "minItems": 1,
+      "items": { "$ref": "#/$defs/report" }
+    }
+  },
+  "$defs": {
+    "reportId": { "type": "string", "pattern": "^report\\.[A-Za-z0-9_]+$" },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "name"],
+      "properties": {
+        "id":   { "$ref": "#/$defs/reportId" },
+        "path": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "best_for": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

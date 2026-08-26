@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "registry/schemas/template-debug-report-output.schema.json",
+  "title": "Debug Report Output Schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "symptom_summary",
+    "key_evidence",
+    "ranked_hypotheses",
+    "most_likely_root_cause"
+  ],
+  "properties": {
+    "symptom_summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "key_evidence": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "ranked_hypotheses": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/hypothesis"
+      }
+    },
+    "most_likely_root_cause": {
+      "$ref": "#/$defs/rootCause"
+    },
+    "fix_options": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/fixOption"
+      }
+    },
+    "verification_plan": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "open_questions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "$defs": {
+    "hypothesis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "supporting_evidence", "confidence"],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "supporting_evidence": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "contradictory_or_missing_evidence": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "confidence": {
+          "type": "string",
+          "enum": ["High", "Medium", "Low"]
+        }
+      }
+    },
+    "rootCause": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "rationale", "confidence"],
+      "properties": {
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        },
+        "confidence": {
+          "type": "string",
+          "enum": ["High", "Medium", "Low"]
+        }
+      }
+    },
+    "fixOption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "why_it_should_help"],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "why_it_should_help": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tradeoffs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["root-cause-fix", "partial-fix", "mitigation"]
+        }
+      }
+    }
+  }
+}

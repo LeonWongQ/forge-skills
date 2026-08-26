@@ -1,0 +1,4 @@
+interface:
+  display_name: "Documentation"
+  short_description: "Create accurate, audience-focused technical documentation."
+  default_prompt: "Use $document to create clear documentation for this code or workflow."

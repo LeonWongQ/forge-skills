@@ -1,0 +1,60 @@
+{
+  "version": "1.1.0",
+  "description": "Registry of reusable task packs.",
+  "packs": [
+    {
+      "id": "pack.spring_review",
+      "path": "packs/spring-review.json",
+      "name": "Spring Service Review Pack",
+      "purpose": "Review Java/Spring service logic for correctness, maintainability, transactional risk, and testing confidence."
+    },
+    {
+      "id": "pack.playwright_debug",
+      "path": "packs/playwright-debug.json",
+      "name": "Playwright Flaky Test Debug Pack",
+      "purpose": "Diagnose flaky or environment-sensitive Playwright test failures with emphasis on locator quality, wait strategy, isolation, and CI behavior."
+    },
+    {
+      "id": "pack.redis_incident",
+      "path": "packs/redis-incident.json",
+      "name": "Redis Stale-Read Incident Pack",
+      "purpose": "Investigate stale-read or cache consistency incidents involving Redis, Spring, and MySQL style persistence flows."
+    },
+    {
+      "id": "pack.java_refactor",
+      "path": "packs/java-refactor.json",
+      "name": "Java Refactor Pack",
+      "purpose": "Plan or execute safe Java-focused refactoring for maintainability, structure, and testability improvement."
+    },
+    {
+      "id": "pack.general_test_report",
+      "path": "packs/general-test-report.json",
+      "name": "General Test Report Pack",
+      "purpose": "Generate a structured, cross-project test report summarizing execution results, defects, coverage, risks, and release recommendations."
+    },
+    {
+      "id": "pack.general_test_plan",
+      "path": "packs/general-test-plan.json",
+      "name": "General Test Plan Pack",
+      "purpose": "Create a structured, cross-project test plan defining scope, strategy, scenarios, resources, entry/exit criteria, schedule, risks, and deliverables."
+    },
+    {
+      "id": "pack.general_exploration",
+      "path": "packs/general-exploration.json",
+      "name": "General Exploration Pack",
+      "purpose": "Pre-orientation exploration — scope discovery, option enumeration, situation assessment for ambiguous or open-ended tasks before committing to a specific task mode."
+    },
+    {
+      "id": "pack.spring_ai_review",
+      "path": "packs/spring-ai-review.json",
+      "name": "Spring AI Tool-Calling Review Pack",
+      "purpose": "Review Spring AI integrations for prompt construction quality, tool-calling safety, output handling reliability, observability, and security/privacy."
+    },
+    {
+      "id": "pack.release_readiness",
+      "path": "packs/release-readiness.json",
+      "name": "Release Readiness Pack",
+      "purpose": "Assess production release readiness using evidence, operational safeguards, ownership, rollout, and rollback criteria."
+    }
+  ]
+}

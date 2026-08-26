@@ -1,0 +1,4 @@
+interface:
+  display_name: "Explore"
+  short_description: "Map a problem space before choosing an implementation path."
+  default_prompt: "Use $explore to inspect the current situation and map the viable options."

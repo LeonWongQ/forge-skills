@@ -1,0 +1,4 @@
+interface:
+  display_name: "Forge"
+  short_description: "Validate Forge registries, references, packs, and runtime state."
+  default_prompt: "Use $forge to validate the Forge workspace and report actionable failures."

@@ -1,0 +1,60 @@
+{
+  "id": "pack.release_readiness",
+  "name": "Release Readiness Pack",
+  "purpose": "Assess whether a production change has sufficient evidence, operational safeguards, ownership, rollout, and rollback readiness for a bounded go/no-go decision.",
+  "when_to_use": [
+    "making a release go/no-go decision",
+    "reviewing production deployment readiness",
+    "assessing release evidence, rollback, and monitoring coverage"
+  ],
+  "modules": {
+    "kernel": [
+      "kernel.claude"
+    ],
+    "runtime": [
+      "runtime.router",
+      "runtime.contract"
+    ],
+    "behaviors": [],
+    "domains": [
+      "domain.testing",
+      "domain.observability_reliability"
+    ],
+    "engine": [
+      "engine.discover",
+      "engine.evidence",
+      "engine.context",
+      "engine.reasoning",
+      "engine.planning",
+      "engine.execution",
+      "engine.verification",
+      "engine.delivery"
+    ]
+  },
+  "workflow": "workflow.full_default",
+  "template": "template.test_report",
+  "checklists": [
+    "checklist.general_quality",
+    "checklist.release_readiness",
+    "checklist.verification",
+    "checklist.delivery"
+  ],
+  "reports": [
+    "report.task"
+  ],
+  "notes": [
+    "Use this pack to aggregate release evidence, not to design a test strategy or investigate an active incident.",
+    "A conditional-go decision must name its owner, deadline, monitoring window, and rollback trigger."
+  ],
+  "routing": {
+    "preferred_skill": "skill.release_readiness",
+    "score_bonus": 10,
+    "keywords_any": [
+      "release readiness", "go/no-go", "release gate", "发版就绪", "发布评审", "上线检查", "发布门禁"
+    ],
+    "keywords_all_groups": [
+      ["release", "发布", "发版", "上线"],
+      ["readiness", "go/no-go", "gate", "评审", "检查", "门禁"]
+    ]
+  }
+}

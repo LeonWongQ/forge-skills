@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "registry/schemas/template-test-report-output.schema.json",
+  "title": "Test Report Output Schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "basic_information",
+    "test_objective",
+    "scope",
+    "execution_summary",
+    "coverage_summary",
+    "conclusion"
+  ],
+  "properties": {
+    "basic_information": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project", "version", "test_type", "environment", "period"],
+      "properties": {
+        "project": { "type": "string", "minLength": 1 },
+        "module": { "type": "string" },
+        "version": { "type": "string", "minLength": 1 },
+        "test_type": { "type": "string", "minLength": 1 },
+        "environment": { "type": "string", "minLength": 1 },
+        "period": { "type": "string", "minLength": 1 },
+        "testers": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "test_objective": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["in_scope", "out_of_scope"],
+      "properties": {
+        "in_scope": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "out_of_scope": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "test_basis": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "test_environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "system_version": { "type": "string" },
+        "platform": { "type": "string" },
+        "dependencies": { "type": "array", "items": { "type": "string" } },
+        "test_data": { "type": "string" },
+        "constraints": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "execution_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total_planned", "executed", "passed", "failed", "pass_rate"],
+      "properties": {
+        "total_planned": { "type": "integer", "minimum": 0 },
+        "executed": { "type": "integer", "minimum": 0 },
+        "passed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "blocked": { "type": "integer", "minimum": 0 },
+        "not_executed": { "type": "integer", "minimum": 0 },
+        "pass_rate": { "type": "string" },
+        "defect_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "coverage_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requirement_coverage": { "type": "string" },
+        "main_flow": { "type": "string" },
+        "alternative_flow": { "type": "string" },
+        "exception_flow": { "type": "string" },
+        "boundary_cases": { "type": "string" },
+        "non_functional": { "type": "string" }
+      }
+    },
+    "detailed_results": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/testResult" }
+    },
+    "defects": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/defect" }
+    },
+    "risks_and_limitations": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "conclusion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["overall_result", "rationale"],
+      "properties": {
+        "overall_result": {
+          "type": "string",
+          "enum": ["PASS", "CONDITIONAL PASS", "FAIL"]
+        },
+        "rationale": { "type": "string", "minLength": 1 },
+        "recommendation": { "type": "string" },
+        "conditions_or_follow_up": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  },
+  "$defs": {
+    "testResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "test_item", "expected_result", "actual_result", "status"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "test_item": { "type": "string", "minLength": 1 },
+        "expected_result": { "type": "string", "minLength": 1 },
+        "actual_result": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "enum": ["PASS", "FAIL", "BLOCKED"] },
+        "notes": { "type": "string" }
+      }
+    },
+    "defect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "severity", "summary", "status", "impact"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "severity": { "type": "string", "enum": ["Critical", "Major", "Minor"] },
+        "priority": { "type": "string", "enum": ["P1", "P2", "P3"] },
+        "summary": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "enum": ["Open", "Fixed", "Verified", "Closed"] },
+        "impact": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

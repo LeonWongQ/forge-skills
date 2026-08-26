@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "registry/schemas/template-default-output.schema.json",
+  "title": "Default Template Output Schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["result"],
+  "properties": {
+    "result": {
+      "type": "string",
+      "minLength": 1
+    },
+    "key_reasoning_or_findings": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "risks_or_unknowns": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "recommended_next_steps": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

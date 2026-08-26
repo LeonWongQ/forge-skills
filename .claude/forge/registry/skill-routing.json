@@ -1,0 +1,1197 @@
+{
+  "version": "1.0.2",
+  "description": "Skill routing bias configuration for forge CLI route/recommend behavior.",
+  "confidence_policy": {
+    "version": "v1",
+    "single_candidate_max": "medium",
+    "keyword_only_max": "low",
+    "tie_break_max": "medium",
+    "fallback_confidence": "low",
+    "ordinary_gap_low_max": 2,
+    "ordinary_gap_medium_max": 5,
+    "pack_can_promote": false
+  },
+  "keyword_sets": {
+    "test_design": [
+      "测试",
+      "test",
+      "test case",
+      "testcase",
+      "用例",
+      "测试用例",
+      "测试设计",
+      "测试方案",
+      "测试策略",
+      "测试计划",
+      "怎么测",
+      "如何测试",
+      "覆盖",
+      "覆盖率",
+      "场景",
+      "回归",
+      "验证",
+      "边界",
+      "异常场景",
+      "测试点",
+      "接口测试",
+      "单元测试",
+      "集成测试",
+      "e2e"
+    ],
+    "test_implementation": [
+      "write tests",
+      "add tests",
+      "implement tests",
+      "unit test",
+      "integration test",
+      "mock",
+      "stub",
+      "fixture",
+      "test implementation",
+      "补测试",
+      "写测试",
+      "补单测",
+      "补单元测试",
+      "写单元测试",
+      "补集成测试",
+      "写集成测试",
+      "集成测试",
+      "加测试用例",
+      "实现测试",
+      "补回归测试",
+      "测试实现",
+      "测试代码",
+      "测试类",
+      "桩",
+      "夹具",
+      "帮我补",
+      "帮我写",
+      "帮我加",
+      "加单测",
+      "写单测",
+      "补个测试",
+      "写个测试",
+      "补充测试",
+      "新增测试",
+      "编写测试",
+      "创建测试",
+      "生成测试",
+      "新建测试",
+      "加点测试",
+      "加些测试",
+      "补点测试",
+      "补充单测",
+      "补齐测试",
+      "vitest"
+    ],
+    "plan": [
+      "实现",
+      "改造",
+      "落地",
+      "分阶段",
+      "implementation",
+      "rollout"
+    ],
+    "migration": [
+      "migration",
+      "upgrade",
+      "compatibility",
+      "rollout",
+      "rollback",
+      "framework migration",
+      "版本升级",
+      "迁移",
+      "升级",
+      "兼容性",
+      "平滑迁移",
+      "回滚",
+      "回滚方案",
+      "升级方案",
+      "迁移方案",
+      "升级计划",
+      "兼容性评估"
+    ],
+    "refactor": [
+      "refactor",
+      "重构",
+      "整理代码",
+      "结构优化",
+      "restructure"
+    ],
+    "report": [
+      "report",
+      "测试报告",
+      "生成报告",
+      "输出报告",
+      "报告",
+      "test report",
+      "summary report",
+      "execution report",
+      "缺陷汇总",
+      "发布建议"
+    ],
+    "playwright_debug": [
+      "playwright",
+      "flaky",
+      "ci",
+      "不稳定",
+      "失败",
+      "locator",
+      "wait",
+      "超时",
+      "timeout"
+    ],
+    "incident": [
+      "incident",
+      "outage",
+      "production",
+      "postmortem",
+      "sev1",
+      "sev2",
+      "service degradation",
+      "availability",
+      "degradation",
+      "线上",
+      "生产",
+      "故障",
+      "事故",
+      "告警",
+      "降级",
+      "恢复",
+      "可用性",
+      "服务异常",
+      "事故复盘",
+      "生产问题",
+      "线上故障",
+      "线上异常"
+    ],
+    "error_analysis": [
+      "stack trace",
+      "traceback",
+      "异常栈",
+      "堆栈",
+      "报错日志",
+      "日志分析",
+      "错误分析"
+    ],
+    "debug": [
+      "debug",
+      "排查",
+      "定位",
+      "root cause",
+      "why failing",
+      "问题定位",
+      "诊断"
+    ],
+    "explore": [
+      "explore",
+      "discovery",
+      "scoping",
+      "scope it",
+      "investigate options",
+      "recon",
+      "look into",
+      "survey",
+      "assess current state",
+      "先看看",
+      "先分析下情况",
+      "先摸清楚",
+      "摸清楚",
+      "先调研一下",
+      "先探索一下",
+      "帮我梳理一下",
+      "梳理一下",
+      "先盘点一下",
+      "先看下现状",
+      "先别急着实现",
+      "先做个摸底",
+      "先了解一下"
+    ],
+    "page_test": [
+      "page test",
+      "UI test",
+      "E2E test",
+      "playwright test",
+      "browser test",
+      "web test",
+      "frontend test",
+      "test this page",
+      "页面测试",
+      "UI测试",
+      "E2E测试",
+      "前端测试",
+      "写页面测试",
+      "Playwright测试"
+    ],
+    "test_strategy": [
+      "test strategy",
+      "test gap analysis",
+      "auto-assertion",
+      "test optimization",
+      "analyze test report",
+      "review test results",
+      "coverage review",
+      "测试策略",
+      "测试缺口分析",
+      "断言策略",
+      "测试优化方案",
+      "分析测试报告",
+      "测试覆盖分析",
+      "基于报告设计测试",
+      "测试改进方案",
+      "缺口分析",
+      "缺口",
+      "分析报告",
+      "基于报告",
+      "测试改进"
+    ],
+    "implement": [
+      "implement",
+      "build this",
+      "write the code",
+      "code this up",
+      "make this work",
+      "根据方案实现",
+      "帮我实现",
+      "写代码",
+      "实现这个功能",
+      "按方案落地",
+      "实现接口",
+      "开发这个",
+      "实现",
+      "落地",
+      "代码实现"
+    ],
+    "architecture_design": [
+      "architecture",
+      "system design",
+      "component design",
+      "api design",
+      "data model",
+      "schema design",
+      "tech stack",
+      "microservice",
+      "integration design",
+      "架构设计",
+      "系统设计",
+      "技术方案",
+      "组件设计",
+      "API设计",
+      "数据库设计",
+      "技术选型",
+      "接口设计",
+      "如何设计架构",
+      "架构",
+      "怎么拆分"
+    ],
+    "security_review": [
+      "security",
+      "vulnerabilit",
+      "injection",
+      "XSS",
+      "CSRF",
+      "auth",
+      "OWASP",
+      "exploit",
+      "安全",
+      "漏洞",
+      "渗透",
+      "注入",
+      "越权",
+      "加密",
+      "脱敏"
+    ],
+    "data_design": [
+      "schema",
+      "index",
+      "normaliz",
+      "denormaliz",
+      "foreign key",
+      "primary key",
+      "DDL",
+      "建表",
+      "索引",
+      "范式",
+      "存储",
+      "分库分表",
+      "数据模型",
+      "表结构",
+      "数据库设计"
+    ],
+    "dependency_audit": [
+      "CVE",
+      "vulnerability",
+      "outdated",
+      "version conflict",
+      "dependency tree",
+      "license",
+      "npm audit",
+      "transitive",
+      "漏洞",
+      "过期依赖",
+      "依赖冲突",
+      "许可证",
+      "第三方",
+      "安全依赖",
+      "依赖升级"
+    ],
+    "release_readiness": [
+      "release readiness",
+      "go/no-go",
+      "release gate",
+      "deployment review",
+      "发版就绪",
+      "发布评审",
+      "上线检查",
+      "发布门禁",
+      "上线前评估"
+    ],
+    "contract_compatibility": [
+      "API contract compatibility",
+      "event contract compatibility",
+      "event schema compatibility",
+      "consumer compatibility",
+      "breaking API change",
+      "breaking event change",
+      "接口契约兼容性",
+      "接口兼容性评估",
+      "事件契约兼容性",
+      "事件模式兼容性",
+      "消费者兼容性",
+      "接口破坏性变更",
+      "事件破坏性变更"
+    ],
+    "vue2": [
+      "vue 2",
+      "vue2",
+      "vmd ui",
+      "vmd-ui",
+      "vue cli",
+      "webpack vue 2",
+      "vue2组件",
+      "vue 2功能"
+    ],
+    "vue2_7": [
+      "vue 2.7",
+      "vue2.7",
+      "vue 2.7 vite",
+      "vue2.7 vite",
+      "vue 2.7功能"
+    ],
+    "vue3_vite": [
+      "vue 3",
+      "vue3",
+      "vue 3 vite",
+      "vue3 vite",
+      "vue 3组件",
+      "vue3组件",
+      "vue 3功能"
+    ],
+    "review_intent": [
+      "review",
+      "审查",
+      "评审",
+      "审一下",
+      "检查改动"
+    ],
+    "vue2_to_vue2_7": [
+      "vue 2 升级到 vue 2.7",
+      "vue2升级到vue2.7",
+      "vue 2 迁移到 vue 2.7",
+      "vue2迁移到vue2.7",
+      "vue 2 -> vue 2.7",
+      "vue2->vue2.7"
+    ],
+    "vue2_7_to_vue3": [
+      "vue 2.7 升级到 vue 3",
+      "vue2.7升级到vue3",
+      "vue 2.7 迁移到 vue 3",
+      "vue2.7迁移到vue3",
+      "vue 2.7 -> vue 3",
+      "vue2.7->vue3"
+    ],
+    "llm_evaluation": [
+      "llm evaluation",
+      "llm eval",
+      "prompt evaluation",
+      "prompt regression",
+      "model benchmark",
+      "大模型评测",
+      "llm评测",
+      "提示词评测",
+      "提示词回归",
+      "模型评测",
+      "回归评测",
+      "评测集"
+    ],
+    "bailian_workflow": [
+      "百炼工作流",
+      "百炼编排",
+      "百炼加密",
+      "百炼解密",
+      "百炼导入",
+      "工作流导入配置"
+    ],
+    "bailian_api": [
+      "bailian api",
+      "dashscope api",
+      "dashscope sdk",
+      "bailian sdk",
+      "百炼 api",
+      "百炼模型 api",
+      "百炼模型调用",
+      "百炼 sdk"
+    ]
+  },
+  "generic_trigger_penalties": {
+    "skill.plan": [
+      "plan",
+      "方案",
+      "计划",
+      "设计一下",
+      "怎么做",
+      "implementation plan"
+    ],
+    "skill.explore": [
+      "分析一下",
+      "帮我分析"
+    ]
+  },
+  "skill_bias_rules": {
+    "skill.test_design": {
+      "keyword_bonus": [
+        {
+          "keyword_set": "test_design",
+          "weight": 5,
+          "evidence_type": "test_keyword"
+        }
+      ],
+      "keyword_penalty": [
+        {
+          "keyword_set": "test_implementation",
+          "weight": 4,
+          "evidence_type": "test_implementation_penalty"
+        },
+        {
+          "keyword_set": "playwright_debug",
+          "weight": 3,
+          "evidence_type": "playwright_debug_penalty"
+        },
+        {
+          "keyword_set": "report",
+          "weight": 3,
+          "evidence_type": "report_penalty"
+        }
+      ]
+    },
+    "skill.test_implementation": {
+      "keyword_bonus": [
+        {
+          "keyword_set": "test_implementation",
+          "weight": 7,
+          "evidence_type": "test_implementation_keyword"
+        }
+      ]
+    },
+    "skill.plan": {
+      "keyword_bonus": [
+        {
+          "keyword_set": "plan",
+          "weight": 3,
+          "evidence_type": "plan_keyword"
+        }
+      ],
+      "keyword_penalty_when_trigger_matched": [
+        {
+          "keyword_set": "test_design",
+          "weight": 4,
+          "evidence_type": "test_design_penalty"
+        },
+        {
+          "keyword_set": "test_implementation",
+          "weight": 4,
+          "evidence_type": "test_implementation_penalty"
+        },
+        {
+          "keyword_set": "migration",
+          "weight": 3,
+          "evidence_type": "migration_penalty"
+        },
+        {
+          "keyword_set": "explore",
+          "weight": 2,
+          "evidence_type": "explore_penalty"
+        }
+      ]
+    },
+    "skill.migration": {
+      "keyword_bonus": [
+        {
+          "keyword_set": "migration",
+          "weight": 6,
+          "evidence_type": "migration_keyword"
+        }
+      ]
+    },
+    "skill.refactor": {
+      "keyword_bonus": [
+        {
+          "keyword_set": "refactor",
+          "weight": 3,
+          "evidence_type": "refactor_keyword"
+        }
+      ],
+      "keyword_penalty": [
+        {
+          "keyword_set": "migration",
+          "weight": 3,
+          "evidence_type": "migration_penalty"
+        }
+      ]
+    },
+    "skill.incident": {
+      "keyword_bonus": [
+        {
+          "keyword_set": "incident",
+          "weight": 6,
+          "evidence_type": "incident_keyword"
+        }
+      ],
+      "keyword_penalty_when_absent": [
+        {
+          "required_set": "incident",
+          "keyword_set": "error_analysis",
+          "weight": 3,
+          "evidence_type": "incident_absent_penalty"
+        }
+      ]
+    },
+    "skill.debug": {
+      "keyword_bonus": [
+        {
+          "keyword_set": "debug",
+          "weight": 3,
+          "evidence_type": "debug_keyword"
+        },
+        {
+          "keyword_set": "playwright_debug",
+          "weight": 4,
+          "evidence_type": "playwright_debug_keyword"
+        }
+      ],
+      "keyword_penalty": [
+        {
+          "keyword_set": "incident",
+          "weight": 2,
+          "evidence_type": "incident_penalty"
+        }
+      ]
+    },
+    "skill.error_analysis": {
+      "keyword_bonus": [
+        {
+          "keyword_set": "error_analysis",
+          "weight": 4,
+          "evidence_type": "error_analysis_keyword"
+        }
+      ],
+      "keyword_penalty": [
+        {
+          "keyword_set": "incident",
+          "weight": 3,
+          "evidence_type": "incident_penalty"
+        }
+      ]
+    },
+    "skill.report": {
+      "keyword_bonus": [
+        {
+          "keyword_set": "report",
+          "weight": 5,
+          "evidence_type": "report_keyword"
+        }
+      ],
+      "postmortem_hint_bonus": {
+        "requires_keyword_set": "incident",
+        "text_any": [
+          "复盘",
+          "postmortem"
+        ],
+        "weight": 2,
+        "evidence_type": "postmortem_hint"
+      }
+    },
+    "skill.explore": {
+      "keyword_bonus": [
+        {
+          "keyword_set": "explore",
+          "weight": 4,
+          "evidence_type": "explore_keyword"
+        }
+      ]
+    },
+    "skill.page_test": {
+      "keyword_bonus": [
+        {
+          "keyword_set": "page_test",
+          "weight": 5,
+          "evidence_type": "page_test_keyword"
+        },
+        {
+          "keyword_set": "playwright_debug",
+          "weight": 3,
+          "evidence_type": "playwright_debug_keyword"
+        }
+      ],
+      "keyword_penalty": [
+        {
+          "keyword_set": "test_design",
+          "weight": 2,
+          "evidence_type": "test_design_penalty"
+        }
+      ]
+    },
+    "skill.test_strategy": {
+      "keyword_bonus": [
+        {
+          "keyword_set": "test_strategy",
+          "weight": 5,
+          "evidence_type": "test_strategy_keyword"
+        },
+        {
+          "keyword_set": "report",
+          "weight": 2,
+          "evidence_type": "report_keyword"
+        }
+      ],
+      "keyword_penalty": [
+        {
+          "keyword_set": "test_implementation",
+          "weight": 3,
+          "evidence_type": "test_implementation_penalty"
+        }
+      ],
+      "keyword_penalty_when_trigger_matched": [
+        {
+          "keyword_set": "test_design",
+          "weight": 2,
+          "evidence_type": "test_design_penalty"
+        }
+      ]
+    },
+    "skill.implement": {
+      "keyword_bonus": [
+        {
+          "keyword_set": "implement",
+          "weight": 6,
+          "evidence_type": "implement_keyword"
+        }
+      ],
+      "keyword_penalty": [
+        {
+          "keyword_set": "test_implementation",
+          "weight": 3,
+          "evidence_type": "test_implementation_penalty"
+        },
+        {
+          "keyword_set": "plan",
+          "weight": 2,
+          "evidence_type": "plan_penalty"
+        }
+      ]
+    },
+    "skill.architecture_design": {
+      "keyword_bonus": [
+        {
+          "keyword_set": "architecture_design",
+          "weight": 6,
+          "evidence_type": "architecture_design_keyword"
+        }
+      ],
+      "keyword_penalty": [
+        {
+          "keyword_set": "plan",
+          "weight": 2,
+          "evidence_type": "plan_penalty"
+        },
+        {
+          "keyword_set": "explore",
+          "weight": 2,
+          "evidence_type": "explore_penalty"
+        }
+      ]
+    },
+    "skill.security_review": {
+      "keyword_bonus": [
+        {
+          "keyword_set": "security_review",
+          "weight": 6,
+          "evidence_type": "security_review_keyword"
+        }
+      ],
+      "keyword_penalty": [
+        {
+          "keyword_set": "test_design",
+          "weight": 2,
+          "evidence_type": "test_design_penalty"
+        }
+      ]
+    },
+    "skill.data_design": {
+      "keyword_bonus": [
+        {
+          "keyword_set": "data_design",
+          "weight": 6,
+          "evidence_type": "data_design_keyword"
+        }
+      ],
+      "keyword_penalty": [
+        {
+          "keyword_set": "architecture_design",
+          "weight": 2,
+          "evidence_type": "architecture_design_penalty"
+        },
+        {
+          "keyword_set": "plan",
+          "weight": 2,
+          "evidence_type": "plan_penalty"
+        }
+      ]
+    },
+    "skill.dependency_audit": {
+      "keyword_bonus": [
+        {
+          "keyword_set": "dependency_audit",
+          "weight": 6,
+          "evidence_type": "dependency_audit_keyword"
+        }
+      ],
+      "keyword_penalty": [
+        {
+          "keyword_set": "security_review",
+          "weight": 2,
+          "evidence_type": "security_review_penalty"
+        },
+        {
+          "keyword_set": "migration",
+          "weight": 2,
+          "evidence_type": "migration_penalty"
+        }
+      ]
+    },
+    "skill.release_readiness": {
+      "keyword_bonus": [
+        {
+          "keyword_set": "release_readiness",
+          "weight": 8,
+          "evidence_type": "release_readiness_keyword"
+        }
+      ],
+      "keyword_penalty": [
+        {
+          "keyword_set": "incident",
+          "weight": 2,
+          "evidence_type": "incident_penalty"
+        }
+      ]
+    },
+    "skill.contract_compatibility": {
+      "keyword_bonus": [
+        {
+          "keyword_set": "contract_compatibility",
+          "weight": 6,
+          "evidence_type": "contract_compatibility_keyword"
+        }
+      ]
+    },
+    "skill.vite_vue3": {
+      "keyword_bonus": [
+        {
+          "keyword_set": "vue3_vite",
+          "weight": 6,
+          "evidence_type": "vue3_vite_keyword"
+        }
+      ],
+      "keyword_penalty": [
+        {
+          "keyword_set": "test_implementation",
+          "weight": 5,
+          "evidence_type": "test_implementation_penalty"
+        },
+        {
+          "keyword_set": "page_test",
+          "weight": 5,
+          "evidence_type": "page_test_penalty"
+        },
+        {
+          "keyword_set": "debug",
+          "weight": 5,
+          "evidence_type": "debug_penalty"
+        },
+        {
+          "keyword_set": "refactor",
+          "weight": 5,
+          "evidence_type": "refactor_penalty"
+        },
+        {
+          "keyword_set": "review_intent",
+          "weight": 5,
+          "evidence_type": "review_intent_penalty"
+        }
+      ]
+    },
+    "skill.vue2": {
+      "keyword_bonus": [
+        {
+          "keyword_set": "vue2",
+          "weight": 6,
+          "evidence_type": "vue2_keyword"
+        }
+      ],
+      "keyword_penalty": [
+        {
+          "keyword_set": "test_implementation",
+          "weight": 5,
+          "evidence_type": "test_implementation_penalty"
+        },
+        {
+          "keyword_set": "page_test",
+          "weight": 5,
+          "evidence_type": "page_test_penalty"
+        },
+        {
+          "keyword_set": "debug",
+          "weight": 5,
+          "evidence_type": "debug_penalty"
+        },
+        {
+          "keyword_set": "refactor",
+          "weight": 5,
+          "evidence_type": "refactor_penalty"
+        },
+        {
+          "keyword_set": "review_intent",
+          "weight": 5,
+          "evidence_type": "review_intent_penalty"
+        },
+        {
+          "keyword_set": "vue2_7",
+          "weight": 6,
+          "evidence_type": "vue2_7_exclusion_penalty"
+        }
+      ]
+    },
+    "skill.vue2_7": {
+      "keyword_bonus": [
+        {
+          "keyword_set": "vue2_7",
+          "weight": 6,
+          "evidence_type": "vue2_7_keyword"
+        }
+      ],
+      "keyword_penalty": [
+        {
+          "keyword_set": "test_implementation",
+          "weight": 5,
+          "evidence_type": "test_implementation_penalty"
+        },
+        {
+          "keyword_set": "page_test",
+          "weight": 5,
+          "evidence_type": "page_test_penalty"
+        },
+        {
+          "keyword_set": "debug",
+          "weight": 5,
+          "evidence_type": "debug_penalty"
+        },
+        {
+          "keyword_set": "refactor",
+          "weight": 5,
+          "evidence_type": "refactor_penalty"
+        },
+        {
+          "keyword_set": "review_intent",
+          "weight": 5,
+          "evidence_type": "review_intent_penalty"
+        }
+      ]
+    },
+    "skill.llm_evaluation": {
+      "keyword_bonus": [
+        {
+          "keyword_set": "llm_evaluation",
+          "weight": 7,
+          "evidence_type": "llm_evaluation_keyword"
+        }
+      ],
+      "keyword_penalty": [
+        {
+          "keyword_set": "test_implementation",
+          "weight": 4,
+          "evidence_type": "test_implementation_penalty"
+        }
+      ]
+    },
+    "skill.bailian_workflow": {
+      "keyword_bonus": [
+        {
+          "keyword_set": "bailian_workflow",
+          "weight": 7,
+          "evidence_type": "bailian_workflow_keyword"
+        }
+      ]
+    },
+    "skill.bailian_api": {
+      "keyword_bonus": [
+        {
+          "keyword_set": "bailian_api",
+          "weight": 7,
+          "evidence_type": "bailian_api_keyword"
+        }
+      ]
+    }
+  },
+  "tie_break_rules": [
+    {
+      "skills": [
+        "skill.contract_compatibility",
+        "skill.migration"
+      ],
+      "max_gap": 5,
+      "prefer_if_set_present": "contract_compatibility"
+    },
+    {
+      "skills": [
+        "skill.test_design",
+        "skill.plan"
+      ],
+      "max_gap": 3,
+      "prefer_if_set_present": "test_design",
+      "avoid_if_set_present": "plan"
+    },
+    {
+      "skills": [
+        "skill.test_implementation",
+        "skill.test_design"
+      ],
+      "max_gap": 4,
+      "prefer_if_set_present": "test_implementation"
+    },
+    {
+      "skills": [
+        "skill.test_implementation",
+        "skill.plan"
+      ],
+      "max_gap": 4,
+      "prefer_if_set_present": "test_implementation"
+    },
+    {
+      "skills": [
+        "skill.migration",
+        "skill.plan"
+      ],
+      "max_gap": 4,
+      "prefer_if_set_present": "migration"
+    },
+    {
+      "skills": [
+        "skill.migration",
+        "skill.refactor"
+      ],
+      "max_gap": 4,
+      "prefer_if_set_present": "migration"
+    },
+    {
+      "skills": [
+        "skill.incident",
+        "skill.debug"
+      ],
+      "max_gap": 4,
+      "prefer_if_set_present": "incident"
+    },
+    {
+      "skills": [
+        "skill.incident",
+        "skill.error_analysis"
+      ],
+      "max_gap": 4,
+      "prefer_if_set_present": "incident"
+    },
+    {
+      "skills": [
+        "skill.explore",
+        "skill.plan"
+      ],
+      "max_gap": 3,
+      "prefer_if_set_present": "explore"
+    },
+    {
+      "skills": [
+        "skill.debug",
+        "skill.test_design"
+      ],
+      "max_gap": 4,
+      "prefer_if_set_present": "playwright_debug"
+    },
+    {
+      "skills": [
+        "skill.report",
+        "skill.test_design"
+      ],
+      "max_gap": 3,
+      "prefer_if_set_present": "report"
+    },
+    {
+      "skills": [
+        "skill.page_test",
+        "skill.debug"
+      ],
+      "max_gap": 4,
+      "prefer_if_set_present": "page_test"
+    },
+    {
+      "skills": [
+        "skill.test_strategy",
+        "skill.test_design"
+      ],
+      "max_gap": 3,
+      "prefer_if_set_present": "test_strategy"
+    },
+    {
+      "skills": [
+        "skill.test_strategy",
+        "skill.report"
+      ],
+      "max_gap": 3,
+      "prefer_if_set_present": "test_strategy"
+    },
+    {
+      "skills": [
+        "skill.implement",
+        "skill.plan"
+      ],
+      "max_gap": 4,
+      "prefer_if_set_present": "implement"
+    },
+    {
+      "skills": [
+        "skill.implement",
+        "skill.test_implementation"
+      ],
+      "max_gap": 4,
+      "prefer_if_set_present": "implement"
+    },
+    {
+      "skills": [
+        "skill.architecture_design",
+        "skill.plan"
+      ],
+      "max_gap": 3,
+      "prefer_if_set_present": "architecture_design"
+    },
+    {
+      "skills": [
+        "skill.architecture_design",
+        "skill.explore"
+      ],
+      "max_gap": 3,
+      "prefer_if_set_present": "architecture_design"
+    },
+    {
+      "skills": [
+        "skill.security_review",
+        "skill.code_review"
+      ],
+      "max_gap": 3,
+      "prefer_if_set_present": "security_review"
+    },
+    {
+      "skills": [
+        "skill.data_design",
+        "skill.architecture_design"
+      ],
+      "max_gap": 3,
+      "prefer_if_set_present": "data_design"
+    },
+    {
+      "skills": [
+        "skill.dependency_audit",
+        "skill.security_review"
+      ],
+      "max_gap": 3,
+      "prefer_if_set_present": "dependency_audit"
+    },
+    {
+      "skills": [
+        "skill.vite_vue3",
+        "skill.implement"
+      ],
+      "max_gap": 4,
+      "prefer_if_set_present": "vue3_vite"
+    },
+    {
+      "skills": [
+        "skill.vue2",
+        "skill.implement"
+      ],
+      "max_gap": 4,
+      "prefer_if_set_present": "vue2"
+    },
+    {
+      "skills": [
+        "skill.vue2_7",
+        "skill.implement"
+      ],
+      "max_gap": 4,
+      "prefer_if_set_present": "vue2_7"
+    },
+    {
+      "skills": [
+        "skill.vite_vue3",
+        "skill.implement"
+      ],
+      "max_gap": 4,
+      "prefer_if_set_present": "vue3_vite"
+    },
+    {
+      "skills": [
+        "skill.code_review",
+        "skill.vite_vue3"
+      ],
+      "max_gap": 5,
+      "prefer_if_set_present": "review_intent"
+    },
+    {
+      "skills": [
+        "skill.llm_evaluation",
+        "skill.test_design"
+      ],
+      "max_gap": 4,
+      "prefer_if_set_present": "llm_evaluation"
+    },
+    {
+      "skills": [
+        "skill.bailian_api",
+        "skill.security_review"
+      ],
+      "max_gap": 4,
+      "prefer_if_set_present": "security_review"
+    }
+  ],
+  "ask_policy": {
+    "version": "v2",
+    "ownership_order": ["runtime", "explicit_skill", "native_first", "forge_first", "native_fallback"],
+    "forge_first_skills": ["skill.code_review", "skill.plan", "skill.explore", "skill.debug", "skill.implement", "skill.refactor", "skill.optimize", "skill.dependency_audit", "skill.test_design", "skill.test_implementation", "skill.test_strategy", "skill.page_test", "skill.incident", "skill.error_analysis", "skill.release_readiness", "skill.contract_compatibility", "skill.architecture_design", "skill.security_review", "skill.data_design", "skill.document", "skill.report", "skill.explain", "skill.migration", "skill.vite_vue3", "skill.vue2", "skill.vue2_7", "skill.llm_evaluation", "skill.bailian_workflow", "skill.bailian_api", "skill.forge"],
+    "native_first": [
+      {"id": "native.claude_api", "skill": "claude-api", "invocation": "skill", "reason_code": "native_specialist_matched", "triggers": ["claude api", "anthropic api", "anthropic sdk", "claude sdk", "mcp", "mcp server", "mcp tool", "prompt caching", "tool use", "agent sdk"]},
+      {"id": "native.run", "skill": "run", "invocation": "skill", "reason_code": "native_specialist_matched", "triggers": ["运行应用", "启动应用", "start the app", "run the app", "截图应用", "screenshot the app"]},
+      {"id": "native.update_config", "skill": "update-config", "invocation": "skill", "reason_code": "native_specialist_matched", "triggers": ["settings.json", "claude code hook", "claude code 权限", "permissions", "hooks", "环境变量", "environment variable"]},
+      {"id": "native.review", "skill": "review", "invocation": "skill", "reason_code": "native_specialist_matched", "triggers": ["github pr", "pull request", "github review", "github pull request"]},
+      {"id": "native.deep_research", "skill": "deep-research", "invocation": "skill", "reason_code": "native_specialist_matched", "triggers": ["深度研究", "多来源研究", "deep research", "multi-source research", "fact-check"]},
+      {"id": "native.dataviz", "skill": "dataviz", "invocation": "skill", "reason_code": "native_specialist_matched", "triggers": ["数据可视化", "chart", "graph", "dashboard", "visualization"]},
+      {"id": "native.loop", "skill": "loop", "invocation": "skill", "reason_code": "native_specialist_matched", "triggers": ["每隔", "定时", "循环执行", "every day", "every week", "every hour", "every minute", "run this every", "recurring", "schedule this"]},
+      {"id": "native.keybindings_help", "skill": "keybindings-help", "invocation": "skill", "reason_code": "native_specialist_matched", "triggers": ["keybindings", "快捷键", "keybindings.json", "keyboard shortcut"]}
+    ]
+  }
+}

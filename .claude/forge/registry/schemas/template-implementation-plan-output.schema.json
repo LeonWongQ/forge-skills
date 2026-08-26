@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "registry/schemas/template-implementation-plan-output.schema.json",
+  "title": "Implementation Plan Output Schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "objective",
+    "assumptions_and_constraints",
+    "proposed_approach",
+    "ordered_implementation_steps",
+    "validation_plan"
+  ],
+  "properties": {
+    "objective": {
+      "type": "string",
+      "minLength": 1
+    },
+    "assumptions_and_constraints": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "proposed_approach": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ordered_implementation_steps": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/implementationStep"
+      }
+    },
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "validation_plan": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "follow_up_opportunities": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "$defs": {
+    "implementationStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step", "action", "rationale"],
+      "properties": {
+        "step": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "action": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dependency": {
+          "type": "string"
+        },
+        "risk_note": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

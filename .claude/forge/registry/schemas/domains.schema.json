@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forge.local/registry/schemas/domains.schema.json",
+  "title": "Forge Domains Registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "domains"],
+  "properties": {
+    "version": { "type": "string", "minLength": 1 },
+    "description": { "type": "string" },
+    "domains": {
+      "type": "array", "minItems": 1,
+      "items": { "$ref": "#/$defs/domain" }
+    }
+  },
+  "$defs": {
+    "domainId": { "type": "string", "pattern": "^domain\\.[A-Za-z0-9_]+$" },
+    "domain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "name"],
+      "properties": {
+        "id":   { "$ref": "#/$defs/domainId" },
+        "path": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "aliases": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "activation_signals": { "type": "object" },
+        "related_domains": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

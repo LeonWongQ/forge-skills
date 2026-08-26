@@ -1,0 +1,4 @@
+interface:
+  display_name: "Page Test"
+  short_description: "Run reliable Playwright page tests and content extraction."
+  default_prompt: "Use $page-test to test this page or extract its visible content with Playwright."

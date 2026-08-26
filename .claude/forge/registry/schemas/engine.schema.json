@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "engine.schema.json",
+  "title": "Engine Registry Schema",
+  "description": "Schema for engine.json — deprecated, points to workflows.json",
+  "type": "object",
+  "required": ["deprecated", "moved_to", "reason"],
+  "properties": {
+    "deprecated": {
+      "type": "boolean",
+      "description": "Must be true; engine.json is deprecated"
+    },
+    "moved_to": {
+      "type": "string",
+      "description": "Path to the replacement registry file"
+    },
+    "reason": {
+      "type": "string",
+      "description": "Explanation of the deprecation and migration"
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Debug"
+  short_description: "Diagnose failures with evidence-driven root cause analysis."
+  default_prompt: "Use $debug to diagnose this failure and identify its root cause."

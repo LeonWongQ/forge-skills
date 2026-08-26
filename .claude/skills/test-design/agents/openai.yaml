@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test Design"
+  short_description: "Design risk-based test scope, scenarios, and criteria."
+  default_prompt: "Use $test-design to define the test strategy and priority scenarios for this change."

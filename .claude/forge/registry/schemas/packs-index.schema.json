@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forge.local/registry/schemas/packs-index.schema.json",
+  "title": "Forge Packs Index Registry",
+  "description": "Schema for forge registry/packs.json index file.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "packs"],
+  "properties": {
+    "version": { "type": "string", "minLength": 1 },
+    "description": { "type": "string" },
+    "packs": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/packIndexEntry" }
+    }
+  },
+  "$defs": {
+    "packId": {
+      "type": "string",
+      "pattern": "^pack\\.[A-Za-z0-9_]+$"
+    },
+    "packIndexEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "path", "purpose"],
+      "properties": {
+        "id":      { "$ref": "#/$defs/packId" },
+        "name":    { "type": "string", "minLength": 1 },
+        "path":    { "type": "string", "minLength": 1, "pattern": "^packs\\/.*\\.json$" },
+        "purpose": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

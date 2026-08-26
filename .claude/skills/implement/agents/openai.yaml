@@ -1,0 +1,4 @@
+interface:
+  display_name: "Implement"
+  short_description: "Implement scoped code changes with verification evidence."
+  default_prompt: "Use $implement to implement this requested change and verify the result."

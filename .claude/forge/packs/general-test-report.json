@@ -1,0 +1,54 @@
+{
+  "id": "pack.general_test_report",
+  "name": "General Test Report Pack",
+  "purpose": "Generate a structured, cross-project test report summarizing execution results, defects, coverage, risks, and release recommendations.",
+  "when_to_use": [
+    "summarizing test execution results after a test cycle",
+    "reporting feature, regression, integration, or UAT test outcomes",
+    "providing release readiness assessment with defect and risk summary",
+    "documenting test conclusions for stakeholder sign-off"
+  ],
+  "modules": {
+    "kernel": [
+      "kernel.claude"
+    ],
+    "runtime": [
+      "runtime.router",
+      "runtime.contract"
+    ],
+    "behaviors": [
+      "behavior.review"
+    ],
+    "domains": [
+      "domain.testing"
+    ]
+  },
+  "workflow": "workflow.light_review",
+  "template": "template.test_report",
+  "checklists": [
+    "checklist.general_quality",
+    "checklist.verification",
+    "checklist.delivery"
+  ],
+  "reports": [
+    "report.task"
+  ],
+  "notes": [
+    "Use the general-test/report/test-report.md template for the output structure.",
+    "Apply general-test/report/test-report-checklist.md as a dedicated quality gate.",
+    "Follow general-test/report/test-report-workflow.md for step-by-step execution guidance.",
+    "Escalate to workflow.full_default if the report requires deeper investigation or remediation planning."
+  ],
+  "routing": {
+    "preferred_skill": "skill.report",
+    "score_bonus": 10,
+    "keywords_any": [
+      "test report", "测试报告", "execution results", "缺陷汇总",
+      "coverage", "release recommendation", "测试结果"
+    ],
+    "keywords_all_groups": [
+      ["test", "测试"],
+      ["report", "报告"]
+    ]
+  }
+}

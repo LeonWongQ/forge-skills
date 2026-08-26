@@ -1,0 +1,244 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forge.local/registry/schemas/skill-routing.schema.json",
+  "title": "Forge Skill Routing Configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "keyword_sets",
+    "generic_trigger_penalties",
+    "skill_bias_rules",
+    "tie_break_rules"
+  ],
+  "properties": {
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string"
+    },
+    "confidence_policy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "single_candidate_max", "keyword_only_max", "tie_break_max", "fallback_confidence", "ordinary_gap_low_max", "ordinary_gap_medium_max", "pack_can_promote"],
+      "properties": {
+        "version": {"type": "string"},
+        "single_candidate_max": {"enum": ["low", "medium", "high"]},
+        "keyword_only_max": {"enum": ["low", "medium", "high"]},
+        "tie_break_max": {"enum": ["low", "medium", "high"]},
+        "fallback_confidence": {"enum": ["low", "medium", "high"]},
+        "ordinary_gap_low_max": {"type": "integer", "minimum": 0},
+        "ordinary_gap_medium_max": {"type": "integer", "minimum": 0},
+        "pack_can_promote": {"type": "boolean"}
+      }
+    },
+    "keyword_sets": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "generic_trigger_penalties": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "skill_bias_rules": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/skillBiasRule"
+      }
+    },
+    "tie_break_rules": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/tieBreakRule"
+      }
+    },
+    "ask_policy": {"$ref": "#/$defs/askPolicy"}
+  },
+  "$defs": {
+    "weightedKeywordRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "keyword_set",
+        "weight",
+        "evidence_type"
+      ],
+      "properties": {
+        "keyword_set": {
+          "type": "string",
+          "minLength": 1
+        },
+        "weight": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "evidence_type": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "weightedKeywordRuleWhenAbsent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required_set",
+        "keyword_set",
+        "weight",
+        "evidence_type"
+      ],
+      "properties": {
+        "required_set": {
+          "type": "string",
+          "minLength": 1
+        },
+        "keyword_set": {
+          "type": "string",
+          "minLength": 1
+        },
+        "weight": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "evidence_type": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "postmortemHintBonus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requires_keyword_set",
+        "text_any",
+        "weight",
+        "evidence_type"
+      ],
+      "properties": {
+        "requires_keyword_set": {
+          "type": "string",
+          "minLength": 1
+        },
+        "text_any": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "weight": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "evidence_type": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "skillBiasRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "keyword_bonus": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/weightedKeywordRule"
+          }
+        },
+        "keyword_penalty": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/weightedKeywordRule"
+          }
+        },
+        "keyword_penalty_when_trigger_matched": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/weightedKeywordRule"
+          }
+        },
+        "keyword_penalty_when_absent": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/weightedKeywordRuleWhenAbsent"
+          }
+        },
+        "postmortem_hint_bonus": {
+          "$ref": "#/$defs/postmortemHintBonus"
+        }
+      }
+    },
+    "askPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "ownership_order", "forge_first_skills", "native_first"],
+      "properties": {
+        "version": {"type": "string", "minLength": 1},
+        "ownership_order": {"type": "array", "items": {"enum": ["runtime", "explicit_skill", "native_first", "forge_first", "native_fallback"]}, "minItems": 5, "maxItems": 5, "uniqueItems": true},
+        "forge_first_skills": {"type": "array", "items": {"type": "string", "pattern": "^skill\\.[A-Za-z0-9_]+$"}, "uniqueItems": true},
+        "native_first": {"type": "array", "items": {"$ref": "#/$defs/nativeFirstEntry"}}
+      }
+    },
+    "nativeFirstEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "skill", "invocation", "reason_code", "triggers"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^native\\.[A-Za-z0-9_]+$"},
+        "skill": {"type": "string", "minLength": 1},
+        "invocation": {"enum": ["skill", "builtin", "command"]},
+        "reason_code": {"type": "string", "minLength": 1},
+        "triggers": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "tieBreakRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "skills",
+        "max_gap",
+        "prefer_if_set_present"
+      ],
+      "properties": {
+        "skills": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "string",
+            "pattern": "^skill\\.[A-Za-z0-9_]+$"
+          }
+        },
+        "max_gap": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "prefer_if_set_present": {
+          "type": "string",
+          "minLength": 1
+        },
+        "avoid_if_set_present": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

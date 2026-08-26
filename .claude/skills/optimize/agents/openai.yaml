@@ -1,0 +1,4 @@
+interface:
+  display_name: "Optimize"
+  short_description: "Improve performance through measurement and verification."
+  default_prompt: "Use $optimize to measure this bottleneck and implement a verified improvement."

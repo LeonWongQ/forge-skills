@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "registry/schemas/template-refactor-plan-output.schema.json",
+  "title": "Refactor Plan Output Schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "refactor_goal",
+    "current_structural_problems",
+    "proposed_refactor_strategy",
+    "step_by_step_transformation_plan",
+    "behavior_preservation_controls",
+    "verification_plan"
+  ],
+  "properties": {
+    "refactor_goal": {
+      "type": "string",
+      "minLength": 1
+    },
+    "current_structural_problems": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "proposed_refactor_strategy": {
+      "type": "string",
+      "minLength": 1
+    },
+    "step_by_step_transformation_plan": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/refactorStep"
+      }
+    },
+    "behavior_preservation_controls": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "risks_and_constraints": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "verification_plan": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "non_goals": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "$defs": {
+    "refactorStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step", "intended_change", "structural_benefit"],
+      "properties": {
+        "step": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "intended_change": {
+          "type": "string",
+          "minLength": 1
+        },
+        "structural_benefit": {
+          "type": "string",
+          "minLength": 1
+        },
+        "important_caution_or_dependency": {
+          "type": "string"
+        },
+        "verification_note": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

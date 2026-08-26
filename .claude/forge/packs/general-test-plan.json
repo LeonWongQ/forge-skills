@@ -1,0 +1,52 @@
+{
+  "id": "pack.general_test_plan",
+  "name": "General Test Plan Pack",
+  "purpose": "Create a structured, cross-project test plan defining scope, strategy, scenarios, resources, entry/exit criteria, schedule, risks, and deliverables.",
+  "when_to_use": [
+    "planning testing for a feature, release, or change",
+    "defining test strategy, scope, and coverage before execution begins",
+    "aligning stakeholders on test priorities, schedule, and responsibilities",
+    "establishing entry/exit criteria and risk mitigation for a test cycle"
+  ],
+  "modules": {
+    "kernel": [
+      "kernel.claude"
+    ],
+    "runtime": [
+      "runtime.router",
+      "runtime.contract"
+    ],
+    "behaviors": [
+      "behavior.document"
+    ],
+    "domains": [
+      "domain.testing"
+    ]
+  },
+  "workflow": "workflow.full_default",
+  "template": "template.test_plan",
+  "checklists": [
+    "checklist.general_quality",
+    "checklist.verification",
+    "checklist.delivery"
+  ],
+  "reports": [],
+  "notes": [
+    "Use the general-test/plan/test-plan.md template for the output structure.",
+    "Apply general-test/plan/test-plan-checklist.md as a dedicated quality gate.",
+    "Follow general-test/plan/test-plan-workflow.md for step-by-step execution guidance.",
+    "This pack focuses on planning. Use general-test-report for reporting executed results."
+  ],
+  "routing": {
+    "preferred_skill": "skill.test_design",
+    "score_bonus": 12,
+    "keywords_any": [
+      "test plan", "测试计划", "测试方案", "测试设计",
+      "测试策略", "test design", "怎么测", "如何测试"
+    ],
+    "keywords_all_groups": [
+      ["test", "测试"],
+      ["plan", "计划", "设计", "strategy", "策略"]
+    ]
+  }
+}

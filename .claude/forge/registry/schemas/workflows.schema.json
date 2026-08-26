@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "registry/schemas/workflows.schema.json",
+  "title": "Workflows Registry Schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "description", "default_workflow", "workflows"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "default_workflow": {
+      "type": "string",
+      "pattern": "^workflow\\.[a-z0-9_]+$"
+    },
+    "workflows": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/workflowEntry" }
+    }
+  },
+  "$defs": {
+    "workflowEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "stages", "recommended_for"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^workflow\\.[a-z0-9_]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "stages": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "pattern": "^engine\\.[a-z0-9_]+$"
+          }
+        },
+        "recommended_for": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

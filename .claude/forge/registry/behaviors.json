@@ -1,0 +1,198 @@
+{
+  "version": "1.1.0",
+  "description": "Behavior registry with routing metadata and default composition hints.",
+  "behaviors": [
+    {
+      "id": "behavior.review",
+      "path": "behaviors/review.md",
+      "name": "Review",
+      "primary_use_cases": [
+        "code review",
+        "change review",
+        "risk assessment",
+        "quality assessment",
+        "maintainability review"
+      ],
+      "activation_signals": {
+        "request_signals": [
+          "review this",
+          "code review",
+          "assess this change",
+          "find issues",
+          "identify risks",
+          "is this safe?"
+        ],
+        "task_shapes": [
+          "code review",
+          "design review",
+          "test review",
+          "migration review",
+          "change risk assessment"
+        ]
+      },
+      "default_template": "template.review_report",
+      "default_checklists": [
+        "checklist.general_quality",
+        "checklist.review",
+        "checklist.delivery"
+      ]
+    },
+    {
+      "id": "behavior.debug",
+      "path": "behaviors/debug.md",
+      "name": "Debug",
+      "primary_use_cases": [
+        "bug diagnosis",
+        "root cause analysis",
+        "failure investigation",
+        "flaky behavior investigation"
+      ],
+      "activation_signals": {
+        "request_signals": [
+          "debug this",
+          "why is this failing?",
+          "find the root cause",
+          "investigate this error",
+          "diagnose this issue"
+        ],
+        "task_shapes": [
+          "runtime failure investigation",
+          "flaky test diagnosis",
+          "integration failure analysis",
+          "regression investigation"
+        ]
+      },
+      "default_template": "template.debug_report",
+      "default_checklists": [
+        "checklist.general_quality",
+        "checklist.debug",
+        "checklist.delivery"
+      ]
+    },
+    {
+      "id": "behavior.refactor",
+      "path": "behaviors/refactor.md",
+      "name": "Refactor",
+      "primary_use_cases": [
+        "structural cleanup",
+        "complexity reduction",
+        "testability improvement",
+        "responsibility separation"
+      ],
+      "activation_signals": {
+        "request_signals": [
+          "refactor this",
+          "clean this up",
+          "reduce duplication",
+          "make this easier to test",
+          "simplify this class"
+        ],
+        "task_shapes": [
+          "service decomposition",
+          "long-method cleanup",
+          "responsibility separation",
+          "coupling reduction"
+        ]
+      },
+      "default_template": "template.refactor_plan",
+      "default_checklists": [
+        "checklist.general_quality",
+        "checklist.refactor",
+        "checklist.delivery"
+      ]
+    },
+    {
+      "id": "behavior.optimize",
+      "path": "behaviors/optimize.md",
+      "name": "Optimize",
+      "primary_use_cases": [
+        "performance improvement",
+        "latency reduction",
+        "resource efficiency",
+        "cost reduction"
+      ],
+      "activation_signals": {
+        "request_signals": [
+          "optimize this",
+          "this is slow",
+          "improve performance",
+          "reduce latency",
+          "high CPU usage"
+        ],
+        "task_shapes": [
+          "slow query investigation",
+          "hot path optimization",
+          "cache efficiency improvement",
+          "resource-heavy data processing"
+        ]
+      },
+      "default_template": "template.implementation_plan",
+      "default_checklists": [
+        "checklist.general_quality",
+        "checklist.verification",
+        "checklist.delivery"
+      ]
+    },
+    {
+      "id": "behavior.document",
+      "path": "behaviors/document.md",
+      "name": "Document",
+      "primary_use_cases": [
+        "write docs",
+        "runbook authoring",
+        "README creation",
+        "knowledge transfer"
+      ],
+      "activation_signals": {
+        "request_signals": [
+          "document this",
+          "write docs",
+          "create a runbook",
+          "write a guide",
+          "summarize this for the team"
+        ],
+        "task_shapes": [
+          "README writing",
+          "runbook creation",
+          "architecture note",
+          "onboarding guide"
+        ]
+      },
+      "default_template": "template.default",
+      "default_checklists": [
+        "checklist.general_quality",
+        "checklist.delivery"
+      ]
+    },
+    {
+      "id": "behavior.explain",
+      "path": "behaviors/explain.md",
+      "name": "Explain",
+      "primary_use_cases": [
+        "concept explanation",
+        "mechanism explanation",
+        "compare approaches",
+        "teaching-oriented clarification"
+      ],
+      "activation_signals": {
+        "request_signals": [
+          "explain this",
+          "how does this work?",
+          "why does this happen?",
+          "what is the difference between",
+          "help me understand"
+        ],
+        "task_shapes": [
+          "framework mechanism explanation",
+          "architectural concept explanation",
+          "compare-and-contrast explanation"
+        ]
+      },
+      "default_template": "template.explanation",
+      "default_checklists": [
+        "checklist.general_quality",
+        "checklist.delivery"
+      ]
+    }
+  ]
+}

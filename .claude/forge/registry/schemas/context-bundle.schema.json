@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "registry/schemas/context-bundle.schema.json",
+  "title": "Forge Context Bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "bundle_id", "runtime_id", "source", "encoding", "workflow", "layers", "bundle_digest"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "bundle_id": {"type": "string", "minLength": 1},
+    "runtime_id": {"type": "string", "minLength": 1},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resolved_context_digest"],
+      "properties": {
+        "resolved_context_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "encoding": {"const": "utf-8"},
+    "workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "stages"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^workflow\\.[a-z0-9_]+$"},
+        "stages": {"type": "array", "items": {"type": "string", "pattern": "^engine\\.[a-z0-9_]+$"}}
+      }
+    },
+    "layers": {"type": "array", "items": {"$ref": "#/$defs/layer"}},
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["estimation", "max_estimated_tokens", "included_estimated_tokens", "skipped_modules"],
+      "properties": {
+        "estimation": {"type": "string", "minLength": 1},
+        "max_estimated_tokens": {"type": "integer", "minimum": 1},
+        "included_estimated_tokens": {"type": "integer", "minimum": 0},
+        "skipped_modules": {"type": "array", "items": {"$ref": "#/$defs/skipped_module"}}
+      }
+    },
+    "bundle_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "layer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "modules"],
+      "properties": {
+        "id": {"type": "string", "enum": ["kernel", "runtime", "skills", "packs", "behaviors", "engine", "domains", "templates", "checklists", "reports"]},
+        "modules": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/module"}}
+      }
+    },
+    "skipped_module": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "layer", "estimated_tokens", "reason"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "layer": {"type": "string", "enum": ["kernel", "runtime", "skills", "packs", "behaviors", "engine", "domains", "templates", "checklists", "reports"]},
+        "estimated_tokens": {"type": "integer", "minimum": 1},
+        "reason": {"const": "estimated_token_budget_exceeded"}
+      }
+    },
+    "module": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "layer", "position", "sources", "path", "byte_size", "content_digest", "content"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "layer": {"type": "string", "enum": ["kernel", "runtime", "skills", "packs", "behaviors", "engine", "domains", "templates", "checklists", "reports"]},
+        "position": {"type": "integer", "minimum": 0},
+        "sources": {"type": "array", "items": {"type": "string"}},
+        "path": {"type": "string", "pattern": "^(\\.(claude|codex|cursor)/|\\./|\\.\\./)"},
+        "byte_size": {"type": "integer", "minimum": 0},
+        "content_digest": {"$ref": "#/$defs/digest"},
+        "content": {"type": "string"}
+      }
+    }
+  }
+}

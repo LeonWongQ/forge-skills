@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forge.local/registry/schemas/route-regression.schema.json",
+  "title": "Forge Route Regression Corpus v2",
+  "type": "object", "additionalProperties": false,
+  "required": ["version", "cases"],
+  "properties": {"version":{"type":"string"},"description":{"type":"string"},"cases":{"type":"array","minItems":1,"items":{"$ref":"#/$defs/case"}}},
+  "$defs": {
+    "skill":{"anyOf":[{"type":"string","pattern":"^skill\\.[A-Za-z0-9_]+$"},{"type":"null"}]},
+    "pack":{"anyOf":[{"type":"string","pattern":"^pack\\.[A-Za-z0-9_]+$"},{"type":"null"}]},
+    "variant":{"anyOf":[{"type":"string","minLength":1},{"type":"null"}]},
+    "domain":{"type":"string","pattern":"^domain\\."},
+    "confidence":{"enum":["low","medium","high"]},
+    "expectation":{"type":"object","additionalProperties":false,"required":["matched","confidence"],"properties":{"matched":{"type":"boolean"},"skill":{"$ref":"#/$defs/skill"},"pack":{"$ref":"#/$defs/pack"},"variant":{"$ref":"#/$defs/variant"},"domains":{"type":"array","items":{"$ref":"#/$defs/domain"}},"forbidden_domains":{"type":"array","items":{"$ref":"#/$defs/domain"}},"confidence":{"type":"object","additionalProperties":false,"required":["min","max"],"properties":{"min":{"$ref":"#/$defs/confidence"},"max":{"$ref":"#/$defs/confidence"}}},"diagnostics":{"type":"object","additionalProperties":{"type":["string","integer","null","boolean","array"]}},"forbidden_skills":{"type":"array","items":{"type":"string","pattern":"^skill\\."}},"forbidden_packs":{"type":"array","items":{"type":"string","pattern":"^pack\\."}},"decision":{"enum":["forge_route","native_route","explicit_skill_passthrough","native_fallback"]},"host_action":{"enum":["use_forge_composition","use_native_claude"]},"reason_code":{"type":"string"},"native_id":{"type":["string","null"]}}},
+    "case":{"type":"object","additionalProperties":false,"required":["id","category","mode","input","expected"],"properties":{"id":{"type":"string","minLength":1},"category":{"enum":["canonical_intent","paraphrase","skill_collision","pack_selection","pack_abstention","no_match","confidence_calibration","historical_regression","ask_ownership"]},"mode":{"enum":["route","recommend","ask"]},"input":{"type":"string","minLength":1},"preferred_skill":{"type":"string","pattern":"^skill\\.[A-Za-z0-9_]+$"},"expected":{"$ref":"#/$defs/expectation"},"notes":{"type":"string"}}}
+  }
+}

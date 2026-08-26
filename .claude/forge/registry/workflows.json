@@ -1,0 +1,85 @@
+{
+  "version": "1.1.0",
+  "description": "Workflow path registry for engine stage sequences.",
+  "default_workflow": "workflow.full_default",
+  "workflows": [
+    {
+      "id": "workflow.full_default",
+      "name": "Full Default Workflow",
+      "stages": [
+        "engine.discover",
+        "engine.evidence",
+        "engine.context",
+        "engine.reasoning",
+        "engine.planning",
+        "engine.execution",
+        "engine.verification",
+        "engine.delivery"
+      ],
+      "recommended_for": [
+        "non-trivial engineering tasks",
+        "change-oriented work",
+        "correctness-sensitive review/debug/refactor/optimize tasks"
+      ]
+    },
+    {
+      "id": "workflow.light_explanation",
+      "name": "Light Explanation Workflow",
+      "stages": [
+        "engine.discover",
+        "engine.context",
+        "engine.reasoning",
+        "engine.delivery"
+      ],
+      "recommended_for": [
+        "concept explanation",
+        "framework mechanism explanation",
+        "compare-and-contrast explanation"
+      ]
+    },
+    {
+      "id": "workflow.light_review",
+      "name": "Light Review Workflow",
+      "stages": [
+        "engine.discover",
+        "engine.evidence",
+        "engine.reasoning",
+        "engine.delivery"
+      ],
+      "recommended_for": [
+        "compact review tasks",
+        "low-risk targeted code evaluation"
+      ]
+    },
+    {
+      "id": "workflow.debug_analysis",
+      "name": "Debug Analysis Workflow",
+      "stages": [
+        "engine.discover",
+        "engine.evidence",
+        "engine.context",
+        "engine.reasoning",
+        "engine.delivery"
+      ],
+      "recommended_for": [
+        "root-cause investigation",
+        "flaky test analysis",
+        "diagnosis without direct implementation"
+      ]
+    },
+    {
+      "id": "workflow.blocked_task",
+      "name": "Blocked Task Workflow",
+      "stages": [
+        "engine.discover",
+        "engine.evidence",
+        "engine.context",
+        "engine.delivery"
+      ],
+      "recommended_for": [
+        "insufficient evidence situations",
+        "blocked analysis that still requires a useful response"
+      ]
+    }
+  ]
+}

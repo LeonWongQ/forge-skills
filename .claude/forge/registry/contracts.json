@@ -1,0 +1,40 @@
+{
+  "version": "1.0.0",
+  "description": "Fixture-backed JSON Schema API and event compatibility catalog.",
+  "contracts": [
+    {
+      "id": "contract.customer_api",
+      "name": "Customer API response",
+      "kind": "api",
+      "format": "json-schema",
+      "baseline_schema": "artifacts/contracts/customer-api/baseline.schema.json",
+      "current_schema": "artifacts/contracts/customer-api/current.schema.json",
+      "compatibility": {
+        "baseline_to_current": "required",
+        "current_to_baseline": "required"
+      },
+      "fixtures": {
+        "baseline_valid": ["tests/fixtures/contracts/customer-api/baseline-valid/customer.json"],
+        "current_valid": ["tests/fixtures/contracts/customer-api/current-valid/customer.json"],
+        "invalid": ["tests/fixtures/contracts/customer-api/invalid/missing-id.json"]
+      }
+    },
+    {
+      "id": "contract.order_created_event",
+      "name": "Order created event",
+      "kind": "event",
+      "format": "json-schema",
+      "baseline_schema": "artifacts/contracts/order-created-event/baseline.schema.json",
+      "current_schema": "artifacts/contracts/order-created-event/current.schema.json",
+      "compatibility": {
+        "baseline_to_current": "required",
+        "current_to_baseline": "not_required"
+      },
+      "fixtures": {
+        "baseline_valid": ["tests/fixtures/contracts/order-created-event/baseline-valid/event.json"],
+        "current_valid": ["tests/fixtures/contracts/order-created-event/current-valid/event.json"],
+        "invalid": ["tests/fixtures/contracts/order-created-event/invalid/missing-event-id.json"]
+      }
+    }
+  ]
+}

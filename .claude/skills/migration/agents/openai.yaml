@@ -1,0 +1,4 @@
+interface:
+  display_name: "Migration"
+  short_description: "Plan safe upgrades and migrations with rollback paths."
+  default_prompt: "Use $migration to plan this upgrade with compatibility checks and rollback steps."

@@ -1,0 +1,53 @@
+{
+  "id": "pack.playwright_debug",
+  "name": "Playwright Flaky Test Debug Pack",
+  "purpose": "Diagnose flaky or environment-sensitive Playwright test failures with emphasis on locator quality, wait strategy, isolation, and CI behavior.",
+  "when_to_use": [
+    "Playwright tests fail intermittently",
+    "tests pass locally but fail in CI",
+    "UI waits or locators seem unstable",
+    "browser automation diagnosis is the primary task"
+  ],
+  "modules": {
+    "kernel": [
+      "kernel.claude"
+    ],
+    "runtime": [
+      "runtime.router",
+      "runtime.contract",
+      "runtime.conflict_resolution"
+    ],
+    "behaviors": [
+      "behavior.debug"
+    ],
+    "domains": [
+      "domain.playwright",
+      "domain.testing"
+    ]
+  },
+  "workflow": "workflow.debug_analysis",
+  "template": "template.debug_report",
+  "checklists": [
+    "checklist.general_quality",
+    "checklist.debug",
+    "checklist.delivery"
+  ],
+  "reports": [],
+  "notes": [
+    "Escalate to workflow.full_default if the task expands into code change recommendations.",
+    "Use trace, screenshot, and locator evidence where available.",
+    "Keep hypothesis ranking explicit when the failure is intermittent."
+  ],
+  "routing": {
+    "preferred_skill": "skill.debug",
+    "score_bonus": 14,
+    "keywords_any": [
+      "playwright", "flaky", "ci", "locator", "wait", "e2e",
+      "测试失败", "不稳定"
+    ],
+    "keywords_all_groups": [
+      ["playwright"],
+      ["flaky", "失败", "不稳定", "ci"]
+    ]
+  }
+}

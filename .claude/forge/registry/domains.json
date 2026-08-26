@@ -1,0 +1,369 @@
+{
+  "version": "1.1.0",
+  "description": "Domain registry with activation metadata and related-domain hints.",
+  "domains": [
+    {
+      "id": "domain.java",
+      "path": "domains/java.md",
+      "name": "Java",
+      "aliases": [
+        "java",
+        "jvm"
+      ],
+      "activation_signals": {
+        "request_signals": [
+          "Java method review",
+          "null handling concern",
+          "exception behavior concern",
+          "stream logic issue",
+          "thread-safety concern"
+        ],
+        "artifact_signals": [
+          ".java files",
+          "Java classes",
+          "streams",
+          "collections",
+          "generics",
+          "exceptions"
+        ]
+      },
+      "related_domains": [
+        "domain.spring",
+        "domain.testing"
+      ]
+    },
+    {
+      "id": "domain.spring",
+      "path": "domains/spring.md",
+      "name": "Spring",
+      "aliases": [
+        "spring",
+        "spring boot",
+        "springboot"
+      ],
+      "activation_signals": {
+        "request_signals": [
+          "Spring Boot service review",
+          "@Transactional question",
+          "dependency injection concern",
+          "bean lifecycle issue",
+          "configuration issue"
+        ],
+        "artifact_signals": [
+          "@Service",
+          "@Repository",
+          "@Controller",
+          "@Transactional",
+          "application.yml",
+          "Spring Boot"
+        ]
+      },
+      "related_domains": [
+        "domain.java",
+        "domain.mysql",
+        "domain.redis",
+        "domain.testing",
+        "domain.spring_ai"
+      ]
+    },
+    {
+      "id": "domain.spring_ai",
+      "path": "domains/spring-ai.md",
+      "name": "Spring AI",
+      "aliases": [
+        "spring ai",
+        "llm",
+        "ai workflow"
+      ],
+      "activation_signals": {
+        "request_signals": [
+          "review this AI workflow",
+          "tool-calling safety review",
+          "explain prompt flow",
+          "debug model output handling"
+        ],
+        "artifact_signals": [
+          "Spring AI",
+          "prompt templates",
+          "tool calling",
+          "model invocation",
+          "retrieval/context assembly"
+        ]
+      },
+      "related_domains": [
+        "domain.spring",
+        "domain.java",
+        "domain.testing"
+      ]
+    },
+    {
+      "id": "domain.playwright",
+      "path": "domains/playwright.md",
+      "name": "Playwright",
+      "aliases": [
+        "playwright",
+        "e2e",
+        "browser test"
+      ],
+      "activation_signals": {
+        "request_signals": [
+          "Playwright test is flaky",
+          "why does this fail in CI?",
+          "review this e2e test",
+          "improve locator stability"
+        ],
+        "artifact_signals": [
+          "@playwright/test",
+          "page.locator(...)",
+          "trace or screenshot references",
+          "wait timing logic"
+        ]
+      },
+      "related_domains": [
+        "domain.testing"
+      ]
+    },
+    {
+      "id": "domain.mysql",
+      "path": "domains/mysql.md",
+      "name": "MySQL",
+      "aliases": [
+        "mysql",
+        "sql",
+        "innodb"
+      ],
+      "activation_signals": {
+        "request_signals": [
+          "this query is slow",
+          "review this SQL",
+          "check index usage",
+          "migration safety review",
+          "locking issue"
+        ],
+        "artifact_signals": [
+          "SELECT",
+          "EXPLAIN",
+          "index definitions",
+          "schema migrations",
+          "pagination logic"
+        ]
+      },
+      "related_domains": [
+        "domain.spring",
+        "domain.redis",
+        "domain.testing"
+      ]
+    },
+    {
+      "id": "domain.redis",
+      "path": "domains/redis.md",
+      "name": "Redis",
+      "aliases": [
+        "redis",
+        "cache",
+        "ttl"
+      ],
+      "activation_signals": {
+        "request_signals": [
+          "stale data after update",
+          "review this caching logic",
+          "TTL strategy question",
+          "Redis lock concern",
+          "cache inconsistency"
+        ],
+        "artifact_signals": [
+          "RedisTemplate",
+          "cache key construction",
+          "TTL / expire logic",
+          "cache invalidation code",
+          "SETNX",
+          "cache-aside logic"
+        ]
+      },
+      "related_domains": [
+        "domain.spring",
+        "domain.mysql",
+        "domain.testing"
+      ]
+    },
+    {
+      "id": "domain.testing",
+      "path": "domains/testing.md",
+      "name": "Testing",
+      "aliases": [
+        "testing",
+        "tests",
+        "unit test",
+        "integration test"
+      ],
+      "activation_signals": {
+        "request_signals": [
+          "review these tests",
+          "are these tests good enough?",
+          "why is this test flaky?",
+          "what is missing from the tests?"
+        ],
+        "artifact_signals": [
+          "@Test",
+          "assert",
+          "mock",
+          "fixture",
+          "integration test",
+          "e2e"
+        ]
+      },
+      "related_domains": [
+        "domain.java",
+        "domain.spring",
+        "domain.playwright",
+        "domain.mysql",
+        "domain.redis",
+        "domain.spring_ai"
+      ]
+    },
+    {
+      "id": "domain.observability_reliability",
+      "path": "domains/observability-reliability.md",
+      "name": "Observability & Reliability",
+      "aliases": [
+        "observability",
+        "reliability",
+        "SLO",
+        "monitoring"
+      ],
+      "activation_signals": {
+        "request_signals": [
+          "release readiness review",
+          "define rollback signals",
+          "review monitoring and alerts",
+          "assess production reliability"
+        ],
+        "artifact_signals": [
+          "metrics",
+          "traces",
+          "dashboards",
+          "alerts",
+          "SLO",
+          "runbook"
+        ]
+      },
+      "related_domains": [
+        "domain.testing",
+        "domain.spring",
+        "domain.mysql",
+        "domain.redis",
+        "domain.spring_ai"
+      ]
+    },
+    {
+      "id": "domain.api_event_contracts",
+      "path": "domains/api-event-contracts.md",
+      "name": "API & Event Contracts",
+      "aliases": [
+        "API contract",
+        "event contract",
+        "schema compatibility"
+      ],
+      "activation_signals": {
+        "request_signals": [
+          "API contract compatibility",
+          "event schema compatibility",
+          "consumer compatibility"
+        ],
+        "artifact_signals": [
+          "OpenAPI",
+          "JSON Schema",
+          "event payload",
+          "producer",
+          "consumer"
+        ]
+      },
+      "related_domains": [
+        "domain.testing",
+        "domain.observability_reliability",
+        "domain.spring"
+      ]
+    },
+    {
+      "id": "domain.vue3_vite",
+      "path": "domains/vue3-vite.md",
+      "name": "Vue 3 & Vite",
+      "aliases": [
+        "vue 3",
+        "vue3",
+        "vite vue3",
+        "pinia"
+      ],
+      "activation_signals": {
+        "request_signals": [
+          "Vue 3 component implementation",
+          "Vue 3 Vite configuration",
+          "Vue 3 composable"
+        ],
+        "artifact_signals": [
+          "resolved vue 3.x dependency",
+          "createApp(...)",
+          "@vitejs/plugin-vue with Vue 3"
+        ]
+      },
+      "related_domains": [
+        "domain.testing",
+        "domain.playwright"
+      ]
+    },
+    {
+      "id": "domain.vue2",
+      "path": "domains/vue2.md",
+      "name": "Vue 2",
+      "aliases": [
+        "vue 2",
+        "vue2",
+        "vmd-ui",
+        "vmd ui",
+        "vue cli"
+      ],
+      "activation_signals": {
+        "request_signals": [
+          "Vue 2 component implementation",
+          "vmd-ui integration",
+          "Vue CLI Webpack configuration"
+        ],
+        "artifact_signals": [
+          "resolved vue 2.0-2.6 dependency",
+          "new Vue(...)",
+          "Vue.extend",
+          "vue-template-compiler"
+        ]
+      },
+      "related_domains": [
+        "domain.testing",
+        "domain.playwright"
+      ]
+    },
+    {
+      "id": "domain.vue2_7",
+      "path": "domains/vue2-7.md",
+      "name": "Vue 2.7",
+      "aliases": [
+        "vue 2.7",
+        "vue2.7",
+        "vue 2.7 vite"
+      ],
+      "activation_signals": {
+        "request_signals": [
+          "Vue 2.7 component implementation",
+          "Vue 2.7 Vite configuration"
+        ],
+        "artifact_signals": [
+          "resolved vue 2.7.x dependency",
+          "Vue 2.7 compiler setup",
+          "Vue 2-compatible Vite plugin"
+        ]
+      },
+      "related_domains": [
+        "domain.testing",
+        "domain.playwright"
+      ]
+    }
+  ]
+}

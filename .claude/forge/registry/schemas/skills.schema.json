@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forge.local/registry/schemas/skills.schema.json",
+  "title": "Forge Skills Registry",
+  "description": "Schema for forge skills.json registry (object wrapper with version + skills array).",
+
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "skills"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string"
+    },
+    "skills": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/skill" }
+    }
+  },
+
+  "$defs": {
+    "skillId": {
+      "type": "string",
+      "pattern": "^skill\\.[A-Za-z0-9_]+$"
+    },
+    "behaviorId": {
+      "type": "string",
+      "pattern": "^behavior\\.[A-Za-z0-9_]+$"
+    },
+    "workflowId": {
+      "type": "string",
+      "pattern": "^workflow\\.[A-Za-z0-9_]+$"
+    },
+    "domainId": {
+      "type": "string",
+      "pattern": "^domain\\.[A-Za-z0-9_]+$"
+    },
+    "templateId": {
+      "type": "string",
+      "pattern": "^template\\.[A-Za-z0-9_]+$"
+    },
+    "checklistId": {
+      "type": "string",
+      "pattern": "^checklist\\.[A-Za-z0-9_]+$"
+    },
+    "reportId": {
+      "type": "string",
+      "pattern": "^report\\.[A-Za-z0-9_]+$"
+    },
+    "contextMode": {
+      "type": "string",
+      "enum": ["inherit", "fork"]
+    },
+
+    "variantSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["keyword_sets_any", "priority"],
+      "properties": {
+        "keyword_sets_any": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "priority": { "type": "integer", "minimum": 0 }
+      }
+    },
+
+    "skillVariant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "selection": { "$ref": "#/$defs/variantSelection" },
+        "behavior": {
+          "anyOf": [
+            { "$ref": "#/$defs/behaviorId" },
+            { "type": "null" }
+          ]
+        },
+        "domains": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/domainId" }
+        },
+        "template": {
+          "anyOf": [
+            { "$ref": "#/$defs/templateId" },
+            { "type": "null" }
+          ]
+        },
+        "checklists": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/checklistId" }
+        },
+        "report_artifact": {
+          "$ref": "#/$defs/reportId"
+        }
+      }
+    },
+
+    "skill": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "triggers", "workflow", "context"],
+      "properties": {
+        "id":     { "$ref": "#/$defs/skillId" },
+        "name":   { "type": "string", "minLength": 1 },
+        "path":   { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+
+        "behavior": {
+          "anyOf": [
+            { "$ref": "#/$defs/behaviorId" },
+            { "type": "null" }
+          ]
+        },
+        "routing": { "type": "string" },
+
+        "workflow": { "$ref": "#/$defs/workflowId" },
+        "context":  { "$ref": "#/$defs/contextMode" },
+
+        "triggers": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+
+        "domains": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/domainId" }
+        },
+
+        "template": {
+          "anyOf": [
+            { "$ref": "#/$defs/templateId" },
+            { "type": "null" }
+          ]
+        },
+
+        "checklists": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/checklistId" }
+        },
+
+        "variants": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/skillVariant" }
+        }
+      }
+    }
+  }
+}

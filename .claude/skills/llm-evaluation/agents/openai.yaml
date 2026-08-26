@@ -1,0 +1,4 @@
+interface:
+  display_name: "LLM Evaluation"
+  short_description: "Evaluate and regress LLM changes with evidence."
+  default_prompt: "Use $llm-evaluation to design an evaluation and regression gate for this LLM change."

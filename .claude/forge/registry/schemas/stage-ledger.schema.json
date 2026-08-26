@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "registry/schemas/stage-ledger.schema.json",
+  "title": "Forge Runtime Stage Ledger",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ledger_version", "runtime_id", "events"],
+  "properties": {
+    "ledger_version": {"const": "1.0"},
+    "runtime_id": {"type": "string", "minLength": 1},
+    "events": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/event"}
+    }
+  },
+  "$defs": {
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sequence", "event_type", "actor", "payload"],
+      "properties": {
+        "sequence": {"type": "integer", "minimum": 1},
+        "event_type": {
+          "type": "string",
+          "enum": [
+            "runtime_initialized",
+            "context_resolved",
+            "domain_direct_evidence_collected",
+            "domain_related_candidates_considered",
+            "domain_resolution_completed",
+            "adapter_request_prepared",
+            "adapter_result_received",
+            "stage_advanced",
+            "stage_retry_requested",
+            "workflow_stages_completed",
+            "manual_output_received",
+            "output_validation_completed",
+            "runtime_failed"
+          ]
+        },
+        "actor": {"type": "string", "enum": ["runtime", "adapter", "validator", "user"]},
+        "stage_id": {"type": ["string", "null"], "pattern": "^engine\\.[a-z0-9_]+$"},
+        "timestamp": {"type": ["string", "null"]},
+        "payload": {"type": "object"},
+        "diagnostics": {"type": "array", "items": {"type": "object"}},
+        "provider_metadata": {"type": "object"}
+      }
+    }
+  }
+}

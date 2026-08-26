@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "registry/schemas/template-review-report-output.schema.json",
+  "title": "Review Report Output Schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["overall_assessment", "findings"],
+  "properties": {
+    "overall_assessment": {
+      "type": "string",
+      "minLength": 1
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/reviewFinding"
+      }
+    },
+    "positives": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "residual_risks_or_open_questions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "recommended_next_steps": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "$defs": {
+    "reviewFinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "severity",
+        "evidence",
+        "why_it_matters",
+        "confidence"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["Critical", "High", "Medium", "Low"]
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "why_it_matters": {
+          "type": "string",
+          "minLength": 1
+        },
+        "suggested_direction": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "string",
+          "enum": ["High", "Medium", "Low"]
+        }
+      }
+    }
+  }
+}

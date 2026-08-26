@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forge.local/registry/schemas/ask-decision.schema.json",
+  "title": "Forge Ask Decision",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema_version", "mode", "input", "decision", "host_action", "execution", "reason", "matched", "recommended", "confidence"],
+  "properties": {
+    "schema_version": {"const": "forge.ask-decision/v1"},
+    "mode": {"const": "ask"},
+    "input": {"type": "string"},
+    "decision": {"enum": ["forge_route", "native_route", "explicit_skill_passthrough", "native_fallback"]},
+    "host_action": {"enum": ["use_forge_composition", "use_native_claude"]},
+    "execution": {"const": "not_executed"},
+    "matched": {"type": "boolean"},
+    "recommended": {"type": ["object", "null"]},
+    "native": {"type": ["object", "null"]},
+    "confidence": {"enum": ["low", "medium", "high"]},
+    "reason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "detail"],
+      "properties": {"code": {"type": "string"}, "detail": {"type": ["string", "null"]}}
+    }
+  }
+}

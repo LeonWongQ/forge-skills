@@ -1,0 +1,4 @@
+interface:
+  display_name: "Data Design"
+  short_description: "Design schemas, indexes, queries, and safe migrations."
+  default_prompt: "Use $data-design to design the data model and index strategy for this feature."

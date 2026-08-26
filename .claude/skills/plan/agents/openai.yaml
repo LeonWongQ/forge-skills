@@ -1,0 +1,4 @@
+interface:
+  display_name: "Implementation Plan"
+  short_description: "Create actionable technical plans with validation steps."
+  default_prompt: "Use $plan to produce an implementation plan for this change."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bailian API"
+  short_description: "Build and review Bailian and DashScope API integrations."
+  default_prompt: "Use $bailian-api to design or review this Bailian API integration."

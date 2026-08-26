@@ -1,0 +1,98 @@
+{
+  "version": "1.1.0",
+  "description": "Checklist registry with recommended application rules.",
+  "checklists": [
+    {
+      "id": "checklist.general_quality",
+      "path": "checklists/general-quality.md",
+      "name": "General Quality",
+      "recommended_for_behaviors": [],
+      "recommended_for_conditions": [
+        "all"
+      ]
+    },
+    {
+      "id": "checklist.review",
+      "path": "checklists/review-checklist.md",
+      "name": "Review Checklist",
+      "recommended_for_behaviors": [
+        "behavior.review"
+      ],
+      "recommended_for_conditions": []
+    },
+    {
+      "id": "checklist.debug",
+      "path": "checklists/debug-checklist.md",
+      "name": "Debug Checklist",
+      "recommended_for_behaviors": [
+        "behavior.debug"
+      ],
+      "recommended_for_conditions": []
+    },
+    {
+      "id": "checklist.refactor",
+      "path": "checklists/refactor-checklist.md",
+      "name": "Refactor Checklist",
+      "recommended_for_behaviors": [
+        "behavior.refactor"
+      ],
+      "recommended_for_conditions": []
+    },
+    {
+      "id": "checklist.verification",
+      "path": "checklists/verification-checklist.md",
+      "name": "Verification Checklist",
+      "recommended_for_behaviors": [],
+      "recommended_for_conditions": [
+        "code changes",
+        "correctness claims",
+        "root cause claims",
+        "performance claims"
+      ]
+    },
+    {
+      "id": "checklist.delivery",
+      "path": "checklists/delivery-checklist.md",
+      "name": "Delivery Checklist",
+      "recommended_for_behaviors": [],
+      "recommended_for_conditions": [
+        "all-final-outputs"
+      ]
+    },
+    {
+      "id": "checklist.test_plan",
+      "path": "checklists/test-plan-checklist.md",
+      "name": "Test Plan Checklist",
+      "recommended_for_behaviors": [],
+      "recommended_for_conditions": [
+        "test-planning"
+      ]
+    },
+    {
+      "id": "checklist.test_report",
+      "path": "checklists/test-report-checklist.md",
+      "name": "Test Report Checklist",
+      "recommended_for_behaviors": [],
+      "recommended_for_conditions": [
+        "test-reporting"
+      ]
+    },
+    {
+      "id": "checklist.release_readiness",
+      "path": "checklists/release-readiness-checklist.md",
+      "name": "Release Readiness Checklist",
+      "recommended_for_behaviors": [],
+      "recommended_for_conditions": [
+        "release-go-no-go",
+        "production-change-readiness"
+      ]
+    },
+    {
+      "id": "checklist.contract_compatibility",
+      "path": "checklists/contract-compatibility-checklist.md",
+      "name": "Contract Compatibility Checklist",
+      "recommended_for_behaviors": [],
+      "recommended_for_conditions": ["api-event-contract-change"]
+    }
+  ]
+}

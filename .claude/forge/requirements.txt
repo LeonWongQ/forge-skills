@@ -1,0 +1,5 @@
+# Forge — Modular AI Engineering Operating System
+# Python dependencies for validation toolchain and CLI
+jsonschema>=4.0
+click>=8.0
+pyyaml>=6.0

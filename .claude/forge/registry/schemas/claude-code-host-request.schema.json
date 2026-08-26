@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "registry/schemas/claude-code-host-request.schema.json",
+  "title": "Forge Claude Code Host Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "request_id", "adapter", "runtime", "context_bundle", "prompt", "result_contract", "request_digest"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "request_id": {"type": "string", "minLength": 1},
+    "adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "execution", "sdk_free"],
+      "properties": {
+        "id": {"const": "forge.claude_code_host"},
+        "version": {"const": "1.0"},
+        "execution": {"const": "caller_managed"},
+        "sdk_free": {"const": true}
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtime_id", "runtime_envelope_digest", "resolved_context_digest", "stage_id", "stage_index", "attempt"],
+      "properties": {
+        "runtime_id": {"type": "string", "minLength": 1},
+        "runtime_envelope_digest": {"$ref": "#/$defs/digest"},
+        "resolved_context_digest": {"$ref": "#/$defs/digest"},
+        "stage_id": {"type": "string", "pattern": "^engine\\.[a-z0-9_]+$"},
+        "stage_index": {"type": "integer", "minimum": 0},
+        "attempt": {"type": "integer", "minimum": 1}
+      }
+    },
+    "context_bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bundle_id", "bundle_digest", "resolved_context_digest"],
+      "properties": {
+        "bundle_id": {"type": "string", "minLength": 1},
+        "bundle_digest": {"$ref": "#/$defs/digest"},
+        "resolved_context_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "prompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "segments", "task_prompt", "task_prompt_digest"],
+      "properties": {
+        "format": {"const": "markdown"},
+        "segments": {"type": "array", "minItems": 5, "items": {"$ref": "#/$defs/segment"}},
+        "task_prompt": {"type": "string"},
+        "task_prompt_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "result_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "required_result_schema", "result_skeleton"],
+      "properties": {
+        "schema_version": {"const": "1.0"},
+        "required_result_schema": {"const": "registry/schemas/claude-code-host-result.schema.json"},
+        "result_skeleton": {"$ref": "#/$defs/result"}
+      }
+    },
+    "request_digest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "segment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["position", "kind", "title", "content", "content_digest"],
+      "properties": {
+        "position": {"type": "integer", "minimum": 0},
+        "kind": {"type": "string", "enum": ["host_boundary", "stable_instruction", "runtime_state", "stage_contract", "host_result_request"]},
+        "title": {"type": "string", "minLength": 1},
+        "content": {"type": "string"},
+        "content_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "runtime_id", "request_id", "request_digest", "adapter_id", "adapter_version", "stage_id", "stage_index", "attempt", "generic_linkage", "status", "linkage", "output", "evidence", "diagnostics", "metadata"],
+      "properties": {
+        "schema_version": {"const": "1.0"},
+        "runtime_id": {"type": "string", "minLength": 1},
+        "request_id": {"type": "string", "minLength": 1},
+        "request_digest": {"$ref": "#/$defs/digest"},
+        "adapter_id": {"const": "forge.claude_code_host"},
+        "adapter_version": {"const": "1.0"},
+        "stage_id": {"type": "string", "pattern": "^engine\\.[a-z0-9_]+$"},
+        "stage_index": {"type": "integer", "minimum": 0},
+        "attempt": {"type": "integer", "minimum": 1},
+        "generic_linkage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["request_id", "request_digest"],
+          "properties": {
+            "request_id": {"type": "string", "minLength": 1},
+            "request_digest": {"$ref": "#/$defs/digest"}
+          }
+        },
+        "status": {"type": "string", "enum": ["succeeded", "failed", "blocked", "skipped"]},
+        "linkage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["resolved_context_digest", "context_bundle_digest"],
+          "properties": {
+            "resolved_context_digest": {"$ref": "#/$defs/digest"},
+            "context_bundle_digest": {"$ref": "#/$defs/digest"}
+          }
+        },
+        "output": {},
+        "evidence": {"type": "array", "items": {"type": "object"}},
+        "diagnostics": {"type": "array", "items": {"type": "object"}},
+        "metadata": {"type": "object"}
+      }
+    }
+  }
+}

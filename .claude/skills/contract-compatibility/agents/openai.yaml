@@ -1,0 +1,4 @@
+interface:
+  display_name: "Contract Compatibility"
+  short_description: "Assess API and event changes for compatibility risks."
+  default_prompt: "Use $contract-compatibility to assess whether this contract change is backward compatible."
