@@ -9,13 +9,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import click
 
+from .paths import CLIENT_DIRECTORIES, FORGE_DIRECTORY, SKILLS_DIRECTORY, SOURCE_CONTAINER
 
-TOOL_CONFIG_DIRECTORIES = {
-    "claude": ".claude",
-    "cursor": ".cursor",
-    "codex": ".codex",
-}
-REPOSITORY_SOURCE_DIRECTORY = ".forge-skill"
+TOOL_CONFIG_DIRECTORIES = CLIENT_DIRECTORIES
 
 
 def _logical_path(value: str | Path) -> Path:
@@ -40,11 +36,11 @@ def _discover_project_forge_root() -> Optional[Path]:
     for directory in (current, *current.parents):
         if _is_forge_root(directory):
             return directory
-        source_candidate = directory / REPOSITORY_SOURCE_DIRECTORY / "forge"
+        source_candidate = directory / SOURCE_CONTAINER / FORGE_DIRECTORY
         if _is_forge_root(source_candidate):
             return source_candidate
         for config_directory in directories:
-            candidate = directory / config_directory / "forge"
+            candidate = directory / config_directory / FORGE_DIRECTORY
             if _is_forge_root(candidate):
                 return candidate
     return None
@@ -110,7 +106,7 @@ def workspace_prefix_from_forge_root(root: Path) -> Optional[str]:
     and must use a relative path rather than claiming a particular layout.
     """
     directory = _logical_path(root).parent.name
-    if directory == REPOSITORY_SOURCE_DIRECTORY:
+    if directory == SOURCE_CONTAINER:
         return directory
     if directory in TOOL_CONFIG_DIRECTORIES.values():
         return directory

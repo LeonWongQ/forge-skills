@@ -12,6 +12,7 @@ from typing import Any, Callable, Iterable
 
 from .deployment_verification import expected_links, verify_deployment
 from .personal_hook_state import create_manifest
+from .paths import CLIENT_DIRECTORIES, FORGE_DIRECTORY, SKILLS_DIRECTORY, SOURCE_CONTAINER
 
 
 TOOL_LABELS = {"claude": "Claude Code", "cursor": "Cursor", "codex": "Code X"}
@@ -33,8 +34,8 @@ def _trim_path(value: str) -> str:
 def _source_claude(script_root: Path) -> Path:
     # The repository-owned source container is .forge-skill; .claude remains
     # the client-side target directory created in linked projects.
-    source = script_root / ".forge-skill"
-    if not (source / "forge").is_dir() or not (source / "skills").is_dir():
+    source = script_root / SOURCE_CONTAINER
+    if not (source / FORGE_DIRECTORY).is_dir() or not (source / SKILLS_DIRECTORY).is_dir():
         raise ValueError(f"未找到 Forge 源目录：{source}")
     return source.resolve()
 
@@ -159,7 +160,7 @@ def install(
                 _print("[已取消] 未做任何修改。")
                 return 0
             target.mkdir(parents=True)
-        config = target / {"claude": ".claude", "cursor": ".cursor", "codex": ".codex"}[tool]
+        config = target / CLIENT_DIRECTORIES[tool]
         config.mkdir(parents=True, exist_ok=True)
         _print("\n============================================================")
         _print(f"  {TOOL_LABELS[tool]} -- Forge 链接安装")

@@ -9,6 +9,7 @@ from pathlib import Path
 from time import sleep
 from typing import Callable, Iterable
 
+from .paths import CLIENT_DIRECTORIES, FORGE_DIRECTORY, SKILL_METADATA_FILE, SKILLS_DIRECTORY
 
 @dataclass(frozen=True)
 class SyncAction:
@@ -25,15 +26,15 @@ def project_source_root(forge_root: Path) -> Path:
 
 
 def default_codex_root() -> Path:
-    return Path.home() / ".codex"
+    return Path.home() / CLIENT_DIRECTORIES["codex"]
 
 
 def source_skill_directories(source_root: Path) -> list[Path]:
-    skills_root = source_root / "skills"
+    skills_root = source_root / SKILLS_DIRECTORY
     if not skills_root.is_dir():
         raise ValueError(f"Forge skills directory does not exist: {skills_root}")
     return sorted(
-        (path for path in skills_root.iterdir() if path.is_dir() and (path / "SKILL.md").is_file()),
+        (path for path in skills_root.iterdir() if path.is_dir() and (path / SKILL_METADATA_FILE).is_file()),
         key=lambda path: path.name.casefold(),
     )
 
@@ -61,8 +62,8 @@ def plan_sync(source_root: Path, codex_root: Path) -> list[SyncAction]:
     """Plan a non-destructive Forge + skills overlay without changing either tree."""
     source_root = source_root.resolve(strict=False)
     codex_root = codex_root.resolve(strict=False)
-    sources = [("forge", source_root / "forge", codex_root / "forge")]
-    sources.extend((skill.name, skill, codex_root / "skills" / skill.name) for skill in source_skill_directories(source_root))
+    sources = [(FORGE_DIRECTORY, source_root / FORGE_DIRECTORY, codex_root / FORGE_DIRECTORY)]
+    sources.extend((skill.name, skill, codex_root / SKILLS_DIRECTORY / skill.name) for skill in source_skill_directories(source_root))
 
     actions: list[SyncAction] = []
     for name, source, target in sources:

@@ -9,9 +9,9 @@ from pathlib import Path
 from time import sleep
 from typing import Callable, Iterable
 
+from .paths import CLIENT_DIRECTORIES, SKILL_METADATA_FILE, SKILLS_DIRECTORY, client_skills_root
 
-SUPPORTED_CLIENTS = ("codex", "claude", "cursor")
-CLIENT_DIRECTORIES = {"codex": ".codex", "claude": ".claude", "cursor": ".cursor"}
+SUPPORTED_CLIENTS = tuple(CLIENT_DIRECTORIES)
 
 
 @dataclass(frozen=True)
@@ -28,11 +28,11 @@ def project_source_root(forge_root: Path) -> Path:
 
 
 def source_skill_directories(source_root: Path) -> list[Path]:
-    skills_root = source_root / "skills"
+    skills_root = source_root / SKILLS_DIRECTORY
     if not skills_root.is_dir():
         raise ValueError(f"Forge skills directory does not exist: {skills_root}")
     return sorted(
-        (path for path in skills_root.iterdir() if path.is_dir() and (path / "SKILL.md").is_file()),
+        (path for path in skills_root.iterdir() if path.is_dir() and (path / SKILL_METADATA_FILE).is_file()),
         key=lambda path: path.name.casefold(),
     )
 
@@ -52,13 +52,13 @@ def resolve_skills_root(
     if target is not None:
         return target.resolve(strict=False)
     if scope == "global":
-        return ((home or Path.home()) / CLIENT_DIRECTORIES[client] / "skills").resolve(strict=False)
+        return client_skills_root(home or Path.home(), client).resolve(strict=False)
     if project is None:
         raise ValueError("--project is required when --scope project is selected")
     project = project.resolve(strict=False)
     if not project.is_dir():
         raise ValueError(f"project directory does not exist: {project}")
-    return (project / CLIENT_DIRECTORIES[client] / "skills").resolve(strict=False)
+    return client_skills_root(project, client).resolve(strict=False)
 
 
 def _link_target(path: Path) -> Path | None:
