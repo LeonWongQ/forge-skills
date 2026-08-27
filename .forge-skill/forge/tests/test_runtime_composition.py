@@ -120,3 +120,17 @@ def test_runtime_output_validation_requires_final_linked_result():
     premature = validate_runtime_output(ROOT, _runtime(), output)
     assert not premature["valid"]
     assert any(error["code"] == "RUNTIME_NOT_READY_FOR_VALIDATION" for error in premature["errors"])
+
+
+def test_learning_collection_runs_once_for_final_skill_result(monkeypatch):
+    calls = []
+
+    def collect(root, envelope, result, *, project):
+        calls.append((envelope["runtime_id"], result["stage_id"], project))
+
+    monkeypatch.setattr("forge_cli.learning_collector.collect_imported_result", collect)
+
+    ready = _advance_to_final(_runtime())
+
+    assert ready["status"] == "ready_for_validation"
+    assert calls == [("runtime.test", "engine.delivery", Path.cwd())]

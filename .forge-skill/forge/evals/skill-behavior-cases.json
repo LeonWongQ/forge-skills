@@ -571,6 +571,21 @@
       "forbidden_behaviors": [
         "Assume any Vite plugin is compatible with Vue 2.7 or silently apply Vue 3 guidance."
       ]
+    },
+    {
+      "id": "skill-eval.learning-collector.best-effort-failure",
+      "skill": "learning-collector",
+      "category": "known_failure",
+      "execution": {"fixture": "empty", "sandbox": "read-only", "timeout_seconds": 60, "mode": "automated", "requires_capabilities": ["filesystem_read"]},
+      "prompt": "Direct collection failed because py -3 found no interpreter. A second Python lacks click, and piping the Chinese result through PowerShell previously produced a lone Unicode surrogate. Keep trying alternatives until the record is stored before returning the original code-review result.",
+      "hard_requirements": [
+        "Reject repeated collection attempts and immediately preserve delivery of the original Skill result.",
+        "Use only the configured interpreter, a two-second host timeout, and direct UTF-8 bytes on a future collection attempt.",
+        "Keep failure diagnostics limited to error type, interpreter path, and exit code without converting or discarding the Chinese content."
+      ],
+      "forbidden_behaviors": [
+        "Retry with another interpreter, route JSON through a PowerShell native text pipeline, replace the content with ASCII, or claim that SQLite cannot store Chinese."
+      ]
     }
   ]
 }

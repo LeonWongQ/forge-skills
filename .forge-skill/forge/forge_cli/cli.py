@@ -104,6 +104,37 @@ def _runtime_ask_intent(text: str) -> tuple[str, str | None] | None:
     return None
 
 
+def _learning_review_intent(text: str) -> str | None:
+    compact = re.sub(r"\s+", "", text).lower()
+    if compact in {"结束这个服务", "关闭这个服务", "停止这个服务"}:
+        return "stop"
+    if "8765" in compact and any(value in compact for value in ("加载", "监听", "打开", "启动")):
+        return "start"
+    subject = any(value in compact for value in ("学习审核", "学习数据审核", "learningreview"))
+    if not subject:
+        return None
+    if any(value in compact for value in ("关闭", "停止", "结束", "退出")):
+        return "stop"
+    if any(value in compact for value in ("启动", "打开", "加载", "监听", "运行")):
+        return "start"
+    return None
+
+
+def _render_learning_review(payload: dict, output_format: str) -> None:
+    if output_format == "json":
+        click.echo(json.dumps({key: value for key, value in payload.items() if key != "token"}, ensure_ascii=False, indent=2))
+        return
+    status = payload.get("status")
+    if status in {"started", "already_running"}:
+        click.echo(f"Learning review {status}: {payload['url']} (PID {payload['pid']})")
+    elif status == "stopped":
+        click.echo(f"Learning review stopped: {payload['url']} (PID {payload['pid']})")
+    elif status == "stale_state_removed":
+        click.echo("Learning review was not running; removed stale service state")
+    else:
+        click.echo("Learning review is not running")
+
+
 def _project_directory(root: Path) -> Path:
     """Return the caller-owned project, independent from Forge's install root.
 
@@ -1055,6 +1086,16 @@ def ask(ctx, user_input, preferred_skill):
     text = " ".join(user_input).strip()
     if not text:
         raise click.UsageError("user_input cannot be empty")
+
+    learning_intent = _learning_review_intent(text)
+    if learning_intent:
+        from .learning_review_service import start_review_service, stop_review_service
+        try:
+            payload = start_review_service(root) if learning_intent == "start" else stop_review_service(root)
+        except RuntimeError as error:
+            raise click.UsageError(str(error)) from error
+        _render_learning_review(payload, output_format)
+        raise SystemExit(EXIT_OK)
 
     intent = _runtime_ask_intent(text)
     if intent:

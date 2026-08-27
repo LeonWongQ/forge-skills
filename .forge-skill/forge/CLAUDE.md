@@ -264,6 +264,36 @@ Unless the task clearly justifies a simpler or alternate path, operate in this d
 This sequence is the default operating contract, not an unbreakable law.
 It may be simplified for lightweight tasks, but never abandoned carelessly.
 
+### Opt-in direct-host collection (Skill learning/training)
+
+When a Forge Skill is executed directly by the host rather than through Forge
+Runtime, check the current project's `.forge-skill/learning/config.json` before
+delivery. If `enabledSkills` contains the active Skill name, send one JSON object
+to the installed `learning-collector/scripts/record_direct_result.py` script on
+stdin with `--skill <active-skill>` and `--project <project-root>`.
+
+Include one complete user-visible final result: its overall conclusion,
+independent findings or decisions, supporting evidence references, verification
+status, and the minimum scope identifier needed to interpret those references.
+Do not include transport-only status fields when no substantive result exists.
+Never include intermediate stages, hidden reasoning, prompts, full context
+bundles, credentials, sensitive environment values, or unrelated file content.
+Encode the JSON as UTF-8 bytes
+and write those bytes directly to the child process stdin; do not use a native
+PowerShell text pipeline. Invoke `pythonExecutable` from the installed
+`learning-collector/runtime.json`, never `py -3`, and apply its
+`directCollectionTimeoutSeconds` limit. On failure, retain only the error type,
+interpreter path, and exit code for diagnostics. Do not try another interpreter,
+convert the content, or retry in the current request. Collection is
+best-effort: after either success or the single failed attempt, immediately
+deliver the original Skill result. Do not collect when the Skill is absent from
+the project allowlist.
+
+In this repository, “Skill learning” and “Skill training” are equivalent terms
+for improving a Skill's external instructions, workflow rules, output contract,
+and regression cases from reviewed results. They do not mean changing model
+parameters. Collection is only the data-gathering stage of that process.
+
 ---
 
 ## Required Invariants

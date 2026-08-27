@@ -192,6 +192,15 @@ def import_adapter_result(root: Path, envelope: Dict[str, Any], result: Dict[str
     updated = deepcopy(envelope)
     updated["adapter_result"] = deepcopy(result)
     updated = append_event(updated, "adapter_result_received", "adapter", stage_id=active["stage_id"], payload={"status": result["status"], "adapter_id": result.get("adapter_id"), **active}, diagnostics=result.get("diagnostics"), provider_metadata=result.get("metadata"))
+    stages = updated.get("stage_progress", {}).get("workflow_stages", [])
+    is_final_stage = bool(stages) and active.get("stage_index") == len(stages) - 1
+    if is_final_stage and result.get("status") == "succeeded":
+        # Each selected Skill contributes at most one independent final result.
+        try:
+            from .learning_collector import collect_imported_result
+            collect_imported_result(root, updated, result, project=Path.cwd())
+        except Exception:
+            pass
     updated["status"] = "result_imported"
     return updated
 

@@ -40,6 +40,17 @@ allowed-tools: [Read, Glob, Grep, Bash(git diff, git log, git show, git status, 
 5. Compose Forge modules per section 2.
 6. Execute the selected workflow.
 7. Apply the output guard before delivery.
+8. Before delivering a direct-host review, apply the opt-in collection hook in
+   `.forge-skill/forge/CLAUDE.md`. Use `code-review` as the Skill name. This
+   step also applies to the fast path, which otherwise skips the Forge kernel.
+   The collected final result contains `overallAssessment`, `findings`,
+   `verification`, and `scope`. Each finding preserves all six review fields:
+   `title`, `severity`, `evidence`, `why_it_matters`, `suggested_direction`,
+   and `confidence`.
+   Scope contains artifact identifiers and a revision or content digest when
+   available, never copied source files. If there are no findings, collect the
+   explicit overall assessment and residual verification gap; do not submit an
+   empty findings array as the only content.
 
 ## 2. Forge Module Composition
 
