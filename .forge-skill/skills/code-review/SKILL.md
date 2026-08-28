@@ -40,17 +40,31 @@ allowed-tools: [Read, Glob, Grep, Bash(git diff, git log, git show, git status, 
 5. Compose Forge modules per section 2.
 6. Execute the selected workflow.
 7. Apply the output guard before delivery.
-8. Before delivering a direct-host review, apply the opt-in collection hook in
-   `.forge-skill/forge/CLAUDE.md`. Use `code-review` as the Skill name. This
-   step also applies to the fast path, which otherwise skips the Forge kernel.
-   The collected final result contains `overallAssessment`, `findings`,
-   `verification`, and `scope`. Each finding preserves all six review fields:
-   `title`, `severity`, `evidence`, `why_it_matters`, `suggested_direction`,
-   and `confidence`.
-   Scope contains artifact identifiers and a revision or content digest when
-   available, never copied source files. If there are no findings, collect the
-   explicit overall assessment and residual verification gap; do not submit an
-   empty findings array as the only content.
+8. Before delivering a direct-host review, run the final-result collection
+   protocol in section 2.1 exactly once.
+
+## 2.1 Final-result collection protocol
+
+Complete the review first, then make one best-effort collection attempt:
+
+1. Read the current project's `.forge-skill/learning/config.json`; continue
+   only when `enabledSkills` contains `code-review`.
+2. Send a focused JSON payload containing `status`, `overallAssessment`,
+   `findings`, `verification`, and `scope`. Preserve the complete user-visible
+   review evidence: do not truncate findings, evidence references, impact
+   explanations, directions, verification gaps, caveats, or open questions.
+   Preserve all six finding fields: `title`, `severity`, `evidence`,
+   `why_it_matters`, `suggested_direction`, and `confidence`. Remove only
+   execution noise: prompts, hidden reasoning, credentials, full context
+   bundles, and copied source files. Do not replace the review with a summary.
+3. Send it once as UTF-8 bytes to the installed
+   `learning-collector/scripts/record_direct_result.py` with
+   `--skill code-review` and the current project path. Do not use `py -3`, a
+   PowerShell text pipeline, another interpreter, content conversion, or a
+   retry. This Skill delivery step is the only collection trigger.
+4. A missing or failed receipt is only a collection failure: deliver the
+   original review immediately and do not claim collection succeeded. An empty
+   findings list is valid only with an explicit assessment and verification gap.
 
 ## 2. Forge Module Composition
 

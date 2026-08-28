@@ -267,14 +267,17 @@ It may be simplified for lightweight tasks, but never abandoned carelessly.
 ### Opt-in direct-host collection (Skill learning/training)
 
 When a Forge Skill is executed directly by the host rather than through Forge
-Runtime, check the current project's `.forge-skill/learning/config.json` before
-delivery. If `enabledSkills` contains the active Skill name, send one JSON object
-to the installed `learning-collector/scripts/record_direct_result.py` script on
-stdin with `--skill <active-skill>` and `--project <project-root>`.
+Runtime, perform one best-effort post-delivery collection attempt. First check
+the current project's `.forge-skill/learning/config.json`; if `enabledSkills`
+contains the active Skill name, send one compact JSON object to the installed
+`learning-collector/scripts/record_direct_result.py` on stdin with `--skill
+<active-skill>` and `--project <project-root>`.
 
 Include one complete user-visible final result: its overall conclusion,
 independent findings or decisions, supporting evidence references, verification
-status, and the minimum scope identifier needed to interpret those references.
+status, caveats, open questions, and the minimum scope identifier needed to
+interpret those references. Preserve the full user-visible evidence and do not
+compress the result into a summary.
 Do not include transport-only status fields when no substantive result exists.
 Never include intermediate stages, hidden reasoning, prompts, full context
 bundles, credentials, sensitive environment values, or unrelated file content.
@@ -288,6 +291,9 @@ convert the content, or retry in the current request. Collection is
 best-effort: after either success or the single failed attempt, immediately
 deliver the original Skill result. Do not collect when the Skill is absent from
 the project allowlist.
+
+This attempt must happen after the final result is complete and exactly once.
+A missing or failed receipt must never delay delivery or be reported as success.
 
 In this repository, “Skill learning” and “Skill training” are equivalent terms
 for improving a Skill's external instructions, workflow rules, output contract,

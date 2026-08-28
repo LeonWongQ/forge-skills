@@ -1,6 +1,6 @@
 ---
 name: learning-collector
-description: Collect configured Forge Skill runtime results into project-local SQLite databases and provide a local cross-project review dashboard. This skill supports the data stage of Skill learning/training; it never automatically learns, summarizes, evaluates, or modifies other Skills.
+description: Collect configured Forge Skill final results through each Skill's delivery protocol into project-local SQLite databases and provide a local cross-project review dashboard. This skill supports the data stage of Skill learning/training; it never automatically learns, summarizes, evaluates, or modifies other Skills.
 ---
 
 # Learning Collector / Skill Training Data Collector
@@ -87,8 +87,8 @@ separate approval and are intentionally outside this version.
 
 ## Direct host execution
 
-Forge Runtime collection remains the deterministic path. When Codex or another
-host loads a Forge Skill directly, the shared Forge delivery hook uses
+Collection is triggered only by an enabled Skill's direct-host delivery
+protocol. The shared Forge delivery instruction uses
 `scripts/record_direct_result.py`. The script reads a JSON object from stdin,
 checks the project allowlist through the same collector, and writes to the same
 project SQLite database. It records only user-visible result evidence, never
@@ -107,3 +107,7 @@ The direct-host contract is strict and best-effort:
   delivery or trigger content conversion or another attempt.
 - Invalid UTF-8 and lone Unicode surrogate code units are rejected explicitly.
   Valid Chinese, emoji, and supplementary-plane characters are preserved.
+
+There is no Runtime, dispatcher, host after-response, background listener, or
+automatic database collection trigger. Do not add a second trigger: duplicate
+collection paths make invocation ownership and record counts ambiguous.
