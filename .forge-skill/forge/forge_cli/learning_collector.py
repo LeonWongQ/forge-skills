@@ -2,15 +2,45 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import sqlite3
+import threading
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 COLLECTOR_SKILL = "learning-collector"
 DATABASE_NAME = "learning.sqlite"
-DATABASE_SCHEMA_VERSION = 2
+DATABASE_SCHEMA_VERSION = 3
+_REGISTRY_LOCK = threading.Lock()
+
+
+@contextmanager
+def _registry_file_lock(path: Path):
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+b")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            if os.name == "nt":
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
 
 
 def _now() -> str:
@@ -78,12 +108,13 @@ def _load_enabled_skills(forge_root: Path, project: Path) -> set[str] | None:
 
 
 def connect_database(path: Path) -> sqlite3.Connection:
+    needs_initialization = not path.exists()
     connection = sqlite3.connect(path, timeout=2)
     connection.row_factory = sqlite3.Row
     try:
         connection.execute("PRAGMA busy_timeout=2000")
         journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
-        if str(journal_mode).lower() != "truncate":
+        if needs_initialization and str(journal_mode).lower() != "truncate":
             connection.execute("PRAGMA journal_mode=TRUNCATE")
         if connection.execute("PRAGMA user_version").fetchone()[0] < DATABASE_SCHEMA_VERSION:
             with connection:
@@ -126,6 +157,25 @@ def connect_database(path: Path) -> sqlite3.Connection:
                 connection.execute(
                     "CREATE UNIQUE INDEX IF NOT EXISTS idx_learning_collection_key "
                     "ON learning_records(collection_key) WHERE collection_key IS NOT NULL"
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS learning_summaries (
+                        id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL,
+                        skill TEXT NOT NULL,
+                        version INTEGER NOT NULL,
+                        created_at TEXT NOT NULL,
+                        source_count INTEGER NOT NULL,
+                        summary_json TEXT NOT NULL,
+                        applied INTEGER NOT NULL DEFAULT 0 CHECK (applied IN (0, 1)),
+                        UNIQUE(project_id, skill, version)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_summary_skill "
+                    "ON learning_summaries(project_id, skill, version DESC)"
                 )
                 connection.execute(f"PRAGMA user_version={DATABASE_SCHEMA_VERSION}")
     except Exception:
@@ -191,16 +241,48 @@ def _adopt_copied_database(database: Path, previous_id: str, identity: dict[str,
                 """,
                 (identity["projectId"], identity.get("name") or project.name, str(project), previous_id),
             )
+            rows = connection.execute(
+                "SELECT id, summary_json FROM learning_summaries WHERE project_id = ?", (previous_id,)
+            ).fetchall()
+            for row in rows:
+                try:
+                    summary = json.loads(row["summary_json"])
+                    summary["projectId"] = identity["projectId"]
+                    summary["sourceRecords"] = [
+                        {**item, "projectId": identity["projectId"]}
+                        for item in summary.get("sourceRecords", [])
+                    ]
+                    encoded = json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
+                except (TypeError, json.JSONDecodeError) as error:
+                    raise ValueError(f"cannot migrate summary {row['id']}: invalid summary_json") from error
+                connection.execute(
+                    "UPDATE learning_summaries SET project_id = ?, summary_json = ? WHERE id = ?",
+                    (identity["projectId"], encoded, row["id"]),
+                )
     finally:
         connection.close()
 
 
 def _register_project(forge_root: Path, project: Path, database: Path, identity: dict[str, str]) -> dict[str, str]:
+    with _REGISTRY_LOCK:
+        registry_path = _skill_root(forge_root) / "project-registry.json"
+        with _registry_file_lock(registry_path):
+            return _register_project_locked(forge_root, project, database, identity)
+
+
+def _register_project_locked(forge_root: Path, project: Path, database: Path, identity: dict[str, str]) -> dict[str, str]:
     registry_path = _skill_root(forge_root) / "project-registry.json"
     registry_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         registry = json.loads(registry_path.read_text(encoding="utf-8")) if registry_path.is_file() else {"schemaVersion": "1.0", "projects": []}
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as error:
+        if registry_path.is_file():
+            corrupt = registry_path.with_suffix(".corrupt.json")
+            try:
+                shutil.copy2(registry_path, corrupt)
+            except OSError:
+                pass
+            raise ValueError(f"project registry is unreadable; preserved at {corrupt}") from error
         registry = {"schemaVersion": "1.0", "projects": []}
     projects = registry.setdefault("projects", [])
     pid = identity["projectId"]
@@ -213,6 +295,16 @@ def _register_project(forge_root: Path, project: Path, database: Path, identity:
             pid = identity["projectId"]
             _adopt_copied_database(database, previous_id, identity, project)
             entry = None
+        elif previous_path.resolve(strict=False) != project.resolve(strict=False):
+            connection = connect_database(database)
+            try:
+                with connection:
+                    connection.execute(
+                        "UPDATE learning_records SET project_name = ?, project_path = ? WHERE project_id = ?",
+                        (project.name, str(project), pid),
+                    )
+            finally:
+                connection.close()
     value: dict[str, str] = {
         "projectId": pid,
         "name": identity.get("name") or project.name,
@@ -232,7 +324,7 @@ def _register_project(forge_root: Path, project: Path, database: Path, identity:
         entry.pop("id", None)
         entry.pop("conflictingPath", None)
         entry.update(value)
-    temporary = registry_path.with_suffix(".json.tmp")
+    temporary = registry_path.with_suffix(f".{os.getpid()}.json.tmp")
     temporary.write_text(json.dumps(registry, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temporary.replace(registry_path)
     return identity
@@ -261,12 +353,17 @@ def collect_imported_result(
     if not skill or skill == COLLECTOR_SKILL or skill not in enabled:
         return None
 
-    identity = _project_identity(project)
-    if identity is None:
-        return None
+    registry_path = _skill_root(forge_root) / "project-registry.json"
+    with _REGISTRY_LOCK:
+        with _registry_file_lock(registry_path):
+            identity = _project_identity(project)
+            if identity is None:
+                return None
+            learning_dir = project / ".forge-skill" / "learning"
+            database = learning_dir / DATABASE_NAME
+            identity = _register_project_locked(forge_root, project, database, identity)
     learning_dir = project / ".forge-skill" / "learning"
     database = learning_dir / DATABASE_NAME
-    identity = _register_project(forge_root, project, database, identity)
     timestamp = _now()
     record_id = f"capture-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"
     active = envelope.get("stage_progress", {}).get("active_request", {}) or {}

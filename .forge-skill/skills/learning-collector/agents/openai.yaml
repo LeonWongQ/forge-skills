@@ -1,6 +1,6 @@
 interface:
-  display_name: "Learning Collector"
-  short_description: "Collect and review project-local Forge Skill evidence"
+  display_name: "Learning Collector (Experimental)"
+  short_description: "Explicit-only Skill evidence collection and review"
   default_prompt: "Use $learning-collector to inspect configured Forge Skill collection data."
 policy:
-  allow_implicit_invocation: true
+  allow_implicit_invocation: false

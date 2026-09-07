@@ -1,9 +1,14 @@
 ---
 name: learning-collector
-description: Collect configured Forge Skill final results through each Skill's delivery protocol into project-local SQLite databases and provide a local cross-project review dashboard. This skill supports the data stage of Skill learning/training; it never automatically learns, summarizes, evaluates, or modifies other Skills.
+description: Experimental, explicitly invoked collection and review of configured Forge Skill final results. It stores project-local evidence for optional Skill learning/training and never learns, summarizes, evaluates, or modifies Skills automatically.
 ---
 
 # Learning Collector / Skill Training Data Collector
+
+This is an experimental hidden capability. Do not suggest or invoke it unless
+the user explicitly asks to configure, collect, inspect, or review Skill
+learning/training data. It remains disabled until a project explicitly lists a
+Skill in `.forge-skill/learning/config.json`.
 
 这里的“学习”和“训练”指训练 Forge Skill 的外部行为：通过采集结果、人工审核和后续规则整理，改进 Skill 的提示、流程、判断规则和回归测试。它不指训练模型参数。
 当前版本只实现 Skill 训练闭环的“采集 + 审核”阶段，尚未自动生成或发布 Skill 修改。
@@ -66,6 +71,13 @@ must never block the original Forge runtime operation.
 Run `scripts/review_server.py` to open a loopback-only dashboard. It reads all
 registered project databases and applies review changes transactionally to the
 owning project database.
+
+The dashboard can generate a versioned training summary for one selected
+project and Skill. Each click creates the next version from that combination's
+`ACTIVE` records, marks the new version as applied, and leaves prior versions
+for comparison. The snapshot contains deterministic `trainingContent` items
+for future Skill training plus `sourceRecords` for traceability. It does not
+load into or rewrite the Skill, and does not invoke a model.
 
 The Forge natural-language entrypoint manages the temporary service:
 

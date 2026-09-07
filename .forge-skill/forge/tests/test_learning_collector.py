@@ -214,4 +214,4 @@ def test_existing_database_migration_preserves_records(tmp_path):
 
     assert count == 1
     assert "collection_key" in columns
-    assert version == 2
+    assert version == 3
