@@ -214,4 +214,6 @@ def test_existing_database_migration_preserves_records(tmp_path):
 
     assert count == 1
     assert "collection_key" in columns
-    assert version == 3
+    assert version == 6
+    assert "is_classic" in columns
+    assert "classic_reason" in columns

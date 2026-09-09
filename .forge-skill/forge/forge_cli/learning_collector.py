@@ -14,7 +14,7 @@ from typing import Any
 
 COLLECTOR_SKILL = "learning-collector"
 DATABASE_NAME = "learning.sqlite"
-DATABASE_SCHEMA_VERSION = 3
+DATABASE_SCHEMA_VERSION = 6
 _REGISTRY_LOCK = threading.Lock()
 
 
@@ -141,7 +141,9 @@ def connect_database(path: Path) -> sqlite3.Connection:
                     edited_content TEXT,
                     review_note TEXT NOT NULL DEFAULT '',
                     reviewed_at TEXT,
-                    deleted_at TEXT
+                    deleted_at TEXT,
+                    is_classic INTEGER NOT NULL DEFAULT 0 CHECK (is_classic IN (0, 1)),
+                    classic_reason TEXT NOT NULL DEFAULT ''
                 )
                 """
                 )
@@ -151,6 +153,10 @@ def connect_database(path: Path) -> sqlite3.Connection:
                 }
                 if "collection_key" not in columns:
                     connection.execute("ALTER TABLE learning_records ADD COLUMN collection_key TEXT")
+                if "is_classic" not in columns:
+                    connection.execute("ALTER TABLE learning_records ADD COLUMN is_classic INTEGER NOT NULL DEFAULT 0")
+                if "classic_reason" not in columns:
+                    connection.execute("ALTER TABLE learning_records ADD COLUMN classic_reason TEXT NOT NULL DEFAULT ''")
                 connection.execute("CREATE INDEX IF NOT EXISTS idx_learning_skill ON learning_records(skill)")
                 connection.execute("CREATE INDEX IF NOT EXISTS idx_learning_review ON learning_records(review_status, reviewed)")
                 connection.execute("CREATE INDEX IF NOT EXISTS idx_learning_captured ON learning_records(captured_at DESC)")
@@ -176,6 +182,29 @@ def connect_database(path: Path) -> sqlite3.Connection:
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_learning_summary_skill "
                     "ON learning_summaries(project_id, skill, version DESC)"
+                )
+                connection.execute(
+                    """CREATE TABLE IF NOT EXISTS learning_summary_sources (
+                        summary_id TEXT NOT NULL,
+                        record_id TEXT NOT NULL,
+                        PRIMARY KEY(summary_id, record_id)
+                    )"""
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_summary_source_record "
+                    "ON learning_summary_sources(record_id)"
+                )
+                connection.execute(
+                    """CREATE TABLE IF NOT EXISTS learning_summary_rule_sources (
+                        summary_id TEXT NOT NULL,
+                        rule_id TEXT NOT NULL,
+                        record_id TEXT NOT NULL,
+                        PRIMARY KEY(summary_id, rule_id, record_id)
+                    )"""
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_summary_rule_source_record "
+                    "ON learning_summary_rule_sources(record_id)"
                 )
                 connection.execute(f"PRAGMA user_version={DATABASE_SCHEMA_VERSION}")
     except Exception:

@@ -62,9 +62,11 @@ the situation:
 Copied history remains available in both projects; subsequent records diverge.
 Registry health states are `ACTIVE`, `UNAVAILABLE`, and `DISABLED`.
 
-Records are `ACTIVE` by default. Review may mark them `EXCLUDED` or `DELETED`,
-edit their effective content, add a note, or restore them. Collection errors
-must never block the original Forge runtime operation.
+Records are `ACTIVE` by default. Review may mark them `EXCLUDED`, edit their
+effective content, add a note, or permanently delete them from the owning
+SQLite database. Deletion is irreversible and removes the record from the
+dashboard. Collection errors must never block the original Forge runtime
+operation.
 
 ## Review
 
@@ -73,11 +75,23 @@ registered project databases and applies review changes transactionally to the
 owning project database.
 
 The dashboard can generate a versioned training summary for one selected
-project and Skill. Each click creates the next version from that combination's
-`ACTIVE` records, marks the new version as applied, and leaves prior versions
-for comparison. The snapshot contains deterministic `trainingContent` items
-for future Skill training plus `sourceRecords` for traceability. It does not
-load into or rewrite the Skill, and does not invoke a model.
+project and Skill. A summary includes only records that are both `ACTIVE` and
+reviewed, normally from the last six months plus records marked as classic
+cases. The common layer controls this time window, classic-case retention,
+size limits, and source traceability. Each Skill may provide a specialized
+extractor; Skills without one use a generic evidence candidate and remain
+pending refinement. All generated rules start as `PENDING`.
+
+The separate `/versions` page allows an operator to edit each rule, confirm or
+exclude it, enable one fully reviewed version per project and Skill, and
+permanently delete non-applied versions. Legacy summaries remain readable but
+cannot be newly enabled. Summary generation is deterministic by default and
+does not invoke a model automatically. The `/versions` page now exposes an
+explicit `LLM 精炼` action and local configuration. Only endpoint, model, and
+API-key environment-variable name are stored in `llm-refiner.json`; the secret
+stays in the host environment. Refinement runs only for a `DRAFT`, forces all
+returned rules back to `PENDING`, and rejects invalid, oversized, or unknown
+source output without changing the previous snapshot.
 
 The Forge natural-language entrypoint manages the temporary service:
 
@@ -93,9 +107,9 @@ not start automatically with Forge.
 
 ## Boundaries
 
-Do not infer learning/training rules, summarize records, run evaluations, update
-Memory, modify another Skill, or publish anything. Those capabilities require
-separate approval and are intentionally outside this version.
+Do not load a summary into another Skill, run evaluations, update Memory,
+modify another Skill, or publish anything. Those capabilities require separate
+approval and are intentionally outside this version.
 
 ## Direct host execution
 

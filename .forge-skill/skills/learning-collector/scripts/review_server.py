@@ -9,14 +9,26 @@ import sqlite3
 import sys
 import threading
 import uuid
+import urllib.error
+import urllib.request
+try:
+    import winreg
+except ImportError:
+    winreg = None
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from summary_engine import build_summary, encoded_size
+
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = SKILL_ROOT / "project-registry.json"
 HTML_PATH = SKILL_ROOT / "assets" / "review.html"
+VERSIONS_PATH = SKILL_ROOT / "assets" / "versions.html"
+LLM_CONFIG_PATH = SKILL_ROOT / "llm-refiner.json"
+_LLM_CONFIG_LOCK = threading.Lock()
+MAX_LLM_RESPONSE_BYTES = 256 * 1024
 ALLOWED_ACTIONS = {"ACTIVE", "EXCLUDED", "DELETED"}
 SERVICE_TOKEN = ""
 _QUERY_WARNINGS = threading.local()
@@ -30,6 +42,171 @@ def _warnings() -> list[dict]:
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def llm_config() -> dict:
+    defaults = {"enabled": False, "endpoint": "", "model": "", "wireApi": "responses", "apiKeyEnv": "FORGE_LEARNING_LLM_API_KEY", "timeoutSeconds": 30}
+    try:
+        value = json.loads(LLM_CONFIG_PATH.read_text(encoding="utf-8"))
+        return {**defaults, **value} if isinstance(value, dict) else defaults
+    except (OSError, json.JSONDecodeError):
+        return defaults
+
+
+def llm_config_status() -> dict:
+    config = llm_config()
+    enabled = config.get("enabled") is True
+    endpoint = config.get("endpoint") if isinstance(config.get("endpoint"), str) else ""
+    model = config.get("model") if isinstance(config.get("model"), str) else ""
+    api_key_env = config.get("apiKeyEnv") if isinstance(config.get("apiKeyEnv"), str) else ""
+    valid_wire_api = config.get("wireApi") in {"responses", "chat_completions"}
+    configured = bool(enabled and endpoint.strip() and model.strip() and valid_wire_api and api_key_env.strip() and _environment_value(api_key_env))
+    return {**config, "configured": configured}
+
+
+def _environment_value(name: str) -> str | None:
+    value = os.environ.get(name)
+    if value:
+        return value
+    if winreg is not None:
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+                value, _ = winreg.QueryValueEx(key, name)
+                return str(value) if value else None
+        except (FileNotFoundError, OSError):
+            pass
+    return None
+
+
+def save_llm_config(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError("LLM configuration must be a JSON object")
+    with _LLM_CONFIG_LOCK:
+        # Lock the complete read-modify-write sequence so a toggle and a form
+        # save cannot overwrite each other's fields with stale snapshots.
+        config = llm_config()
+        for key in ("enabled", "endpoint", "model", "wireApi", "apiKeyEnv", "timeoutSeconds"):
+            if key in payload:
+                config[key] = payload[key]
+        if not isinstance(config["enabled"], bool) or not isinstance(config["endpoint"], str) or not isinstance(config["model"], str):
+            raise ValueError("invalid LLM configuration")
+        if config["wireApi"] not in {"responses", "chat_completions"}:
+            raise ValueError("wireApi must be responses or chat_completions")
+        if not isinstance(config["apiKeyEnv"], str) or not config["apiKeyEnv"].strip():
+            raise ValueError("apiKeyEnv is required")
+        if not isinstance(config["timeoutSeconds"], int) or not 5 <= config["timeoutSeconds"] <= 120:
+            raise ValueError("timeoutSeconds must be between 5 and 120")
+        temporary = LLM_CONFIG_PATH.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(LLM_CONFIG_PATH)
+    return {**config, "configured": bool(config["enabled"] and config["endpoint"] and config["model"] and _environment_value(config["apiKeyEnv"]))}
+
+
+def refine_summary(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError("refinement request must be a JSON object")
+    project_id, skill, version = payload.get("projectId"), payload.get("skill"), payload.get("version")
+    if not isinstance(project_id, str) or not isinstance(skill, str) or not isinstance(version, int):
+        raise ValueError("projectId, skill and integer version are required")
+    config = llm_config()
+    if (config.get("enabled") is not True or not isinstance(config.get("endpoint"), str)
+            or not config["endpoint"].strip() or not isinstance(config.get("model"), str)
+            or not config["model"].strip() or config.get("wireApi") not in {"responses", "chat_completions"}):
+        raise ValueError("LLM refinement is disabled or not configured")
+    api_key_env = config.get("apiKeyEnv")
+    if not isinstance(api_key_env, str) or not api_key_env.strip():
+        raise ValueError("LLM credential environment variable is invalid")
+    api_key = _environment_value(api_key_env)
+    if not api_key:
+        raise ValueError(f"LLM credential environment variable is missing: {config['apiKeyEnv']}")
+    project = next((item for item in projects() if item.get("projectId") == project_id), None)
+    if project is None:
+        raise ValueError("project not found")
+    connection = sqlite3.connect(Path(str(project.get("database", ""))), timeout=5)
+    try:
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS learning_summary_rule_sources (
+                summary_id TEXT NOT NULL,
+                rule_id TEXT NOT NULL,
+                record_id TEXT NOT NULL,
+                PRIMARY KEY(summary_id, rule_id, record_id)
+            )"""
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_learning_summary_rule_source_record "
+            "ON learning_summary_rule_sources(record_id)"
+        )
+        row = connection.execute("SELECT summary_json, applied FROM learning_summaries WHERE project_id = ? AND skill = ? AND version = ?", (project_id, skill, version)).fetchone()
+        if row is None:
+            raise ValueError("summary version not found")
+        if row[1]:
+            raise ValueError("an enabled summary cannot be refined")
+        snapshot = decode_json(row[0])
+        if not isinstance(snapshot, dict) or snapshot.get("status") != "DRAFT":
+            raise ValueError("only DRAFT summaries can be refined")
+        rules = snapshot.get("rules") if isinstance(snapshot.get("rules"), list) else []
+        source_ids = {source_id for rule in rules for source_id in rule.get("sourceRecordIds", []) if isinstance(rule, dict)}
+        source_rows = connection.execute("SELECT record_id FROM learning_summary_sources WHERE summary_id = (SELECT id FROM learning_summaries WHERE project_id = ? AND skill = ? AND version = ?)", (project_id, skill, version)).fetchall()
+        source_ids = {row[0] for row in source_rows}
+        prompt = {"task": "Refine Skill training candidates conservatively. Return JSON only.", "skill": skill, "rules": rules, "constraints": ["Do not invent evidence or sources", "Every rule must cite at least one sourceRecordId", "Only use sourceRecordIds from the input", "Return at most 12 rules", "All rules must have status PENDING", "Identify conflicts instead of merging contradictory instructions"]}
+        instruction = "You are a conservative Skill-training editor. Output a JSON object with a rules array. Each rule needs id, stage, type, title, instruction, rationale, status, supportCount, sourceRecordIds, confidence. Every rule must cite at least one sourceRecordId."
+        if config["wireApi"] == "responses":
+            request_payload = {"model": config["model"], "temperature": 0, "input": [{"role": "system", "content": [{"type": "input_text", "text": instruction}]}, {"role": "user", "content": [{"type": "input_text", "text": json.dumps(prompt, ensure_ascii=False)}]}]}
+        else:
+            request_payload = {"model": config["model"], "temperature": 0, "messages": [{"role": "system", "content": instruction}, {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)}]}
+        request_body = json.dumps(request_payload, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(config["endpoint"], data=request_body, headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=config["timeoutSeconds"]) as response:
+                chunks, total = [], 0
+                while True:
+                    chunk = response.read(min(16 * 1024, MAX_LLM_RESPONSE_BYTES - total + 1))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if total > MAX_LLM_RESPONSE_BYTES:
+                        raise ValueError("LLM response exceeds the 256 KB limit")
+                response_value = json.loads(b"".join(chunks).decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as error:
+            raise ValueError(f"LLM refinement failed: {type(error).__name__}") from error
+        if config["wireApi"] == "responses":
+            content = response_value.get("output_text") if isinstance(response_value, dict) else None
+            if not content and isinstance(response_value, dict):
+                content = "".join(item.get("text", "") for output in response_value.get("output", []) for item in output.get("content", []) if isinstance(item, dict))
+        else:
+            content = response_value.get("choices", [{}])[0].get("message", {}).get("content") if isinstance(response_value, dict) else None
+        refined = json.loads(content) if isinstance(content, str) else content
+        if not isinstance(refined, dict) or not isinstance(refined.get("rules"), list) or not 1 <= len(refined["rules"]) <= 12:
+            raise ValueError("LLM returned invalid rules")
+        seen = set()
+        for rule in refined["rules"]:
+            if not isinstance(rule, dict) or not isinstance(rule.get("id"), str) or rule["id"] in seen:
+                raise ValueError("LLM returned duplicate or invalid rule IDs")
+            seen.add(rule["id"])
+            if rule.get("status") != "PENDING" or rule.get("stage") not in {"PRE_CHECK", "FINAL_VALIDATION"}:
+                raise ValueError("LLM may only return pending valid stages")
+            source_record_ids = rule.get("sourceRecordIds")
+            if (not isinstance(source_record_ids, list) or not source_record_ids
+                    or any(not isinstance(source_id, str) for source_id in source_record_ids)
+                    or len(source_record_ids) != len(set(source_record_ids))
+                    or not set(source_record_ids).issubset(source_ids)):
+                raise ValueError("LLM returned unknown source IDs")
+            if not isinstance(rule.get("instruction"), str) or not 1 <= len(rule["instruction"].strip()) <= 500:
+                raise ValueError("LLM returned invalid instruction")
+        snapshot["rules"] = refined["rules"]
+        snapshot["statistics"]["generatedRules"] = len(refined["rules"])
+        snapshot["refinement"] = {"mode": "explicit_llm", "model": config["model"], "refinedAt": now()}
+        if encoded_size(snapshot) > 20_000:
+            raise ValueError("refined summary exceeds the 20 KB quality limit")
+        with connection:
+            summary_id = connection.execute("SELECT id FROM learning_summaries WHERE project_id = ? AND skill = ? AND version = ?", (project_id, skill, version)).fetchone()[0]
+            connection.execute("UPDATE learning_summaries SET summary_json = ? WHERE project_id = ? AND skill = ? AND version = ?", (json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")), project_id, skill, version))
+            connection.execute("DELETE FROM learning_summary_rule_sources WHERE summary_id = ?", (summary_id,))
+            connection.executemany("INSERT INTO learning_summary_rule_sources(summary_id, rule_id, record_id) VALUES (?, ?, ?)", ((summary_id, rule["id"], source_id) for rule in refined["rules"] for source_id in rule["sourceRecordIds"]))
+        return {"projectId": project_id, "skill": skill, "version": version, "status": "DRAFT", "summary": snapshot}
+    finally:
+        connection.close()
 
 
 def projects() -> list[dict]:
@@ -179,27 +356,6 @@ def query_summaries(query: dict[str, list[str]]) -> list[dict]:
     return result[offset:offset + limit]
 
 
-def extract_training_content(content, review_note: str) -> dict:
-    """Normalize one reviewed result into a future Skill-training item.
-
-    This is intentionally deterministic: it extracts useful user-visible
-    fields without inventing rules or asking a model to reinterpret history.
-    """
-    if isinstance(content, dict):
-        known = (
-            "status", "conclusion", "overallAssessment", "assessment", "findings",
-            "verification", "scope", "caveats", "openQuestions", "suggestedDirection",
-        )
-        extracted = {key: content[key] for key in known if key in content}
-        if not extracted:
-            extracted = {"content": content}
-    else:
-        extracted = {"content": content}
-    if review_note.strip():
-        extracted["reviewNote"] = review_note.strip()
-    return extracted
-
-
 def _enabled_skills(project: dict) -> set[str]:
     try:
         forge_root = SKILL_ROOT.parent.parent / "forge"
@@ -212,76 +368,18 @@ def _enabled_skills(project: dict) -> set[str]:
     return enabled or set()
 
 
-def build_training_profile(skill: str, items: list[dict]) -> dict:
-    """Aggregate review evidence into a deterministic, skill-specific profile."""
-    profile = {"skill": skill, "recordCount": len(items), "adjustmentCandidates": []}
-    if skill == "code-review":
-        severity_counts: dict[str, int] = {}
-        finding_titles: dict[str, int] = {}
-        findings = []
-        for item in items:
-            content = item["content"]
-            if not isinstance(content, dict):
-                continue
-            values = content.get("findings")
-            if not isinstance(values, list):
-                continue
-            for finding in values:
-                if not isinstance(finding, dict):
-                    continue
-                severity = str(finding.get("severity") or "UNSPECIFIED")
-                title = str(finding.get("title") or "UNTITLED")
-                severity_counts[severity] = severity_counts.get(severity, 0) + 1
-                finding_titles[title] = finding_titles.get(title, 0) + 1
-                findings.append({
-                    "sourceRecordId": item["source"]["recordId"],
-                    "title": finding.get("title"), "severity": finding.get("severity"),
-                    "evidence": finding.get("evidence"),
-                    "impact": finding.get("impact", finding.get("why_it_matters")),
-                    "direction": finding.get("direction", finding.get("suggested_direction")),
-                    "confidence": finding.get("confidence"),
-                })
-        profile["findingStats"] = {"bySeverity": severity_counts, "byTitle": finding_titles}
-        profile["findings"] = findings
-        notes = [item["content"].get("reviewNote") for item in items
-                 if isinstance(item.get("content"), dict) and item["content"].get("reviewNote")]
-        profile["reviewNotes"] = notes
-        profile["adjustmentCandidates"] = []
-        if finding_titles:
-            profile["adjustmentCandidates"].append({
-                "type": "recurring_finding",
-                "status": "PENDING",
-                "titles": [title for title, count in finding_titles.items() if count > 1],
-                "evidence": "Repeated finding titles may indicate a check worth strengthening; confirm manually.",
-            })
-        if severity_counts:
-            profile["adjustmentCandidates"].append({
-                "type": "severity_calibration",
-                "status": "PENDING",
-                "distribution": severity_counts,
-                "evidence": "Use reviewed severity distribution to inspect calibration; do not change thresholds automatically.",
-            })
-        if notes:
-            profile["adjustmentCandidates"].append({
-                "type": "reviewer_corrections",
-                "status": "PENDING",
-                "count": len(notes),
-                "evidence": "Reviewer notes require manual confirmation before becoming Skill rules.",
-            })
-    else:
-        profile["adjustmentCandidates"] = [
-            {"status": "PENDING", "type": "manual_review",
-             "evidence": "Review extracted records for recurring corrections before defining Skill-specific rules."}
-        ]
-    return profile
-
-
 def create_summary(payload: dict) -> dict:
     project_id = payload.get("projectId")
     skill = payload.get("skill")
     if not isinstance(project_id, str) or not isinstance(skill, str) or not skill.strip():
         raise ValueError("projectId and skill are required")
     skill = skill.strip().removeprefix("skill.").replace("_", "-")
+    try:
+        window_months = int(payload.get("windowMonths", 6))
+    except (TypeError, ValueError):
+        raise ValueError("windowMonths must be an integer")
+    if not 1 <= window_months <= 120:
+        raise ValueError("windowMonths must be between 1 and 120")
     project = next((item for item in projects() if item.get("projectId") == project_id), None)
     if project is None:
         raise ValueError("project not found")
@@ -295,6 +393,11 @@ def create_summary(payload: dict) -> dict:
     try:
         with connection:
             connection.execute("BEGIN IMMEDIATE")
+            record_columns = {row[1] for row in connection.execute("PRAGMA table_info(learning_records)")}
+            if "is_classic" not in record_columns:
+                connection.execute("ALTER TABLE learning_records ADD COLUMN is_classic INTEGER NOT NULL DEFAULT 0")
+            if "classic_reason" not in record_columns:
+                connection.execute("ALTER TABLE learning_records ADD COLUMN classic_reason TEXT NOT NULL DEFAULT ''")
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS learning_summaries (
                     id TEXT PRIMARY KEY, project_id TEXT NOT NULL, skill TEXT NOT NULL,
@@ -303,24 +406,47 @@ def create_summary(payload: dict) -> dict:
                     UNIQUE(project_id, skill, version)
                 )"""
             )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS learning_summary_sources (
+                    summary_id TEXT NOT NULL, record_id TEXT NOT NULL,
+                    PRIMARY KEY(summary_id, record_id)
+                )"""
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS learning_summary_rule_sources (
+                    summary_id TEXT NOT NULL, rule_id TEXT NOT NULL, record_id TEXT NOT NULL,
+                    PRIMARY KEY(summary_id, rule_id, record_id)
+                )"""
+            )
             rows = connection.execute(
-                """SELECT id, run_id, captured_at, output_json, edited_content, review_note
+                """SELECT id, run_id, captured_at, output_json, edited_content, review_note,
+                          is_classic, classic_reason
                    FROM learning_records WHERE project_id = ? AND skill = ?
-                   AND review_status = 'ACTIVE'
+                   AND review_status = 'ACTIVE' AND reviewed = 1
                    AND (output_json IS NOT NULL OR (edited_content IS NOT NULL AND trim(edited_content) <> ''))
                    ORDER BY captured_at ASC""",
                 (project_id, skill),
             ).fetchall()
             if not rows:
-                raise ValueError("no active records to summarize")
+                raise ValueError("no reviewed active records to summarize")
             latest = connection.execute(
                 "SELECT COALESCE(MAX(version), 0) FROM learning_summaries WHERE project_id = ? AND skill = ?",
                 (project_id, skill),
             ).fetchone()[0]
             version = int(latest) + 1
-            entries = []
-            training_items = []
+            cutoff = datetime.now(timezone.utc).timestamp() - window_months * 30 * 86400
+            source_records = []
+            window_records = 0
+            classic_records = 0
             for row in rows:
+                try:
+                    captured_timestamp = datetime.fromisoformat(str(row["captured_at"]).replace("Z", "+00:00")).timestamp()
+                except (TypeError, ValueError, OverflowError):
+                    captured_timestamp = 0
+                if not row["is_classic"] and captured_timestamp < cutoff:
+                    continue
+                window_records += 1
+                classic_records += int(bool(row["is_classic"]))
                 content = row["edited_content"]
                 if not content:
                     content = decode_json(row["output_json"])
@@ -331,33 +457,187 @@ def create_summary(payload: dict) -> dict:
                 note = row["review_note"] or ""
                 if not has_meaningful_content(content):
                     continue
-                source = {"recordId": row["id"], "projectId": project_id, "runId": row["run_id"], "capturedAt": row["captured_at"]}
-                content_type = "json" if isinstance(content, (dict, list)) else "text"
-                entries.append({**source, "content": content, "contentType": content_type, "reviewNote": note})
-                training_items.append({"source": source, "content": extract_training_content(content, note), "contentType": content_type})
+                source_records.append({
+                    "recordId": row["id"], "runId": row["run_id"],
+                    "capturedAt": row["captured_at"], "content": content,
+                    "reviewNote": note,
+                })
+            if not source_records:
+                raise ValueError("no meaningful reviewed active records to summarize")
+            refined = build_summary(source_records, skill=skill)
             snapshot = {
-                "format": "forge-skill-training-summary-v2",
+                "format": "forge-skill-training-summary-v5",
                 "projectId": project_id, "skill": skill, "version": version,
-                "sourceCount": len(entries),
-                "trainingProfile": build_training_profile(skill, training_items),
-                "trainingContent": training_items,
-                "sourceRecords": entries,
+                "sourceCount": len(source_records),
+                "window": {"months": window_months, "windowRecords": window_records,
+                           "classicRecords": classic_records, "cutoffAt": datetime.fromtimestamp(cutoff, timezone.utc).isoformat().replace("+00:00", "Z")},
+                **refined,
             }
+            while encoded_size(snapshot) > 20_000 and snapshot["rules"]:
+                snapshot["rules"].pop()
+                snapshot["statistics"]["generatedRules"] = len(snapshot["rules"])
+                snapshot["statistics"]["discardedClusters"] += 1
+            if encoded_size(snapshot) > 20_000:
+                raise ValueError("summary metadata exceeds the 20 KB quality limit")
             created_at = now()
-            connection.execute(
-                "UPDATE learning_summaries SET applied = 0 WHERE project_id = ? AND skill = ?",
-                (project_id, skill),
-            )
+            summary_id = f"summary-{uuid.uuid4()}"
             connection.execute(
                 """INSERT INTO learning_summaries
                    (id, project_id, skill, version, created_at, source_count, summary_json, applied)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, 1)""",
-                (f"summary-{uuid.uuid4()}", project_id, skill, version, created_at,
-                 len(entries), json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))),
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 0)""",
+                (summary_id, project_id, skill, version, created_at,
+                 len(source_records), json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))),
+            )
+            connection.executemany(
+                "INSERT INTO learning_summary_sources(summary_id, record_id) VALUES (?, ?)",
+                ((summary_id, record["recordId"]) for record in source_records),
             )
             return {"projectId": project_id, "skill": skill, "version": version,
-                    "createdAt": created_at, "sourceCount": len(entries), "applied": True,
+                    "createdAt": created_at, "sourceCount": len(source_records), "applied": False,
                     "summary": snapshot}
+    finally:
+        connection.close()
+
+
+def apply_summary(payload: dict) -> dict:
+    project_id, skill, version = payload.get("projectId"), payload.get("skill"), payload.get("version")
+    if not isinstance(project_id, str) or not isinstance(skill, str) or not isinstance(version, int):
+        raise ValueError("projectId, skill and integer version are required")
+    project = next((item for item in projects() if item.get("projectId") == project_id), None)
+    if project is None or skill not in _enabled_skills(project):
+        raise ValueError("project or enabled skill not found")
+    database = Path(str(project.get("database", "")))
+    connection = sqlite3.connect(database, timeout=5)
+    connection.row_factory = sqlite3.Row
+    try:
+        with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT summary_json FROM learning_summaries WHERE project_id = ? AND skill = ? AND version = ?",
+                (project_id, skill, version),
+            ).fetchone()
+            if row is None:
+                raise ValueError("summary version not found")
+            snapshot = decode_json(row["summary_json"])
+            if not isinstance(snapshot, dict) or snapshot.get("format") not in {"forge-skill-training-summary-v4", "forge-skill-training-summary-v5"}:
+                raise ValueError("legacy summary versions cannot be newly enabled; generate and review a current version")
+            if snapshot.get("status") != "REVIEWED":
+                raise ValueError("summary rules must be fully reviewed before enabling")
+            if not any(rule.get("status") == "CONFIRMED" for rule in snapshot.get("rules", [])):
+                raise ValueError("at least one confirmed rule is required before enabling")
+            connection.execute("UPDATE learning_summaries SET applied = 0 WHERE project_id = ? AND skill = ?", (project_id, skill))
+            connection.execute("UPDATE learning_summaries SET applied = 1 WHERE project_id = ? AND skill = ? AND version = ?", (project_id, skill, version))
+            applied_dir = Path(str(project.get("path", ""))) / ".forge-skill" / "learning" / "applied"
+            applied_dir.mkdir(parents=True, exist_ok=True)
+            target = applied_dir / f"{skill}.json"
+            temporary = target.with_suffix(".json.tmp")
+            temporary.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            temporary.replace(target)
+            return {"projectId": project_id, "skill": skill, "version": version, "applied": True}
+    finally:
+        connection.close()
+
+
+def review_summary(payload: dict) -> dict:
+    project_id, skill, version = payload.get("projectId"), payload.get("skill"), payload.get("version")
+    updates = payload.get("rules")
+    if not isinstance(project_id, str) or not isinstance(skill, str) or not isinstance(version, int):
+        raise ValueError("projectId, skill and integer version are required")
+    if not isinstance(updates, list):
+        raise ValueError("rules must be an array")
+    project = next((item for item in projects() if item.get("projectId") == project_id), None)
+    if project is None:
+        raise ValueError("project not found")
+    connection = sqlite3.connect(Path(str(project.get("database", ""))), timeout=5)
+    try:
+        with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT summary_json, applied FROM learning_summaries WHERE project_id = ? AND skill = ? AND version = ?",
+                (project_id, skill, version),
+            ).fetchone()
+            if row is None:
+                raise ValueError("summary version not found")
+            if row[1]:
+                raise ValueError("an enabled summary cannot be edited; create a new version")
+            snapshot = decode_json(row[0])
+            if not isinstance(snapshot, dict) or snapshot.get("format") not in {"forge-skill-training-summary-v4", "forge-skill-training-summary-v5"}:
+                raise ValueError("legacy summary versions cannot be reviewed")
+            originals = {rule.get("id"): rule for rule in snapshot.get("rules", []) if isinstance(rule, dict)}
+            if (len(updates) != len(originals)
+                    or any(not isinstance(item, dict) for item in updates)
+                    or {item.get("id") for item in updates} != set(originals)):
+                raise ValueError("review must include every generated rule exactly once")
+            for update in updates:
+                rule = originals[update["id"]]
+                status = update.get("status")
+                stage = update.get("stage")
+                instruction = str(update.get("instruction") or "").strip()
+                if status not in {"PENDING", "CONFIRMED", "EXCLUDED"}:
+                    raise ValueError("invalid rule status")
+                if stage not in {"PRE_CHECK", "FINAL_VALIDATION"}:
+                    raise ValueError("invalid rule stage")
+                if not instruction or len(instruction) > 500:
+                    raise ValueError("rule instruction must contain 1-500 characters")
+                rule.update({"status": status, "stage": stage, "instruction": instruction})
+            rules = list(originals.values())
+            counts = {status: sum(rule["status"] == status for rule in rules)
+                      for status in ("PENDING", "CONFIRMED", "EXCLUDED")}
+            snapshot["rules"] = rules
+            snapshot["statistics"].update({
+                "pendingRules": counts["PENDING"], "confirmedRules": counts["CONFIRMED"],
+                "excludedRules": counts["EXCLUDED"],
+            })
+            snapshot["status"] = "REVIEWED" if counts["PENDING"] == 0 else "DRAFT"
+            snapshot["reviewedAt"] = now() if snapshot["status"] == "REVIEWED" else None
+            if encoded_size(snapshot) > 20_000:
+                raise ValueError("reviewed summary exceeds the 20 KB quality limit")
+            connection.execute(
+                "UPDATE learning_summaries SET summary_json = ? WHERE project_id = ? AND skill = ? AND version = ?",
+                (json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")), project_id, skill, version),
+            )
+            return {"projectId": project_id, "skill": skill, "version": version,
+                    "status": snapshot["status"], "statistics": snapshot["statistics"]}
+    finally:
+        connection.close()
+
+
+def delete_summary(payload: dict) -> dict:
+    project_id, skill, version = payload.get("projectId"), payload.get("skill"), payload.get("version")
+    if not isinstance(project_id, str) or not isinstance(skill, str) or not isinstance(version, int):
+        raise ValueError("projectId, skill and integer version are required")
+    project = next((item for item in projects() if item.get("projectId") == project_id), None)
+    if project is None:
+        raise ValueError("project not found")
+    database = Path(str(project.get("database", "")))
+    connection = sqlite3.connect(database, timeout=5)
+    try:
+        with connection:
+            row = connection.execute(
+                "SELECT applied FROM learning_summaries WHERE project_id = ? AND skill = ? AND version = ?",
+                (project_id, skill, version),
+            ).fetchone()
+            if row is None:
+                raise ValueError("summary version not found")
+            if row[0]:
+                raise ValueError("cannot delete the applied version; apply another version first")
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS learning_summary_sources (
+                    summary_id TEXT NOT NULL, record_id TEXT NOT NULL,
+                    PRIMARY KEY(summary_id, record_id)
+                )"""
+            )
+            summary_id = connection.execute(
+                "SELECT id FROM learning_summaries WHERE project_id = ? AND skill = ? AND version = ?",
+                (project_id, skill, version),
+            ).fetchone()[0]
+            connection.execute("DELETE FROM learning_summary_sources WHERE summary_id = ?", (summary_id,))
+            connection.execute("DELETE FROM learning_summary_rule_sources WHERE summary_id = ?", (summary_id,))
+            cursor = connection.execute(
+                "DELETE FROM learning_summaries WHERE project_id = ? AND skill = ? AND version = ?",
+                (project_id, skill, version),
+            )
+            return {"projectId": project_id, "skill": skill, "version": version, "deleted": cursor.rowcount == 1}
     finally:
         connection.close()
 
@@ -374,19 +654,28 @@ def update_record(payload: dict) -> bool:
     database = Path(str(project.get("database", "")))
     if not database.is_file():
         return False
-    reviewed_at = now()
-    deleted_at = reviewed_at if action == "DELETED" else None
     connection = sqlite3.connect(database, timeout=5)
     try:
         with connection:
+            if action == "DELETED":
+                cursor = connection.execute(
+                    "DELETE FROM learning_records WHERE id = ? AND project_id = ?",
+                    (record_id, project_id),
+                )
+                return cursor.rowcount == 1
+            reviewed_at = now()
+            classic = payload.get("isClassic", False)
+            if not isinstance(classic, bool):
+                return False
             cursor = connection.execute(
             """
             UPDATE learning_records
             SET review_status = ?, reviewed = 1, edited_content = ?, review_note = ?,
-                reviewed_at = ?, deleted_at = ?
+                reviewed_at = ?, deleted_at = ?, is_classic = ?, classic_reason = ?
             WHERE id = ? AND project_id = ?
             """,
-                (action, payload.get("editedContent"), str(payload.get("note") or ""), reviewed_at, deleted_at, record_id, project_id),
+                (action, payload.get("editedContent"), str(payload.get("note") or ""), reviewed_at, None,
+                 int(classic), str(payload.get("classicReason") or ""), record_id, project_id),
             )
             return cursor.rowcount == 1
     finally:
@@ -415,6 +704,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+            elif parsed.path in {"/versions", "/versions.html"}:
+                body = VERSIONS_PATH.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
             elif parsed.path == "/api/projects":
                 self.send_json(projects())
             elif parsed.path == "/api/service":
@@ -423,6 +719,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(query_records(parse_qs(parsed.query)))
             elif parsed.path == "/api/summaries":
                 self.send_json(query_summaries(parse_qs(parsed.query)))
+            elif parsed.path == "/api/llm-config":
+                self.send_json(llm_config_status())
             else:
                 self.send_json({"error": "not found"}, 404)
         except sqlite3.OperationalError as error:
@@ -432,7 +730,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": str(error)}, 500)
 
     def do_POST(self):
-        if self.path not in {"/api/review", "/api/summarize"}:
+        if self.path not in {"/api/review", "/api/summarize", "/api/apply", "/api/delete-summary", "/api/review-summary", "/api/llm-config", "/api/refine"}:
             self.send_json({"error": "not found"}, 404)
             return
         try:
@@ -440,8 +738,23 @@ class Handler(BaseHTTPRequestHandler):
             if length > 1_000_000:
                 raise ValueError("request too large")
             payload = json.loads(self.rfile.read(length))
+            if self.path == "/api/llm-config":
+                self.send_json(save_llm_config(payload))
+                return
+            if self.path == "/api/refine":
+                self.send_json(refine_summary(payload))
+                return
             if self.path == "/api/summarize":
                 self.send_json(create_summary(payload), 201)
+                return
+            if self.path == "/api/apply":
+                self.send_json(apply_summary(payload))
+                return
+            if self.path == "/api/delete-summary":
+                self.send_json(delete_summary(payload))
+                return
+            if self.path == "/api/review-summary":
+                self.send_json(review_summary(payload))
                 return
             if not update_record(payload):
                 self.send_json({"error": "record not found or invalid action"}, 400)
