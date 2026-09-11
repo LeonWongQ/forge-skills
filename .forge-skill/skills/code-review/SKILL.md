@@ -58,7 +58,7 @@ Complete the review first, then make one best-effort collection attempt:
    execution noise: prompts, hidden reasoning, credentials, full context
    bundles, and copied source files. Do not replace the review with a summary.
 3. Send it once as UTF-8 bytes to the installed
-   `learning-collector/scripts/record_direct_result.py` with
+   `.forge-skill/skills/learning-collector/scripts/record_direct_result.py` with
    `--skill code-review` and the current project path. Do not use `py -3`, a
    PowerShell text pipeline, another interpreter, content conversion, or a
    retry. This Skill delivery step is the only collection trigger.

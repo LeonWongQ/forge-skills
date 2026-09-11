@@ -9,6 +9,15 @@ __pycache__/
 # Local evaluation and generated runtime artifacts
 .skill-eval/
 .forge-runtime/
+.forge-skill/forge-data/*
+!.forge-skill/forge-data/.gitignore
+!.forge-skill/forge-data/README.md
+!.forge-skill/forge-data/runtime.json
+.forge-skill/learning/learning.sqlite*
+.forge-skill/learning/applied/
+.forge-skill/skills/learning-collector/project-registry.json*
+.forge-skill/skills/learning-collector/review-service.json
+.forge-skill/skills/learning-collector/llm-refiner.json
 
 # Local agent configuration
 .claude/settings.local.json

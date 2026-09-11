@@ -1,0 +1,5 @@
+# Forge runtime data is local to the installation and must never be committed.
+*
+!.gitignore
+!README.md
+!runtime.json

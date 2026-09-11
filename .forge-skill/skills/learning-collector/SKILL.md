@@ -1,6 +1,6 @@
 ---
 name: learning-collector
-description: Experimental, explicitly invoked collection and review of configured Forge Skill final results. It stores project-local evidence for optional Skill learning/training and never learns, summarizes, evaluates, or modifies Skills automatically.
+description: Experimental, explicitly invoked collection and review of configured Forge Skill final results. It stores project-scoped evidence for optional Skill learning/training and never learns, summarizes, evaluates, or modifies Skills automatically.
 ---
 
 # Learning Collector / Skill Training Data Collector
@@ -39,14 +39,17 @@ needs `enabledSkills`, for example:
 
 ## Storage
 
-Store records in the current project's:
+Store records in the shared Forge data root, partitioned by project and Skill:
 
 ```text
-.forge-skill/learning/learning.sqlite
+forge-data/projects/<projectId>/learning/<skill>/learning.sqlite
 ```
 
-Register its location in `project-registry.json` beside this file. Project
-databases provide physical isolation; the registry enables cross-project review.
+The project keeps only `.forge-skill/learning/config.json` and `project.json`.
+The global `forge-data/project-registry.json` enables cross-project review;
+databases remain physically isolated under their project ID.
+The applied summary version and its complete content remain authoritative in
+that Skill database; do not maintain a second applied-version JSON source.
 
 On first collection, create `.forge-skill/learning/project.json` with a stable
 UUID-based `projectId`. This identity moves with the project. The registry keeps
@@ -89,9 +92,10 @@ cannot be newly enabled. Summary generation is deterministic by default and
 does not invoke a model automatically. The `/versions` page now exposes an
 explicit `LLM 精炼` action and local configuration. Only endpoint, model, and
 API-key environment-variable name are stored in `llm-refiner.json`; the secret
-stays in the host environment. Refinement runs only for a `DRAFT`, forces all
-returned rules back to `PENDING`, and rejects invalid, oversized, or unknown
-source output without changing the previous snapshot.
+stays in the host environment. Refinement uses a `DRAFT` as its immutable
+source and creates a new version. It forces all returned rules to `PENDING`,
+and rejects invalid, oversized, unknown, or concurrently changed source output
+without changing the source version.
 
 The Forge natural-language entrypoint manages the temporary service:
 
@@ -123,7 +127,7 @@ hidden reasoning.
 The direct-host contract is strict and best-effort:
 
 - Read `pythonExecutable` and `directCollectionTimeoutSeconds` from
-  `runtime.json` beside this file. Do not use the Windows `py` launcher and do
+  the project installation's `forge-data/runtime.json`. Do not use the Windows `py` launcher and do
   not switch interpreters after a failure. A missing configured executable is
   a collection failure, not permission to discover another runtime.
 - Write UTF-8 JSON bytes directly to stdin. A PowerShell native text pipeline

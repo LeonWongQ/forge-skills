@@ -284,7 +284,7 @@ bundles, credentials, sensitive environment values, or unrelated file content.
 Encode the JSON as UTF-8 bytes
 and write those bytes directly to the child process stdin; do not use a native
 PowerShell text pipeline. Invoke `pythonExecutable` from the installed
-`learning-collector/runtime.json`, never `py -3`, and apply its
+`forge-data/runtime.json`, never `py -3`, and apply its
 `directCollectionTimeoutSeconds` limit. On failure, retain only the error type,
 interpreter path, and exit code for diagnostics. Do not try another interpreter,
 convert the content, or retry in the current request. Collection is
