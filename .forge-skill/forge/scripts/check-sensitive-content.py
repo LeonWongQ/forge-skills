@@ -23,6 +23,10 @@ EXCLUDED_FILES = {
     ".claude/settings.local.json",
     ".cursor/settings.local.json",
 }
+FORGE_DATA_PUBLIC_FILES = {
+    ".forge-skill/forge-data/.gitignore",
+    ".forge-skill/forge-data/README.md",
+}
 PATTERNS = {
     "private key": re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"),
     "AWS access key": re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
@@ -79,6 +83,9 @@ def public_text_files(root: Path = REPO_ROOT) -> list[Path]:
                 continue
             relative = path.relative_to(root)
             if relative.as_posix() in EXCLUDED_FILES:
+                continue
+            if (relative.parts[:2] == (".forge-skill", "forge-data")
+                    and relative.as_posix() not in FORGE_DATA_PUBLIC_FILES):
                 continue
             files.append(path)
     return sorted(files)
