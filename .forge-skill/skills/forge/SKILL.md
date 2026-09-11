@@ -58,9 +58,9 @@ The shim adds the linked active tool directory (for example `.codex/forge`) to P
 
 When a project has no local `.codex/forge`, `.forge-skill/forge`, or `.cursor/forge`, Forge automatically falls back to the logical global Codex installation at `$HOME/.codex/forge` when it is valid. The order is: explicit `--root`, `FORGE_ROOT`, project installation, then global Codex installation.
 
-Run the global shim from the consumer project's working directory. The Forge definition is global, but all Forge Runtime state remains project-local under `.forge-runtime`:
+Run the global shim from the consumer project's working directory. Runtime state is physically stored under `forge-data/projects/<projectId>/runtime/paused` and exposed to the current project through its `.forge-runtime` facade.
 
-The Runtime directory is independent of `.claude`, `.codex`, and `.cursor`. Never store project task state inside a client configuration directory. If a deployment uses a global Runtime store, it must partition state by a stable project identifier such as `global-runtime/<project-id>/`; one shared directory must never contain multiple projects' tasks.
+The visible Runtime facade is independent of `.claude`, `.codex`, and `.cursor`. Never place different projects' task files in one unpartitioned directory; `forge-data` must partition them by the stable project ID from `.forge-skill/learning/project.json`.
 
 ```powershell
 python "$HOME\.codex\skills\forge\forge.py" --root "$HOME\.codex\forge" ask "your request"
@@ -78,13 +78,13 @@ When the user asks conversationally to suspend a Forge Runtime task, first ask w
 python ".codex/skills/forge/forge.py" --root ".codex/forge" runtime-suspend --task "<task>"
 ```
 
-Create a cross-session, project-local Forge Runtime only when the user explicitly asks for one, for example:
+Create a cross-session, project-scoped Forge Runtime only when the user explicitly asks for one, for example:
 
 ```text
 Use Forge Runtime to suspend "<task>".
 ```
 
-Forge writes a `ready` Runtime to the current project’s `.forge-runtime/<safe-task-name>.json` and reports its path, ID, status, and current stage. It does not prepare, execute, import, advance, archive, or delete work; it does not modify `.gitignore`. If the generated Runtime path already exists, it must not overwrite it. Report success only after this command returns successfully with `Forge Runtime: SAVED` or JSON `mode: runtime-suspended`.
+Forge writes a `ready` Runtime into the project's partition in `forge-data` and exposes it as `.forge-runtime/<safe-task-name>.json`; report this stable facade path, ID, status, and current stage. It does not prepare, execute, import, advance, archive, or delete work; it does not modify `.gitignore`. If the generated Runtime path already exists, it must not overwrite it. Report success only after this command returns successfully with `Forge Runtime: SAVED` or JSON `mode: runtime-suspended`.
 
 When the user types `runtime-list-paused` or asks to view or continue Forge Runtime work in the current project, invoke this exact read-only command rather than answering from memories or the Claude Code Task List:
 

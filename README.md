@@ -12,7 +12,12 @@ Forge Skills is a modular engineering Skill collection for Codex, Claude, and Cu
 
 ## Install Skills
 
-The installer creates only missing links and preserves existing files, directories, and conflicting links.
+The installer creates only missing links and preserves existing files, directories, and conflicting links. Every global or project installation links the shared `forge` and `forge-data` companions beside the target `skills` directory.
+
+Forge-generated runtime data is stored separately under `forge-data`, partitioned
+by project ID and Skill. Project repositories retain only lightweight identity
+and learning configuration files; databases, summaries, service state, and
+paused Runtime documents are excluded from Git.
 
 Add `--uninstall` to remove only links created from this source checkout. Existing files and links to other sources are preserved. Use `--check --uninstall` to preview removals.
 

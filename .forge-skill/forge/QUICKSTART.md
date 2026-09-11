@@ -59,7 +59,9 @@ Why:
 
 ## 3. 验收已部署的项目
 
-当 Forge 通过 `install-link-forge.bat` 部署到消费者项目后，安装脚本会先检查 Python 3.11+；不满足时不会创建项目目录或 junction。满足后，脚本会在显示成功前自动验证 junction 目标。该检查直接使用源码，不需要 `pip install`、开发依赖、全局 `forge` 命令或手工配置 PATH。
+当 Forge 通过 `install-link-forge.bat` 部署到消费者项目后，安装脚本会先检查 Python 3.11+；不满足时不会创建项目目录或 junction。满足后，脚本会同时创建并验证 `forge`、`skills` 和 `forge-data` Junction。该检查直接使用源码，不需要 `pip install`、开发依赖、全局 `forge` 命令或手工配置 PATH。
+
+若需要清理未注册的历史 Runtime 数据，先执行 `forge runtime-list-orphans` 查看项目 ID；只有明确确认后，才使用 `forge runtime-clean-orphan --project-id <id> --yes` 物理删除单个孤儿目录。系统不会自动删除这些数据。
 
 ---
 
