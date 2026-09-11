@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Safe one-time consumption of project-local Forge Runtime Envelopes."""
+"""Safe one-time consumption of project-scoped Forge Runtime Envelopes."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Any
 from .runtime_contracts import validate_runtime_envelope
 from .runtime_discovery import RESUMABLE_STATUSES, _current_stage
 from .helpers import load_json_file_safe
-from .runtime_paths import validate_project_runtime_directory
+from .runtime_paths import forge_runtime_directory, project_runtime_directory, validate_project_runtime_directory
 
 
 def _restore_claim_without_overwrite(claim: Path, path: Path) -> None:
@@ -35,7 +35,11 @@ def _restore_claim_without_overwrite(claim: Path, path: Path) -> None:
 
 def _validated_candidate(root: Path, runtime_directory: Path, candidate: str) -> tuple[Path, dict[str, Any]]:
     directory = runtime_directory.resolve()
-    validate_project_runtime_directory(directory)
+    try:
+        validate_project_runtime_directory(directory, expected_directory=forge_runtime_directory(root, Path.cwd()))
+    except ValueError:
+        # Keep consuming legacy project-local files during the migration window.
+        validate_project_runtime_directory(directory, expected_directory=project_runtime_directory(Path.cwd()))
     candidate_path = Path(candidate)
     if candidate_path.name != candidate or candidate_path.suffix != ".json":
         raise ValueError("runtime path must be a direct .json filename")

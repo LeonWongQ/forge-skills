@@ -36,7 +36,12 @@ from .claude_code_adapter import build_claude_code_host_request, validate_and_no
 from .runtime_discovery import discover_resumable_runtimes
 from .runtime_lifecycle import consume_paused_runtime
 from .runtime_paths import (
+    PROJECT_RUNTIME_DIRECTORY,
+    forge_runtime_directory,
+    ensure_runtime_facade,
+    find_orphan_runtime_projects,
     migrate_legacy_runtime_directory,
+    remove_orphan_runtime_project,
     project_runtime_directory,
     validate_project_runtime_directory,
 )
@@ -146,7 +151,14 @@ def _project_directory(root: Path) -> Path:
 
 
 def _project_runtime_directory(root: Path) -> Path:
-    return project_runtime_directory(_project_directory(root))
+    return _prepare_project_runtime(root)[0]
+
+
+def _prepare_project_runtime(root: Path) -> tuple[Path, list[dict[str, str]]]:
+    project = _project_directory(root)
+    global_directory = forge_runtime_directory(root, project)
+    diagnostics = migrate_legacy_runtime_directory(project, global_directory)
+    return ensure_runtime_facade(root, project), diagnostics
 
 
 def _render_runtime_list(result: dict, output_format: str) -> None:
@@ -174,9 +186,7 @@ def _render_consumed_runtime(result: dict, output_format: str) -> None:
 
 
 def _runtime_suspend_output(root: Path, task: str) -> Path:
-    project = _project_directory(root)
-    migrate_legacy_runtime_directory(project)
-    runtime_directory = project_runtime_directory(project)
+    runtime_directory = _project_runtime_directory(root)
     normalized = re.sub(r"[^a-z0-9]+", "-", task.lower()).strip("-")
     if not normalized:
         normalized = f"task-{hashlib.sha256(task.encode('utf-8')).hexdigest()[:12]}"
@@ -185,12 +195,20 @@ def _runtime_suspend_output(root: Path, task: str) -> Path:
 
 def _project_relative_path(path: Path) -> str:
     """Render a project-owned path without leaking a global/source location."""
-    return path.relative_to(Path.cwd()).as_posix()
+    if path.parent.name == "paused":
+        return f"{PROJECT_RUNTIME_DIRECTORY}/{path.name}"
+    try:
+        return path.relative_to(Path.cwd()).as_posix()
+    except ValueError:
+        return str(path)
 
 
 def _create_suspended_runtime(root: Path, task: str, preferred_skill: str = "skill.plan") -> dict:
     """Persist an explicit task even when its free-text route has no match."""
-    output_path = _runtime_suspend_output(root, task)
+    try:
+        output_path = _runtime_suspend_output(root, task)
+    except ValueError as error:
+        raise click.UsageError(str(error)) from error
     if output_path.exists():
         raise click.UsageError(
             f"runtime already exists: {_project_relative_path(output_path)}; "
@@ -738,7 +756,7 @@ def runtime_init(ctx, user_input, preferred_skill, skill_query, pack_query, beha
 @click.option("--task", required=True)
 @click.pass_context
 def runtime_suspend(ctx, task):
-    """Persist one explicit project-local Forge Runtime Envelope."""
+    """Persist one explicit project-scoped Forge Runtime Envelope."""
     payload = _create_suspended_runtime(ctx.obj["root"], task.strip())
     _render_suspended_runtime(payload, ctx.obj["format"])
 
@@ -750,7 +768,11 @@ def runtime_suspend(ctx, task):
 def runtime_consume_paused(ctx, runtime_directory, candidate):
     """Consume one user-selected current-project Runtime after handoff."""
     try:
-        result = consume_paused_runtime(ctx.obj["root"], runtime_directory, candidate)
+        project = _project_directory(ctx.obj["root"])
+        validate_project_runtime_directory(runtime_directory, project)
+        result = consume_paused_runtime(
+            ctx.obj["root"], _project_runtime_directory(ctx.obj["root"]), candidate
+        )
     except (ValueError, RuntimeError) as error:
         raise click.UsageError(str(error)) from error
     _render_consumed_runtime(result, ctx.obj["format"])
@@ -764,12 +786,48 @@ def runtime_list_paused(ctx, runtime_directory):
     project = _project_directory(ctx.obj["root"])
     try:
         validate_project_runtime_directory(runtime_directory, project)
+        runtime_directory, migration_diagnostics = _prepare_project_runtime(ctx.obj["root"])
     except ValueError as error:
         raise click.UsageError(str(error)) from error
-    migration_diagnostics = migrate_legacy_runtime_directory(project)
     result = discover_resumable_runtimes(ctx.obj["root"], runtime_directory)
     result["diagnostics"] = migration_diagnostics + result["diagnostics"]
     _render_runtime_list(result, ctx.obj["format"])
+
+
+@cli.command("runtime-list-orphans")
+@click.pass_context
+def runtime_list_orphans(ctx):
+    """List central Runtime project data that is absent from the registry."""
+    try:
+        result = find_orphan_runtime_projects(ctx.obj["root"])
+    except ValueError as error:
+        raise click.UsageError(str(error)) from error
+    payload = {"command": "runtime-list-orphans", "projects": result, "count": len(result)}
+    if ctx.obj["format"] == "json":
+        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        click.echo(f"Orphan Forge Runtime projects: {len(result)}")
+        for item in result:
+            click.echo(f"- {item['projectId']}: {item['files']} files / {item['bytes']} bytes")
+
+
+@cli.command("runtime-clean-orphan")
+@click.option("--project-id", required=True)
+@click.option("--yes", is_flag=True, help="Confirm physical deletion of this unregistered Runtime data.")
+@click.pass_context
+def runtime_clean_orphan(ctx, project_id, yes):
+    """Delete one explicitly selected, unregistered central Runtime project."""
+    if not yes:
+        raise click.UsageError("physical deletion requires --yes")
+    try:
+        removed = remove_orphan_runtime_project(ctx.obj["root"], project_id)
+    except (OSError, ValueError) as error:
+        raise click.UsageError(str(error)) from error
+    payload = {"command": "runtime-clean-orphan", "deleted": removed}
+    if ctx.obj["format"] == "json":
+        click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        click.echo(f"Deleted orphan Forge Runtime project: {project_id}")
 
 
 @cli.command("runtime-prepare")
@@ -1100,16 +1158,22 @@ def ask(ctx, user_input, preferred_skill):
     intent = _runtime_ask_intent(text)
     if intent:
         action, value = intent
-        runtime_directory = _project_runtime_directory(root)
         if action == "suspend_confirmation_required":
             _render_suspend_confirmation(value or "", output_format)
         elif action == "suspend":
             payload = _create_suspended_runtime(root, value or "")
             _render_suspended_runtime(payload, output_format)
         elif action == "list":
-            _render_runtime_list(discover_resumable_runtimes(root, runtime_directory), output_format)
+            try:
+                runtime_directory, migration_diagnostics = _prepare_project_runtime(root)
+            except ValueError as error:
+                raise click.UsageError(str(error)) from error
+            result = discover_resumable_runtimes(root, runtime_directory)
+            result["diagnostics"] = migration_diagnostics + result["diagnostics"]
+            _render_runtime_list(result, output_format)
         elif action == "consume":
             try:
+                runtime_directory = _project_runtime_directory(root)
                 payload = consume_paused_runtime(root, runtime_directory, value or "")
             except (ValueError, RuntimeError) as error:
                 raise click.UsageError(str(error)) from error

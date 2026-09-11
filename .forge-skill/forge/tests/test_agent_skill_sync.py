@@ -12,6 +12,8 @@ from forge_cli.agent_skill_sync import apply_sync, apply_uninstall, plan_sync, r
 
 def _source_root(tmp_path: Path) -> Path:
     source = tmp_path / ".claude"
+    (source / "forge").mkdir(parents=True)
+    (source / "forge-data").mkdir()
     for name in ("alpha", "beta"):
         skill = source / "skills" / name
         skill.mkdir(parents=True)
@@ -57,7 +59,12 @@ def test_plan_links_only_valid_skill_directories(tmp_path):
 
     actions = plan_sync(source, tmp_path / "global-skills")
 
-    assert [(action.name, action.status) for action in actions] == [("alpha", "create"), ("beta", "create")]
+    assert [(action.name, action.status) for action in actions] == [
+        ("companion:forge", "create"),
+        ("companion:forge-data", "create"),
+        ("alpha", "create"),
+        ("beta", "create"),
+    ]
 
 
 def test_apply_creates_only_missing_links_and_preserves_conflicts(tmp_path):
@@ -68,8 +75,32 @@ def test_apply_creates_only_missing_links_and_preserves_conflicts(tmp_path):
 
     actions = apply_sync(source, target, create_link=lambda path, origin: made.append((path, origin)))
 
-    assert [(action.name, action.status) for action in actions] == [("alpha", "conflict"), ("beta", "create")]
-    assert made == [(target / "beta", source / "skills" / "beta")]
+    assert [(action.name, action.status) for action in actions] == [
+        ("companion:forge", "create"),
+        ("companion:forge-data", "create"),
+        ("alpha", "conflict"),
+        ("beta", "create"),
+    ]
+    assert made == [
+        (target.parent / "forge", source / "forge"),
+        (target.parent / "forge-data", source / "forge-data"),
+        (target / "beta", source / "skills" / "beta"),
+    ]
+
+
+def test_apply_fails_before_creating_links_when_companion_conflicts(tmp_path):
+    source = _source_root(tmp_path)
+    target = tmp_path / "global-skills"
+    conflicting_data = target.parent / "forge-data"
+    conflicting_data.mkdir(parents=True)
+    made = []
+
+    with pytest.raises(ValueError, match="Forge companion path conflict"):
+        apply_sync(source, target, create_link=lambda path, origin: made.append((path, origin)))
+
+    assert made == []
+    assert not (target.parent / "forge").exists()
+    assert conflicting_data.is_dir()
 
 
 def test_apply_rolls_back_links_created_before_a_later_failure(tmp_path):
@@ -126,7 +157,12 @@ def test_existing_correct_link_is_unchanged(tmp_path, monkeypatch):
 
     actions = plan_sync(source, target)
 
-    assert all(action.status == "unchanged" for action in actions)
+    assert [(action.name, action.status) for action in actions] == [
+        ("companion:forge", "create"),
+        ("companion:forge-data", "create"),
+        ("alpha", "unchanged"),
+        ("beta", "unchanged"),
+    ]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="exercises the POSIX symlink implementation")

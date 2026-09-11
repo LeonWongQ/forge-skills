@@ -10,6 +10,7 @@ from forge_cli.paths import (
     repository_source_root,
     skills_source_root,
 )
+from forge_cli.data_paths import forge_data_root, project_data_root, skill_data_root
 
 
 def test_repository_paths_share_one_source_container(tmp_path):
@@ -38,3 +39,10 @@ def test_unknown_client_is_rejected(tmp_path):
         assert str(error) == "unsupported client: unknown"
     else:
         raise AssertionError("unknown client should be rejected")
+
+
+def test_forge_data_root_preserves_logical_install_parent(tmp_path):
+    forge_root = tmp_path / "home" / "forge"
+    assert forge_data_root(forge_root) == tmp_path / "home" / "forge-data"
+    assert project_data_root(forge_root, "project-test") == tmp_path / "home" / "forge-data" / "projects" / "project-test"
+    assert skill_data_root(forge_root, "project-test", "code-review").name == "code-review"

@@ -12,7 +12,7 @@ from typing import Any, Callable, Iterable
 
 from .deployment_verification import expected_links, verify_deployment
 from .personal_hook_state import create_manifest
-from .paths import CLIENT_DIRECTORIES, FORGE_DIRECTORY, SKILLS_DIRECTORY, SOURCE_CONTAINER
+from .paths import CLIENT_DIRECTORIES, FORGE_DATA_DIRECTORY, FORGE_DIRECTORY, SKILLS_DIRECTORY, SOURCE_CONTAINER
 
 
 TOOL_LABELS = {"claude": "Claude Code", "cursor": "Cursor", "codex": "Code X"}
@@ -35,7 +35,9 @@ def _source_claude(script_root: Path) -> Path:
     # The repository-owned source container is .forge-skill; .claude remains
     # the client-side target directory created in linked projects.
     source = script_root / SOURCE_CONTAINER
-    if not (source / FORGE_DIRECTORY).is_dir() or not (source / SKILLS_DIRECTORY).is_dir():
+    if (not (source / FORGE_DIRECTORY).is_dir()
+            or not (source / SKILLS_DIRECTORY).is_dir()
+            or not (source / FORGE_DATA_DIRECTORY).is_dir()):
         raise ValueError(f"未找到 Forge 源目录：{source}")
     return source.resolve()
 

@@ -48,7 +48,7 @@ class FakeInspector:
 
 def _source(tmp_path):
     source = tmp_path / "source" / ".claude"
-    for name in ("forge", "skills", "rules"):
+    for name in ("forge", "skills", "rules", "forge-data"):
         (source / name).mkdir(parents=True, exist_ok=True)
     return source
 
@@ -57,33 +57,33 @@ def test_expected_links_match_all_tool_layouts(tmp_path):
     source = _source(tmp_path)
     project = tmp_path / "project"
 
-    assert [item["path"].relative_to(project).as_posix() for item in expected_links(project, "claude", source)] == [".claude/forge", ".claude/skills"]
-    assert [item["path"].relative_to(project).as_posix() for item in expected_links(project, "cursor", source)] == [".cursor/forge", ".cursor/skills", ".cursor/rules"]
-    assert [item["path"].relative_to(project).as_posix() for item in expected_links(project, "codex", source)] == [".codex/forge", ".codex/skills", ".codex/rules"]
+    assert [item["path"].relative_to(project).as_posix() for item in expected_links(project, "claude", source)] == [".claude/forge", ".claude/skills", ".claude/forge-data"]
+    assert [item["path"].relative_to(project).as_posix() for item in expected_links(project, "cursor", source)] == [".cursor/forge", ".cursor/skills", ".cursor/forge-data", ".cursor/rules"]
+    assert [item["path"].relative_to(project).as_posix() for item in expected_links(project, "codex", source)] == [".codex/forge", ".codex/skills", ".codex/forge-data", ".codex/rules"]
 
 
 def test_valid_deployment_matches_all_expected_junctions(tmp_path):
     source = _source(tmp_path)
     project = tmp_path / "project"
-    inspector = FakeInspector({"forge": LinkInspection("junction", source / "forge"), "skills": LinkInspection("junction", source / "skills")})
+    inspector = FakeInspector({"forge": LinkInspection("junction", source / "forge"), "skills": LinkInspection("junction", source / "skills"), "forge-data": LinkInspection("junction", source / "forge-data")})
 
     result = verify_deployment(project, "claude", source, inspector, platform="win32")
 
     assert result["ok"] is True
-    assert result["summary"] == {"verified": 2, "failed": 0, "skipped": 0}
-    assert len(inspector.calls) == 2
+    assert result["summary"] == {"verified": 3, "failed": 0, "skipped": 0}
+    assert len(inspector.calls) == 3
 
 
 def test_wrong_target_and_real_directory_fail_without_inspector_mutation(tmp_path):
     source = _source(tmp_path)
     project = tmp_path / "project"
     before = source.stat().st_mtime_ns
-    inspector = FakeInspector({"forge": LinkInspection("directory"), "skills": LinkInspection("junction", tmp_path / "other" / "skills")})
+    inspector = FakeInspector({"forge": LinkInspection("directory"), "skills": LinkInspection("junction", tmp_path / "other" / "skills"), "forge-data": LinkInspection("junction", source / "forge-data")})
 
     result = verify_deployment(project, "claude", source, inspector, platform="win32")
 
     assert result["ok"] is False
-    assert [item["code"] for item in result["items"]] == ["LINK_NOT_REPARSE_POINT", "JUNCTION_TARGET_MISMATCH"]
+    assert [item["code"] for item in result["items"]] == ["LINK_NOT_REPARSE_POINT", "JUNCTION_TARGET_MISMATCH", "JUNCTION_TARGET_MATCH"]
     assert source.stat().st_mtime_ns == before
 
 
@@ -91,7 +91,7 @@ def test_cursor_skips_rules_when_source_rules_are_absent(tmp_path):
     source = _source(tmp_path)
     (source / "rules").rmdir()
     project = tmp_path / "project"
-    inspector = FakeInspector({"forge": LinkInspection("junction", source / "forge"), "skills": LinkInspection("junction", source / "skills")})
+    inspector = FakeInspector({"forge": LinkInspection("junction", source / "forge"), "skills": LinkInspection("junction", source / "skills"), "forge-data": LinkInspection("junction", source / "forge-data")})
 
     result = verify_deployment(project, "cursor", source, inspector, platform="win32")
 
@@ -114,7 +114,7 @@ def test_codex_skips_rules_when_source_rules_are_absent(tmp_path):
     source = _source(tmp_path)
     (source / "rules").rmdir()
     project = tmp_path / "project"
-    inspector = FakeInspector({"forge": LinkInspection("junction", source / "forge"), "skills": LinkInspection("junction", source / "skills")})
+    inspector = FakeInspector({"forge": LinkInspection("junction", source / "forge"), "skills": LinkInspection("junction", source / "skills"), "forge-data": LinkInspection("junction", source / "forge-data")})
 
     result = verify_deployment(project, "codex", source, inspector, platform="win32")
 

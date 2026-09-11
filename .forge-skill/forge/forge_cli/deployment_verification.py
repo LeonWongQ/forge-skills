@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol
 
-from .paths import CLIENT_DIRECTORIES, FORGE_DIRECTORY, RULES_DIRECTORY, SKILLS_DIRECTORY
+from .paths import CLIENT_DIRECTORIES, FORGE_DATA_DIRECTORY, FORGE_DIRECTORY, RULES_DIRECTORY, SKILLS_DIRECTORY
 
 MOUNT_POINT_TAG = "0xa0000003"
 TOOL_CONFIG = CLIENT_DIRECTORIES
@@ -35,6 +35,7 @@ def expected_links(project: Path, tool: str, source_root: Path) -> List[Dict[str
     links = [
         {"name": FORGE_DIRECTORY, "path": config / FORGE_DIRECTORY, "source": source_root / FORGE_DIRECTORY, "required": True},
         {"name": SKILLS_DIRECTORY, "path": config / SKILLS_DIRECTORY, "source": source_root / SKILLS_DIRECTORY, "required": True},
+        {"name": FORGE_DATA_DIRECTORY, "path": config / FORGE_DATA_DIRECTORY, "source": source_root / FORGE_DATA_DIRECTORY, "required": True},
     ]
     if tool in ("cursor", "codex"):
         rules_source = source_root / RULES_DIRECTORY

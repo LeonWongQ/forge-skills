@@ -9,9 +9,17 @@ from pathlib import Path
 from time import sleep
 from typing import Callable, Iterable
 
-from .paths import CLIENT_DIRECTORIES, SKILL_METADATA_FILE, SKILLS_DIRECTORY, client_skills_root
+from .paths import (
+    CLIENT_DIRECTORIES,
+    FORGE_DATA_DIRECTORY,
+    FORGE_DIRECTORY,
+    SKILL_METADATA_FILE,
+    SKILLS_DIRECTORY,
+    client_skills_root,
+)
 
 SUPPORTED_CLIENTS = tuple(CLIENT_DIRECTORIES)
+COMPANION_DIRECTORIES = (FORGE_DIRECTORY, FORGE_DATA_DIRECTORY)
 
 
 @dataclass(frozen=True)
@@ -83,6 +91,20 @@ def plan_sync(source_root: Path, skills_root: Path) -> list[SkillSyncAction]:
     source_root = source_root.resolve(strict=False)
     skills_root = skills_root.resolve(strict=False)
     actions = []
+    for name in COMPANION_DIRECTORIES:
+        source = source_root / name
+        if not source.is_dir():
+            raise ValueError(f"Forge companion directory does not exist: {source}")
+        target = skills_root.parent / name
+        action_name = f"companion:{name}"
+        if not os.path.lexists(target):
+            actions.append(SkillSyncAction(action_name, source, target, "create"))
+            continue
+        existing = _link_target(target)
+        if existing is not None and _same_path(existing, source):
+            actions.append(SkillSyncAction(action_name, source, target, "unchanged", "Already linked to project source."))
+        else:
+            actions.append(SkillSyncAction(action_name, source, target, "conflict", "Existing path is preserved."))
     for source in source_skill_directories(source_root):
         target = skills_root / source.name
         if not os.path.lexists(target):
@@ -131,6 +153,13 @@ def apply_sync(
     actions = plan_sync(source_root, skills_root)
     if dry_run:
         return actions
+    companion_conflicts = [
+        action for action in actions
+        if action.name.startswith("companion:") and action.status == "conflict"
+    ]
+    if companion_conflicts:
+        paths = ", ".join(str(action.target) for action in companion_conflicts)
+        raise ValueError(f"Forge companion path conflict: {paths}")
     created = []
     try:
         for action in actions:
@@ -158,9 +187,17 @@ def plan_uninstall(source_root: Path, skills_root: Path) -> list[SkillSyncAction
     """Plan removal of only links that still point to this Forge source."""
     source_root = source_root.resolve(strict=False)
     skills_root = skills_root.resolve(strict=False)
-    if not skills_root.is_dir():
-        return []
     actions = []
+    for name in COMPANION_DIRECTORIES:
+        source = source_root / name
+        target = skills_root.parent / name
+        existing = _link_target(target) if os.path.lexists(target) else None
+        if existing is not None and _same_path(existing, source):
+            actions.append(SkillSyncAction(f"companion:{name}", source, target, "remove"))
+        elif os.path.lexists(target):
+            actions.append(SkillSyncAction(f"companion:{name}", source, target, "preserved", "Existing path is not a Forge link."))
+    if not skills_root.is_dir():
+        return actions
     for source in source_skill_directories(source_root):
         target = skills_root / source.name
         existing = _link_target(target) if os.path.lexists(target) else None

@@ -4,6 +4,7 @@
 import json
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from forge_cli.cli import _execute_route, cli
@@ -13,6 +14,11 @@ from forge_cli.resolved_context import build_context_from_route
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def isolated_forge_data(tmp_path, monkeypatch):
+    monkeypatch.setenv("FORGE_DATA_ROOT", str(tmp_path / "forge-data"))
 
 
 def _runtime(runtime_id, status="ready"):

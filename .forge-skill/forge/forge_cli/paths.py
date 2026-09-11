@@ -7,6 +7,7 @@ from pathlib import Path
 
 SOURCE_CONTAINER = ".forge-skill"
 FORGE_DIRECTORY = "forge"
+FORGE_DATA_DIRECTORY = "forge-data"
 SKILLS_DIRECTORY = "skills"
 RULES_DIRECTORY = "rules"
 SKILL_METADATA_FILE = "SKILL.md"

@@ -12,7 +12,12 @@ from typing import Any
 
 from .helpers import TOOL_CONFIG_DIRECTORIES
 from .personal_hook_state import list_manifests
-from .runtime_paths import migrate_legacy_runtime_directory, project_runtime_directory
+from .runtime_paths import (
+    ensure_runtime_facade,
+    forge_runtime_directory,
+    migrate_legacy_runtime_directory,
+    project_runtime_directory,
+)
 
 ADVISORY = (
     "检测到当前项目存在可恢复的 Forge Runtime 任务。请先询问用户："
@@ -88,12 +93,21 @@ def main(stdin: Any = sys.stdin, stdout: Any = sys.stdout) -> int:
         project = _project_directory(event)
         if project is None or not project.is_dir():
             return 0
-        migrate_legacy_runtime_directory(project.resolve())
-        runtime_directory = project_runtime_directory(project.resolve())
-        if not runtime_directory.is_dir():
+        project = project.resolve()
+        local_runtime = project_runtime_directory(project)
+        identity = project / ".forge-skill" / "learning" / "project.json"
+        legacy = project / ".forge" / "runtime"
+        if not identity.is_file() and not os.path.lexists(local_runtime) and not legacy.is_dir():
             return 0
-        forge_root = _forge_root(project.resolve(), _configured_tool(project))
-        if forge_root is None or not _discover(forge_root, runtime_directory):
+        forge_root = _forge_root(project, _configured_tool(project))
+        if forge_root is None:
+            return 0
+        runtime_data = forge_runtime_directory(forge_root, project)
+        migrate_legacy_runtime_directory(project, runtime_data)
+        if not os.path.lexists(local_runtime) and not any(runtime_data.glob("*.json")):
+            return 0
+        runtime_directory = ensure_runtime_facade(forge_root, project)
+        if not _discover(forge_root, runtime_directory):
             return 0
         json.dump(
             {

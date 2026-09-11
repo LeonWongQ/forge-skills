@@ -10,7 +10,7 @@ from forge_cli import link_installer
 
 def _source(tmp_path: Path) -> Path:
     root = tmp_path / "forge-source"
-    for name in ("forge", "skills", "rules"):
+    for name in ("forge", "skills", "rules", "forge-data"):
         (root / ".claude" / name).mkdir(parents=True, exist_ok=True)
     return root / ".claude"
 
@@ -33,9 +33,9 @@ def test_create_links_creates_forge_and_skills_without_shell_serialization(tmp_p
 
     created, skipped = link_installer.create_links(project, "claude", source, create_junction=create_link)
 
-    assert [item["name"] for item in created] == ["forge", "skills"]
+    assert [item["name"] for item in created] == ["forge", "skills", "forge-data"]
     assert skipped == []
-    assert [item[0].name for item in made] == ["forge", "skills"]
+    assert [item[0].name for item in made] == ["forge", "skills", "forge-data"]
 
 
 def test_existing_real_directory_is_never_overwritten(tmp_path, monkeypatch):
