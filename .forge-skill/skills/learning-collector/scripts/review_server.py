@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import os
 import sqlite3
@@ -16,21 +17,30 @@ try:
 except ImportError:
     winreg = None
 from datetime import datetime, timezone
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+FORGE_ROOT = Path(__file__).absolute().parents[3] / "forge"
+if str(FORGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(FORGE_ROOT))
 from summary_engine import build_summary, encoded_size
+from forge_cli.data_paths import forge_data_root
 
-SKILL_ROOT = Path(__file__).resolve().parents[1]
-REGISTRY_PATH = SKILL_ROOT / "project-registry.json"
+SKILL_ROOT = Path(__file__).absolute().parents[1]
+DATA_ROOT = forge_data_root(FORGE_ROOT)
+REGISTRY_PATH = DATA_ROOT / "project-registry.json"
+LEGACY_REGISTRY_PATH = SKILL_ROOT / "project-registry.json"
 HTML_PATH = SKILL_ROOT / "assets" / "review.html"
 VERSIONS_PATH = SKILL_ROOT / "assets" / "versions.html"
-LLM_CONFIG_PATH = SKILL_ROOT / "llm-refiner.json"
+LLM_CONFIG_PATH = DATA_ROOT / "llm-refiner.json"
+LEGACY_LLM_CONFIG_PATH = SKILL_ROOT / "llm-refiner.json"
 _LLM_CONFIG_LOCK = threading.Lock()
 MAX_LLM_RESPONSE_BYTES = 256 * 1024
 ALLOWED_ACTIONS = {"ACTIVE", "EXCLUDED", "DELETED"}
 SERVICE_TOKEN = ""
+SERVICE_COOKIE = "forge_learning_service"
 _QUERY_WARNINGS = threading.local()
 
 
@@ -44,10 +54,36 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _service_cookie() -> str:
+    return f"{SERVICE_COOKIE}={SERVICE_TOKEN}; Path=/; HttpOnly; SameSite=Strict"
+
+
+def _mutation_request_error(headers, port: int) -> tuple[int, str] | None:
+    expected_origin = f"http://127.0.0.1:{port}"
+    if str(headers.get("Host", "")).casefold() != f"127.0.0.1:{port}":
+        return 403, "invalid service host"
+    origin = str(headers.get("Origin", ""))
+    if origin and origin != expected_origin:
+        return 403, "cross-origin mutation is not allowed"
+    content_type = str(headers.get("Content-Type", "")).partition(";")[0].strip().casefold()
+    if content_type != "application/json":
+        return 415, "Content-Type must be application/json"
+    try:
+        cookies = SimpleCookie()
+        cookies.load(str(headers.get("Cookie", "")))
+        supplied = cookies[SERVICE_COOKIE].value if SERVICE_COOKIE in cookies else ""
+    except CookieError:
+        supplied = ""
+    if not SERVICE_TOKEN or not hmac.compare_digest(supplied, SERVICE_TOKEN):
+        return 403, "missing or invalid service token"
+    return None
+
+
 def llm_config() -> dict:
     defaults = {"enabled": False, "endpoint": "", "model": "", "wireApi": "responses", "apiKeyEnv": "FORGE_LEARNING_LLM_API_KEY", "timeoutSeconds": 30}
+    config_path = LLM_CONFIG_PATH if LLM_CONFIG_PATH.is_file() else LEGACY_LLM_CONFIG_PATH
     try:
-        value = json.loads(LLM_CONFIG_PATH.read_text(encoding="utf-8"))
+        value = json.loads(config_path.read_text(encoding="utf-8"))
         return {**defaults, **value} if isinstance(value, dict) else defaults
     except (OSError, json.JSONDecodeError):
         return defaults
@@ -96,6 +132,7 @@ def save_llm_config(payload: dict) -> dict:
             raise ValueError("apiKeyEnv is required")
         if not isinstance(config["timeoutSeconds"], int) or not 5 <= config["timeoutSeconds"] <= 120:
             raise ValueError("timeoutSeconds must be between 5 and 120")
+        LLM_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         temporary = LLM_CONFIG_PATH.with_suffix(".json.tmp")
         temporary.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         temporary.replace(LLM_CONFIG_PATH)
@@ -122,7 +159,7 @@ def refine_summary(payload: dict) -> dict:
     project = next((item for item in projects() if item.get("projectId") == project_id), None)
     if project is None:
         raise ValueError("project not found")
-    connection = sqlite3.connect(Path(str(project.get("database", ""))), timeout=5)
+    connection = sqlite3.connect(_database_for_skill(project, skill), timeout=5)
     try:
         connection.execute(
             """CREATE TABLE IF NOT EXISTS learning_summary_rule_sources (
@@ -136,16 +173,20 @@ def refine_summary(payload: dict) -> dict:
             "CREATE INDEX IF NOT EXISTS idx_learning_summary_rule_source_record "
             "ON learning_summary_rule_sources(record_id)"
         )
-        row = connection.execute("SELECT summary_json, applied FROM learning_summaries WHERE project_id = ? AND skill = ? AND version = ?", (project_id, skill, version)).fetchone()
+        row = connection.execute(
+            "SELECT id, summary_json, applied, source_count FROM learning_summaries "
+            "WHERE project_id = ? AND skill = ? AND version = ?",
+            (project_id, skill, version),
+        ).fetchone()
         if row is None:
             raise ValueError("summary version not found")
-        if row[1]:
+        source_summary_id, source_summary_json, source_applied, source_count = row
+        if source_applied:
             raise ValueError("an enabled summary cannot be refined")
-        snapshot = decode_json(row[0])
+        snapshot = decode_json(source_summary_json)
         if not isinstance(snapshot, dict) or snapshot.get("status") != "DRAFT":
             raise ValueError("only DRAFT summaries can be refined")
         rules = snapshot.get("rules") if isinstance(snapshot.get("rules"), list) else []
-        source_ids = {source_id for rule in rules for source_id in rule.get("sourceRecordIds", []) if isinstance(rule, dict)}
         source_rows = connection.execute("SELECT record_id FROM learning_summary_sources WHERE summary_id = (SELECT id FROM learning_summaries WHERE project_id = ? AND skill = ? AND version = ?)", (project_id, skill, version)).fetchall()
         source_ids = {row[0] for row in source_rows}
         prompt = {"task": "Refine Skill training candidates conservatively. Return JSON only.", "skill": skill, "rules": rules, "constraints": ["Do not invent evidence or sources", "Every rule must cite at least one sourceRecordId", "Only use sourceRecordIds from the input", "Return at most 12 rules", "All rules must have status PENDING", "Identify conflicts instead of merging contradictory instructions"]}
@@ -170,13 +211,41 @@ def refine_summary(payload: dict) -> dict:
                 response_value = json.loads(b"".join(chunks).decode("utf-8"))
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as error:
             raise ValueError(f"LLM refinement failed: {type(error).__name__}") from error
+        if not isinstance(response_value, dict):
+            raise ValueError("LLM returned an invalid response object")
         if config["wireApi"] == "responses":
-            content = response_value.get("output_text") if isinstance(response_value, dict) else None
-            if not content and isinstance(response_value, dict):
-                content = "".join(item.get("text", "") for output in response_value.get("output", []) for item in output.get("content", []) if isinstance(item, dict))
+            content = response_value.get("output_text")
+            if content is None:
+                output_items = response_value.get("output")
+                if not isinstance(output_items, list):
+                    raise ValueError("LLM returned invalid Responses output")
+                text_parts = []
+                for output_item in output_items:
+                    if not isinstance(output_item, dict):
+                        raise ValueError("LLM returned invalid Responses output")
+                    content_items = output_item.get("content", [])
+                    if not isinstance(content_items, list):
+                        raise ValueError("LLM returned invalid Responses content")
+                    for content_item in content_items:
+                        if not isinstance(content_item, dict):
+                            raise ValueError("LLM returned invalid Responses content")
+                        text = content_item.get("text")
+                        if text is not None and not isinstance(text, str):
+                            raise ValueError("LLM returned invalid Responses text")
+                        if text:
+                            text_parts.append(text)
+                content = "".join(text_parts)
         else:
-            content = response_value.get("choices", [{}])[0].get("message", {}).get("content") if isinstance(response_value, dict) else None
-        refined = json.loads(content) if isinstance(content, str) else content
+            choices = response_value.get("choices")
+            if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                raise ValueError("LLM returned invalid Chat Completions choices")
+            message = choices[0].get("message")
+            if not isinstance(message, dict):
+                raise ValueError("LLM returned invalid Chat Completions message")
+            content = message.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("LLM returned empty refinement content")
+        refined = json.loads(content)
         if not isinstance(refined, dict) or not isinstance(refined.get("rules"), list) or not 1 <= len(refined["rules"]) <= 12:
             raise ValueError("LLM returned invalid rules")
         seen = set()
@@ -186,6 +255,14 @@ def refine_summary(payload: dict) -> dict:
             seen.add(rule["id"])
             if rule.get("status") != "PENDING" or rule.get("stage") not in {"PRE_CHECK", "FINAL_VALIDATION"}:
                 raise ValueError("LLM may only return pending valid stages")
+            if not isinstance(rule.get("type"), str) or not rule["type"].strip():
+                raise ValueError("LLM returned invalid rule type")
+            if not isinstance(rule.get("title"), str) or not 1 <= len(rule["title"].strip()) <= 100:
+                raise ValueError("LLM returned invalid rule title")
+            if not isinstance(rule.get("rationale"), str) or not rule["rationale"].strip():
+                raise ValueError("LLM returned invalid rule rationale")
+            if rule.get("confidence") not in {"LOW", "MEDIUM", "HIGH", "Low", "Medium", "High"}:
+                raise ValueError("LLM returned invalid rule confidence")
             source_record_ids = rule.get("sourceRecordIds")
             if (not isinstance(source_record_ids, list) or not source_record_ids
                     or any(not isinstance(source_id, str) for source_id in source_record_ids)
@@ -194,37 +271,91 @@ def refine_summary(payload: dict) -> dict:
                 raise ValueError("LLM returned unknown source IDs")
             if not isinstance(rule.get("instruction"), str) or not 1 <= len(rule["instruction"].strip()) <= 500:
                 raise ValueError("LLM returned invalid instruction")
+            rule["supportCount"] = len(set(source_record_ids))
         snapshot["rules"] = refined["rules"]
-        snapshot["statistics"]["generatedRules"] = len(refined["rules"])
-        snapshot["refinement"] = {"mode": "explicit_llm", "model": config["model"], "refinedAt": now()}
+        snapshot["statistics"].update({
+            "generatedRules": len(refined["rules"]),
+            "pendingRules": len(refined["rules"]),
+            "confirmedRules": 0,
+            "excludedRules": 0,
+        })
+        refined_at = now()
+        snapshot["status"] = "DRAFT"
+        snapshot["reviewedAt"] = None
+        snapshot["refinement"] = {
+            "mode": "explicit_llm", "model": config["model"],
+            "refinedAt": refined_at, "sourceVersion": version,
+        }
         if encoded_size(snapshot) > 20_000:
             raise ValueError("refined summary exceeds the 20 KB quality limit")
         with connection:
-            summary_id = connection.execute("SELECT id FROM learning_summaries WHERE project_id = ? AND skill = ? AND version = ?", (project_id, skill, version)).fetchone()[0]
-            connection.execute("UPDATE learning_summaries SET summary_json = ? WHERE project_id = ? AND skill = ? AND version = ?", (json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")), project_id, skill, version))
-            connection.execute("DELETE FROM learning_summary_rule_sources WHERE summary_id = ?", (summary_id,))
-            connection.executemany("INSERT INTO learning_summary_rule_sources(summary_id, rule_id, record_id) VALUES (?, ?, ?)", ((summary_id, rule["id"], source_id) for rule in refined["rules"] for source_id in rule["sourceRecordIds"]))
-        return {"projectId": project_id, "skill": skill, "version": version, "status": "DRAFT", "summary": snapshot}
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                "SELECT summary_json, applied FROM learning_summaries WHERE id = ?",
+                (source_summary_id,),
+            ).fetchone()
+            if current is None:
+                raise ValueError("source summary was deleted while LLM refinement was running")
+            if current[1] or current[0] != source_summary_json:
+                raise ValueError("source summary changed while LLM refinement was running")
+            next_version = int(connection.execute(
+                "SELECT COALESCE(MAX(version), 0) FROM learning_summaries "
+                "WHERE project_id = ? AND skill = ?",
+                (project_id, skill),
+            ).fetchone()[0]) + 1
+            snapshot["version"] = next_version
+            summary_id = f"summary-{uuid.uuid4()}"
+            connection.execute(
+                "INSERT INTO learning_summaries "
+                "(id, project_id, skill, version, created_at, source_count, summary_json, applied) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+                (
+                    summary_id, project_id, skill, next_version, refined_at, source_count,
+                    json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")),
+                ),
+            )
+            connection.executemany(
+                "INSERT INTO learning_summary_sources(summary_id, record_id) VALUES (?, ?)",
+                ((summary_id, source_id) for source_id in source_ids),
+            )
+            connection.executemany(
+                "INSERT INTO learning_summary_rule_sources(summary_id, rule_id, record_id) VALUES (?, ?, ?)",
+                ((summary_id, rule["id"], source_id) for rule in refined["rules"] for source_id in rule["sourceRecordIds"]),
+            )
+        return {
+            "projectId": project_id, "skill": skill, "version": next_version,
+            "sourceVersion": version, "status": "DRAFT", "summary": snapshot,
+        }
     finally:
         connection.close()
 
 
 def projects() -> list[dict]:
+    registry_path = REGISTRY_PATH if REGISTRY_PATH.is_file() else LEGACY_REGISTRY_PATH
     try:
-        value = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
+        value = json.loads(registry_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return []
+    if not isinstance(value, dict):
+        return []
+    project_items = value.get("projects", [])
+    if not isinstance(project_items, list):
+        return []
     result = []
-    for item in value.get("projects", []):
+    for item in project_items:
         if not isinstance(item, dict):
             continue
         project = dict(item)
         project["projectId"] = project.get("projectId", project.get("id"))
+        if not _project_databases(project):
+            continue
         configured = project.get("status")
         if configured not in {"CONFLICT", "DISABLED"}:
             path = Path(str(project.get("path", "")))
-            database = Path(str(project.get("database", "")))
-            project["status"] = "ACTIVE" if path.is_dir() and database.is_file() else "UNAVAILABLE"
+            databases = _project_databases(project)
+            project["status"] = "ACTIVE" if path.is_dir() and any(
+                database.is_file() for database in databases
+            ) else "UNAVAILABLE"
         result.append(project)
     return result
 
@@ -269,9 +400,7 @@ def query_records(query: dict[str, list[str]]) -> list[dict]:
     for project in projects():
         if project_filter and project.get("projectId") != project_filter:
             continue
-        database = Path(str(project.get("database", "")))
-        if not database.is_file():
-            continue
+        databases = [_database_for_skill(project, skill_filter)] if skill_filter else _project_databases(project)
         clauses, values = [], []
         if skill_filter:
             clauses.append("skill = ?")
@@ -283,26 +412,69 @@ def query_records(query: dict[str, list[str]]) -> list[dict]:
             clauses.append("(output_json LIKE ? OR edited_content LIKE ? OR review_note LIKE ? OR run_id LIKE ?)")
             values.extend([f"%{search}%"] * 4)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        try:
-            connection = sqlite3.connect(database, timeout=5)
+        for database in databases:
+            if not database.is_file():
+                continue
             try:
-                connection.row_factory = sqlite3.Row
-                rows = connection.execute(
-                    "SELECT * FROM learning_records" + where + " ORDER BY captured_at DESC LIMIT ? OFFSET ?",
-                    (*values, fetch_limit, 0),
-                ).fetchall()
-            finally:
-                connection.close()
-        except sqlite3.DatabaseError:
-            _warnings().append({"projectId": project.get("projectId"), "path": project.get("path"), "error": "database unavailable"})
-            continue
-        for row in rows:
-            item = dict(row)
-            for field in ("output_json", "diagnostics_json", "metadata_json", "evaluation_json"):
-                item[field.removesuffix("_json")] = decode_json(item.pop(field))
-            records.append(item)
+                connection = sqlite3.connect(database, timeout=5)
+                try:
+                    connection.row_factory = sqlite3.Row
+                    rows = connection.execute(
+                        "SELECT * FROM learning_records" + where + " ORDER BY captured_at DESC LIMIT ? OFFSET ?",
+                        (*values, fetch_limit, 0),
+                    ).fetchall()
+                finally:
+                    connection.close()
+            except sqlite3.DatabaseError:
+                _warnings().append({"projectId": project.get("projectId"), "path": project.get("path"), "error": "database unavailable"})
+                continue
+            for row in rows:
+                item = dict(row)
+                for field in ("output_json", "diagnostics_json", "metadata_json", "evaluation_json"):
+                    item[field.removesuffix("_json")] = decode_json(item.pop(field))
+                records.append(item)
     records.sort(key=lambda item: item["captured_at"], reverse=True)
     return records[offset:offset + limit]
+
+
+def query_record_page(query: dict[str, list[str]]) -> dict:
+    """Return one small server-side page without requiring the browser to load all records."""
+    try:
+        page = max(int(query.get("page", ["1"])[0]), 1)
+    except ValueError:
+        page = 1
+    page_size = 20
+    base = {key: value for key, value in query.items() if key not in {"page", "limit", "offset"}}
+    base["limit"] = [str(page_size)]
+    base["offset"] = [str((page - 1) * page_size)]
+    items = query_records(base)
+    project_filter = base.get("project", [""])[0]
+    skill_filter = base.get("skill", [""])[0]
+    status_filter = base.get("status", [""])[0]
+    search = base.get("q", [""])[0].strip()
+    total = 0
+    for project in projects():
+        if project_filter and project.get("projectId") != project_filter:
+            continue
+        databases = [_database_for_skill(project, skill_filter)] if skill_filter else _project_databases(project)
+        clauses, values = [], []
+        if skill_filter:
+            clauses.append("skill = ?"); values.append(skill_filter)
+        if status_filter:
+            clauses.append("review_status = ?"); values.append(status_filter)
+        if search:
+            clauses.append("(output_json LIKE ? OR edited_content LIKE ? OR review_note LIKE ? OR run_id LIKE ?)")
+            values.extend([f"%{search}%"] * 4)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        for database in databases:
+            if not database.is_file():
+                continue
+            try:
+                with sqlite3.connect(database, timeout=5) as connection:
+                    total += int(connection.execute("SELECT COUNT(*) FROM learning_records" + where, values).fetchone()[0])
+            except sqlite3.DatabaseError:
+                continue
+    return {"items": items, "page": page, "pageSize": page_size, "total": total, "hasMore": page * page_size < total}
 
 
 def query_summaries(query: dict[str, list[str]]) -> list[dict]:
@@ -322,36 +494,37 @@ def query_summaries(query: dict[str, list[str]]) -> list[dict]:
     for project in projects():
         if project_id and project.get("projectId") != project_id:
             continue
-        database = Path(str(project.get("database", "")))
-        if not database.is_file():
-            continue
-        try:
-            connection = sqlite3.connect(database, timeout=5)
+        databases = [_database_for_skill(project, skill)] if skill else _project_databases(project)
+        for database in databases:
+            if not database.is_file():
+                continue
             try:
-                connection.row_factory = sqlite3.Row
-                clauses, values = [], []
-                if skill:
-                    clauses.append("skill = ?")
-                    values.append(skill)
-                where = " WHERE " + " AND ".join(clauses) if clauses else ""
-                has_table = connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'learning_summaries'"
-                ).fetchone()
-                rows = connection.execute(
-                    "SELECT * FROM learning_summaries" + where + " ORDER BY skill, version DESC LIMIT ? OFFSET ?",
-                    (*values, limit + offset, 0),
-                ).fetchall() if has_table else []
-            finally:
-                connection.close()
-        except sqlite3.DatabaseError:
-            _warnings().append({"projectId": project.get("projectId"), "path": project.get("path"), "error": "database unavailable"})
-            continue
-        for row in rows:
-            item = dict(row)
-            summary_json = item.pop("summary_json")
-            if details:
-                item["summary"] = decode_json(summary_json)
-            result.append(item)
+                connection = sqlite3.connect(database, timeout=5)
+                try:
+                    connection.row_factory = sqlite3.Row
+                    clauses, values = [], []
+                    if skill:
+                        clauses.append("skill = ?")
+                        values.append(skill)
+                    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+                    has_table = connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'learning_summaries'"
+                    ).fetchone()
+                    rows = connection.execute(
+                        "SELECT * FROM learning_summaries" + where + " ORDER BY skill, version DESC LIMIT ? OFFSET ?",
+                        (*values, limit + offset, 0),
+                    ).fetchall() if has_table else []
+                finally:
+                    connection.close()
+            except sqlite3.DatabaseError:
+                _warnings().append({"projectId": project.get("projectId"), "path": project.get("path"), "error": "database unavailable"})
+                continue
+            for row in rows:
+                item = dict(row)
+                summary_json = item.pop("summary_json")
+                if details:
+                    item["summary"] = decode_json(summary_json)
+                result.append(item)
     result.sort(key=lambda item: (item.get("skill", ""), -int(item.get("version", 0))))
     return result[offset:offset + limit]
 
@@ -366,6 +539,25 @@ def _enabled_skills(project: dict) -> set[str]:
     except (ImportError, OSError, json.JSONDecodeError):
         return set()
     return enabled or set()
+
+
+def _database_for_skill(project: dict, skill: str) -> Path:
+    databases = project.get("databases")
+    if isinstance(databases, dict) and isinstance(databases.get(skill), str):
+        return Path(databases[skill])
+    return Path(str(project.get("database", "")))
+
+
+def _project_databases(project: dict) -> list[Path]:
+    databases = project.get("databases")
+    values = databases.values() if isinstance(databases, dict) else [project.get("database")]
+    result = []
+    for value in values:
+        if isinstance(value, str):
+            path = Path(value)
+            if path not in result:
+                result.append(path)
+    return result
 
 
 def create_summary(payload: dict) -> dict:
@@ -385,7 +577,7 @@ def create_summary(payload: dict) -> dict:
         raise ValueError("project not found")
     if skill.strip() not in _enabled_skills(project):
         raise ValueError("skill is not enabled for learning in this project")
-    database = Path(str(project.get("database", "")))
+    database = _database_for_skill(project, skill)
     if not database.is_file():
         raise ValueError("project database is unavailable")
     connection = sqlite3.connect(database, timeout=5)
@@ -506,7 +698,7 @@ def apply_summary(payload: dict) -> dict:
     project = next((item for item in projects() if item.get("projectId") == project_id), None)
     if project is None or skill not in _enabled_skills(project):
         raise ValueError("project or enabled skill not found")
-    database = Path(str(project.get("database", "")))
+    database = _database_for_skill(project, skill)
     connection = sqlite3.connect(database, timeout=5)
     connection.row_factory = sqlite3.Row
     try:
@@ -527,12 +719,6 @@ def apply_summary(payload: dict) -> dict:
                 raise ValueError("at least one confirmed rule is required before enabling")
             connection.execute("UPDATE learning_summaries SET applied = 0 WHERE project_id = ? AND skill = ?", (project_id, skill))
             connection.execute("UPDATE learning_summaries SET applied = 1 WHERE project_id = ? AND skill = ? AND version = ?", (project_id, skill, version))
-            applied_dir = Path(str(project.get("path", ""))) / ".forge-skill" / "learning" / "applied"
-            applied_dir.mkdir(parents=True, exist_ok=True)
-            target = applied_dir / f"{skill}.json"
-            temporary = target.with_suffix(".json.tmp")
-            temporary.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            temporary.replace(target)
             return {"projectId": project_id, "skill": skill, "version": version, "applied": True}
     finally:
         connection.close()
@@ -548,7 +734,7 @@ def review_summary(payload: dict) -> dict:
     project = next((item for item in projects() if item.get("projectId") == project_id), None)
     if project is None:
         raise ValueError("project not found")
-    connection = sqlite3.connect(Path(str(project.get("database", ""))), timeout=5)
+    connection = sqlite3.connect(_database_for_skill(project, skill), timeout=5)
     try:
         with connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -609,7 +795,7 @@ def delete_summary(payload: dict) -> dict:
     project = next((item for item in projects() if item.get("projectId") == project_id), None)
     if project is None:
         raise ValueError("project not found")
-    database = Path(str(project.get("database", "")))
+    database = _database_for_skill(project, skill)
     connection = sqlite3.connect(database, timeout=5)
     try:
         with connection:
@@ -651,35 +837,34 @@ def update_record(payload: dict) -> bool:
     project = next((item for item in projects() if item.get("projectId") == project_id), None)
     if project is None:
         return False
-    database = Path(str(project.get("database", "")))
-    if not database.is_file():
-        return False
-    connection = sqlite3.connect(database, timeout=5)
-    try:
-        with connection:
-            if action == "DELETED":
-                cursor = connection.execute(
-                    "DELETE FROM learning_records WHERE id = ? AND project_id = ?",
-                    (record_id, project_id),
-                )
-                return cursor.rowcount == 1
-            reviewed_at = now()
-            classic = payload.get("isClassic", False)
-            if not isinstance(classic, bool):
-                return False
-            cursor = connection.execute(
-            """
-            UPDATE learning_records
-            SET review_status = ?, reviewed = 1, edited_content = ?, review_note = ?,
-                reviewed_at = ?, deleted_at = ?, is_classic = ?, classic_reason = ?
-            WHERE id = ? AND project_id = ?
-            """,
-                (action, payload.get("editedContent"), str(payload.get("note") or ""), reviewed_at, None,
-                 int(classic), str(payload.get("classicReason") or ""), record_id, project_id),
-            )
-            return cursor.rowcount == 1
-    finally:
-        connection.close()
+    for database in _project_databases(project):
+        if not database.is_file():
+            continue
+        connection = sqlite3.connect(database, timeout=5)
+        try:
+            with connection:
+                if action == "DELETED":
+                    cursor = connection.execute(
+                        "DELETE FROM learning_records WHERE id = ? AND project_id = ?",
+                        (record_id, project_id),
+                    )
+                else:
+                    classic = payload.get("isClassic", False)
+                    if not isinstance(classic, bool):
+                        return False
+                    cursor = connection.execute(
+                        """UPDATE learning_records
+                           SET review_status = ?, reviewed = 1, edited_content = ?, review_note = ?,
+                               reviewed_at = ?, deleted_at = ?, is_classic = ?, classic_reason = ?
+                           WHERE id = ? AND project_id = ?""",
+                        (action, payload.get("editedContent"), str(payload.get("note") or ""), now(), None,
+                         int(classic), str(payload.get("classicReason") or ""), record_id, project_id),
+                    )
+                if cursor.rowcount == 1:
+                    return True
+        finally:
+            connection.close()
+    return False
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -702,6 +887,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Set-Cookie", _service_cookie())
                 self.end_headers()
                 self.wfile.write(body)
             elif parsed.path in {"/versions", "/versions.html"}:
@@ -709,6 +896,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Set-Cookie", _service_cookie())
                 self.end_headers()
                 self.wfile.write(body)
             elif parsed.path == "/api/projects":
@@ -717,6 +906,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"pid": os.getpid(), "token": SERVICE_TOKEN})
             elif parsed.path == "/api/records":
                 self.send_json(query_records(parse_qs(parsed.query)))
+            elif parsed.path == "/api/records-page":
+                self.send_json(query_record_page(parse_qs(parsed.query)))
             elif parsed.path == "/api/summaries":
                 self.send_json(query_summaries(parse_qs(parsed.query)))
             elif parsed.path == "/api/llm-config":
@@ -732,6 +923,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path not in {"/api/review", "/api/summarize", "/api/apply", "/api/delete-summary", "/api/review-summary", "/api/llm-config", "/api/refine"}:
             self.send_json({"error": "not found"}, 404)
+            return
+        authorization_error = _mutation_request_error(self.headers, self.server.server_port)
+        if authorization_error is not None:
+            status, message = authorization_error
+            self.send_json({"error": message}, status)
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -778,7 +974,7 @@ def main():
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--token", default="")
     args = parser.parse_args()
-    SERVICE_TOKEN = args.token
+    SERVICE_TOKEN = args.token or uuid.uuid4().hex
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     print(f"Learning review: http://127.0.0.1:{args.port}")
     server.serve_forever()

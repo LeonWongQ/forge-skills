@@ -41,6 +41,19 @@ def test_placeholders_and_local_artifacts_do_not_fail(tmp_path):
     assert check_sensitive_content.validate_tree(tmp_path)[1] == []
 
 
+def test_generated_forge_data_is_not_treated_as_public_source(tmp_path):
+    data_root = tmp_path / ".forge-skill" / "forge-data"
+    data_root.mkdir(parents=True)
+    (data_root / "README.md").write_text("Public documentation.\n", encoding="utf-8")
+    private_value = "C:\\Users\\" + "local-user" + "\\project"
+    (data_root / "project-registry.json").write_text(private_value, encoding="utf-8")
+
+    files, errors = check_sensitive_content.validate_tree(tmp_path)
+
+    assert files == 1
+    assert errors == []
+
+
 def test_organization_person_and_email_identifiers_are_rejected(tmp_path):
     organization = "".join(chr(codepoint) for codepoint in (0x516C, 0x53F8))
     person = "".join(chr(codepoint) for codepoint in (0x5F20, 0x4E09))

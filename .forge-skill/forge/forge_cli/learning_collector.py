@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .data_paths import forge_data_root, skill_data_root
+
 COLLECTOR_SKILL = "learning-collector"
 DATABASE_NAME = "learning.sqlite"
 DATABASE_SCHEMA_VERSION = 6
@@ -52,6 +54,14 @@ def _skill_root(forge_root: Path) -> Path:
     return base / "skills" / COLLECTOR_SKILL
 
 
+def _data_root(forge_root: Path) -> Path:
+    return forge_data_root(forge_root)
+
+
+def _project_database(forge_root: Path, project_id: str, skill: str) -> Path:
+    return skill_data_root(forge_root, project_id, skill) / DATABASE_NAME
+
+
 def _project_identity(project: Path) -> dict[str, str] | None:
     learning_dir = project / ".forge-skill" / "learning"
     identity_path = learning_dir / "project.json"
@@ -76,7 +86,7 @@ def _project_identity(project: Path) -> dict[str, str] | None:
 def _write_project_identity(project: Path, identity: dict[str, str]) -> None:
     identity_path = project / ".forge-skill" / "learning" / "project.json"
     identity_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = identity_path.with_suffix(".json.tmp")
+    temporary = identity_path.with_suffix(f".{os.getpid()}.{uuid.uuid4().hex}.json.tmp")
     temporary.write_text(json.dumps(identity, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temporary.replace(identity_path)
 
@@ -213,6 +223,46 @@ def connect_database(path: Path) -> sqlite3.Connection:
     return connection
 
 
+def _migrate_legacy_learning_database(forge_root: Path, project: Path, project_id: str) -> None:
+    legacy = project / ".forge-skill" / "learning" / DATABASE_NAME
+    if not legacy.is_file():
+        return
+    source = sqlite3.connect(legacy, timeout=2)
+    try:
+        tables = {row[0] for row in source.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        if "learning_records" not in tables:
+            return
+        skills = [row[0] for row in source.execute(
+            "SELECT DISTINCT skill FROM learning_records WHERE skill IS NOT NULL AND trim(skill) <> ''"
+        )]
+        for skill in skills:
+            target = _project_database(forge_root, project_id, skill)
+            if target.is_file():
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary = target.with_suffix(f".{os.getpid()}.sqlite.tmp")
+            destination = sqlite3.connect(temporary)
+            try:
+                source.backup(destination)
+                with destination:
+                    destination.execute("DELETE FROM learning_records WHERE skill <> ?", (skill,))
+                    if "learning_summaries" in tables:
+                        obsolete = [row[0] for row in destination.execute(
+                            "SELECT id FROM learning_summaries WHERE skill <> ?", (skill,)
+                        )]
+                        for summary_id in obsolete:
+                            if "learning_summary_sources" in tables:
+                                destination.execute("DELETE FROM learning_summary_sources WHERE summary_id = ?", (summary_id,))
+                            if "learning_summary_rule_sources" in tables:
+                                destination.execute("DELETE FROM learning_summary_rule_sources WHERE summary_id = ?", (summary_id,))
+                        destination.execute("DELETE FROM learning_summaries WHERE skill <> ?", (skill,))
+            finally:
+                destination.close()
+            temporary.replace(target)
+    finally:
+        source.close()
+
+
 def _json(value: Any) -> str | None:
     if value is None:
         return None
@@ -265,10 +315,17 @@ def _adopt_copied_database(database: Path, previous_id: str, identity: dict[str,
             connection.execute(
                 """
                 UPDATE learning_records
-                SET project_id = ?, project_name = ?, project_path = ?
+                SET project_id = ?, project_name = ?, project_path = ?,
+                    collection_key = CASE
+                        WHEN collection_key LIKE ? THEN ? || substr(collection_key, length(?) + 1)
+                        ELSE collection_key
+                    END
                 WHERE project_id = ?
                 """,
-                (identity["projectId"], identity.get("name") or project.name, str(project), previous_id),
+                (
+                    identity["projectId"], identity.get("name") or project.name, str(project),
+                    f"{previous_id}:%", identity["projectId"], previous_id, previous_id,
+                ),
             )
             rows = connection.execute(
                 "SELECT id, summary_json FROM learning_summaries WHERE project_id = ?", (previous_id,)
@@ -288,19 +345,83 @@ def _adopt_copied_database(database: Path, previous_id: str, identity: dict[str,
                     "UPDATE learning_summaries SET project_id = ?, summary_json = ? WHERE id = ?",
                     (identity["projectId"], encoded, row["id"]),
                 )
+            # A copied project inherits reviewed candidates, but activating a
+            # training version always requires a new explicit human action.
+            connection.execute(
+                "UPDATE learning_summaries SET applied = 0 WHERE project_id = ?",
+                (identity["projectId"],),
+            )
     finally:
         connection.close()
 
 
-def _register_project(forge_root: Path, project: Path, database: Path, identity: dict[str, str]) -> dict[str, str]:
+def _clone_project_learning_data(
+    forge_root: Path,
+    entry: dict[str, Any],
+    previous_id: str,
+    identity: dict[str, str],
+    project: Path,
+) -> dict[str, str]:
+    """Clone inherited Skill learning data without modifying the source project."""
+    databases = entry.get("databases")
+    sources = databases if isinstance(databases, dict) else {}
+    if not sources and isinstance(entry.get("database"), str):
+        sources = {"code-review": entry["database"]}
+    cloned: dict[str, str] = {}
+    for skill, source_value in sources.items():
+        if not isinstance(skill, str) or not isinstance(source_value, str):
+            continue
+        source = Path(source_value)
+        if not source.is_file():
+            continue
+        target = _project_database(forge_root, identity["projectId"], skill)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not target.exists():
+            temporary = target.with_suffix(f".{os.getpid()}.sqlite.tmp")
+            source_connection = sqlite3.connect(source, timeout=2)
+            destination = sqlite3.connect(temporary)
+            try:
+                source_connection.backup(destination)
+            finally:
+                destination.close()
+                source_connection.close()
+            temporary.replace(target)
+        _adopt_copied_database(target, previous_id, identity, project)
+        cloned[skill] = str(target)
+    return cloned
+
+
+def _update_project_location(entry: dict[str, Any], project_id: str, project: Path) -> None:
+    databases = entry.get("databases")
+    values = databases.values() if isinstance(databases, dict) else [entry.get("database")]
+    seen: set[Path] = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        database = Path(value)
+        if database in seen or not database.is_file():
+            continue
+        seen.add(database)
+        connection = connect_database(database)
+        try:
+            with connection:
+                connection.execute(
+                    "UPDATE learning_records SET project_name = ?, project_path = ? WHERE project_id = ?",
+                    (project.name, str(project), project_id),
+                )
+        finally:
+            connection.close()
+
+
+def _register_project(forge_root: Path, project: Path, database: Path, identity: dict[str, str], skill: str) -> dict[str, str]:
     with _REGISTRY_LOCK:
-        registry_path = _skill_root(forge_root) / "project-registry.json"
+        registry_path = _data_root(forge_root) / "project-registry.json"
         with _registry_file_lock(registry_path):
-            return _register_project_locked(forge_root, project, database, identity)
+            return _register_project_locked(forge_root, project, database, identity, skill)
 
 
-def _register_project_locked(forge_root: Path, project: Path, database: Path, identity: dict[str, str]) -> dict[str, str]:
-    registry_path = _skill_root(forge_root) / "project-registry.json"
+def _register_project_locked(forge_root: Path, project: Path, database: Path, identity: dict[str, str], skill: str) -> dict[str, str]:
+    registry_path = _data_root(forge_root) / "project-registry.json"
     registry_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         registry = json.loads(registry_path.read_text(encoding="utf-8")) if registry_path.is_file() else {"schemaVersion": "1.0", "projects": []}
@@ -316,29 +437,41 @@ def _register_project_locked(forge_root: Path, project: Path, database: Path, id
     projects = registry.setdefault("projects", [])
     pid = identity["projectId"]
     entry = next((item for item in projects if item.get("projectId", item.get("id")) == pid), None)
+    inherited_databases: dict[str, str] = {}
     if entry is not None:
         previous_path = Path(str(entry.get("path", "")))
         if previous_path.resolve(strict=False) != project.resolve(strict=False) and previous_path.exists():
             previous_id = pid
             identity = _fork_project_identity(project, identity)
             pid = identity["projectId"]
-            _adopt_copied_database(database, previous_id, identity, project)
+            inherited_databases = _clone_project_learning_data(
+                forge_root, entry, previous_id, identity, project
+            )
+            database = _project_database(forge_root, pid, skill)
             entry = None
         elif previous_path.resolve(strict=False) != project.resolve(strict=False):
-            connection = connect_database(database)
-            try:
-                with connection:
-                    connection.execute(
-                        "UPDATE learning_records SET project_name = ?, project_path = ? WHERE project_id = ?",
-                        (project.name, str(project), pid),
-                    )
-            finally:
-                connection.close()
+            _update_project_location(entry, pid, project)
+    if (isinstance(identity.get("copiedFromProjectId"), str)
+            and not inherited_databases
+            and (entry is None or not entry.get("databases"))):
+        source_entry = next(
+            (
+                item for item in projects
+                if item.get("projectId", item.get("id")) == identity["copiedFromProjectId"]
+            ),
+            None,
+        )
+        if isinstance(source_entry, dict):
+            inherited_databases = _clone_project_learning_data(
+                forge_root, source_entry, identity["copiedFromProjectId"], identity, project
+            )
+            database = _project_database(forge_root, pid, skill)
     value: dict[str, str] = {
         "projectId": pid,
         "name": identity.get("name") or project.name,
         "path": str(project),
         "database": str(database),
+        "databases": {**inherited_databases, skill: str(database)},
         "status": "ACTIVE",
         "lastSeenAt": _now(),
     }
@@ -347,7 +480,9 @@ def _register_project_locked(forge_root: Path, project: Path, database: Path, id
     if entry is None:
         projects.append(value)
     else:
-        stable_fields = ("projectId", "name", "path", "database", "status", "copiedFromProjectId")
+        existing_databases = entry.get("databases") if isinstance(entry.get("databases"), dict) else {}
+        value["databases"] = {**existing_databases, skill: str(database)}
+        stable_fields = ("projectId", "name", "path", "database", "databases", "status", "copiedFromProjectId")
         if all(entry.get(field) == value.get(field) for field in stable_fields):
             return identity
         entry.pop("id", None)
@@ -382,17 +517,18 @@ def collect_imported_result(
     if not skill or skill == COLLECTOR_SKILL or skill not in enabled:
         return None
 
-    registry_path = _skill_root(forge_root) / "project-registry.json"
+    registry_path = _data_root(forge_root) / "project-registry.json"
     with _REGISTRY_LOCK:
         with _registry_file_lock(registry_path):
             identity = _project_identity(project)
             if identity is None:
                 return None
-            learning_dir = project / ".forge-skill" / "learning"
-            database = learning_dir / DATABASE_NAME
-            identity = _register_project_locked(forge_root, project, database, identity)
-    learning_dir = project / ".forge-skill" / "learning"
-    database = learning_dir / DATABASE_NAME
+            _migrate_legacy_learning_database(forge_root, project, identity["projectId"])
+            database = _project_database(forge_root, identity["projectId"], skill)
+            database.parent.mkdir(parents=True, exist_ok=True)
+            identity = _register_project_locked(forge_root, project, database, identity, skill)
+    database = _project_database(forge_root, identity["projectId"], skill)
+    database.parent.mkdir(parents=True, exist_ok=True)
     timestamp = _now()
     record_id = f"capture-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"
     active = envelope.get("stage_progress", {}).get("active_request", {}) or {}

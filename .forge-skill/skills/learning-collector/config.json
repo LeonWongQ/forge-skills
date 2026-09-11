@@ -1,6 +1,4 @@
 {
   "schemaVersion": "1.0",
-  "enabledSkills": [],
-  "collectorSkill": "learning-collector",
-  "storage": "PROJECT_SQLITE"
+  "enabledSkills": []
 }

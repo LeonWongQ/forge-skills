@@ -120,9 +120,8 @@ def test_create_review_and_apply_v4_summary_filters_ineligible_records(tmp_path,
 
     applied = review_server.apply_summary({"projectId": project_id, "skill": "code-review", "version": 1})
     assert applied["applied"] is True
-    saved = json.loads((project / ".forge-skill" / "learning" / "applied" / "code-review.json").read_text(encoding="utf-8"))
-    assert saved["status"] == "REVIEWED"
     with sqlite3.connect(database) as check:
+        assert check.execute("SELECT applied FROM learning_summaries WHERE version = 1").fetchone()[0] == 1
         assert check.execute("SELECT COUNT(*) FROM learning_summary_sources").fetchone()[0] == 1
 
     connection = sqlite3.connect(database)
@@ -144,6 +143,59 @@ def test_create_review_and_apply_v4_summary_filters_ineligible_records(tmp_path,
             "SELECT COUNT(*) FROM learning_summary_sources s "
             "LEFT JOIN learning_summaries v ON v.id = s.summary_id WHERE v.id IS NULL"
         ).fetchone()[0] == 0
+
+
+def test_review_queries_and_updates_across_skill_databases(tmp_path, monkeypatch):
+    project_id = "project-multi-skill"
+    project = tmp_path / "project"
+    project.mkdir()
+    databases = {}
+    for index, skill in enumerate(("code-review", "debug"), start=1):
+        database = tmp_path / "forge-data" / "projects" / project_id / "learning" / skill / "learning.sqlite"
+        database.parent.mkdir(parents=True)
+        connection = connect_database(database)
+        connection.execute(
+            """INSERT INTO learning_records
+               (id, project_id, project_name, project_path, skill, captured_at, output_json)
+               VALUES (?, ?, 'project', ?, ?, ?, ?)""",
+            (
+                f"record-{skill}", project_id, str(project), skill,
+                f"2026-09-0{index}T00:00:00Z", json.dumps({"result": skill}),
+            ),
+        )
+        connection.execute(
+            """INSERT INTO learning_summaries
+               (id, project_id, skill, version, created_at, source_count, summary_json)
+               VALUES (?, ?, ?, 1, ?, 1, '{}')""",
+            (f"summary-{skill}", project_id, skill, f"2026-09-0{index}T01:00:00Z"),
+        )
+        connection.commit()
+        connection.close()
+        databases[skill] = str(database)
+    registry_item = {
+        "projectId": project_id,
+        "name": "project",
+        "path": str(project),
+        "database": databases["code-review"],
+        "databases": databases,
+        "status": "ACTIVE",
+    }
+    monkeypatch.setattr(review_server, "projects", lambda: [registry_item])
+
+    records = review_server.query_records({"project": [project_id]})
+    summaries = review_server.query_summaries({"project": [project_id]})
+    debug_records = review_server.query_records({"project": [project_id], "skill": ["debug"]})
+
+    assert {record["skill"] for record in records} == {"code-review", "debug"}
+    assert {summary["skill"] for summary in summaries} == {"code-review", "debug"}
+    assert [record["id"] for record in debug_records] == ["record-debug"]
+    assert review_server.update_record({
+        "projectId": project_id, "recordId": "record-debug", "action": "DELETED",
+    }) is True
+    with sqlite3.connect(databases["code-review"]) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM learning_records").fetchone()[0] == 1
+    with sqlite3.connect(databases["debug"]) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM learning_records").fetchone()[0] == 0
 
 
 class _FakeResponse:
@@ -196,6 +248,10 @@ def _draft_for_refinement(tmp_path, monkeypatch):
 
 def test_refine_uses_responses_api_and_persists_rule_sources(tmp_path, monkeypatch):
     project_id, database, version = _draft_for_refinement(tmp_path, monkeypatch)
+    with sqlite3.connect(database) as connection:
+        source_json = connection.execute(
+            "SELECT summary_json FROM learning_summaries WHERE version = ?", (version,)
+        ).fetchone()[0]
     review_server.save_llm_config({
         "enabled": True, "endpoint": "https://example.test/v1/responses",
         "model": "test-model", "wireApi": "responses", "apiKeyEnv": "TEST_KEY",
@@ -216,9 +272,64 @@ def test_refine_uses_responses_api_and_persists_rule_sources(tmp_path, monkeypat
     refined = review_server.refine_summary({"projectId": project_id, "skill": "code-review", "version": version})
     assert calls[0][2]["input"]
     assert "messages" not in calls[0][2]
+    assert refined["sourceVersion"] == version
+    assert refined["version"] == version + 1
+    assert refined["summary"]["version"] == version + 1
     assert refined["summary"]["refinement"]["mode"] == "explicit_llm"
     with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT summary_json FROM learning_summaries WHERE version = ?", (version,)
+        ).fetchone()[0] == source_json
+        assert connection.execute("SELECT COUNT(*) FROM learning_summaries").fetchone()[0] == 2
         assert connection.execute("SELECT rule_id, record_id FROM learning_summary_rule_sources").fetchall() == [("rule-1", "record-1")]
+
+
+def test_refine_rejects_source_changed_while_llm_is_running(tmp_path, monkeypatch):
+    project_id, database, version = _draft_for_refinement(tmp_path, monkeypatch)
+    review_server.save_llm_config({
+        "enabled": True, "endpoint": "https://example.test/v1/responses",
+        "model": "test-model", "wireApi": "responses", "apiKeyEnv": "TEST_KEY",
+    })
+    response_payload = {"output_text": json.dumps({"rules": [{
+        "id": "rule-1", "stage": "PRE_CHECK", "type": "workflow", "title": "事务边界",
+        "rationale": "重复证据", "confidence": "High", "status": "PENDING",
+        "instruction": "检查事务边界。", "sourceRecordIds": ["record-1"],
+    }]})}
+
+    def change_source_then_respond(*_args, **_kwargs):
+        with sqlite3.connect(database) as connection:
+            connection.execute(
+                "UPDATE learning_summaries SET applied = 1 WHERE version = ?", (version,)
+            )
+        return _FakeResponse(json.dumps(response_payload).encode("utf-8"))
+
+    monkeypatch.setattr(review_server.urllib.request, "urlopen", change_source_then_respond)
+    with pytest.raises(ValueError, match="source summary changed"):
+        review_server.refine_summary({"projectId": project_id, "skill": "code-review", "version": version})
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM learning_summaries").fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT applied FROM learning_summaries WHERE version = ?", (version,)
+        ).fetchone()[0] == 1
+
+
+def test_refine_rejects_incomplete_rule_metadata(tmp_path, monkeypatch):
+    project_id, _database, version = _draft_for_refinement(tmp_path, monkeypatch)
+    review_server.save_llm_config({
+        "enabled": True, "endpoint": "https://example.test/v1/responses",
+        "model": "test-model", "wireApi": "responses", "apiKeyEnv": "TEST_KEY",
+    })
+    response_payload = {"output_text": json.dumps({"rules": [{
+        "id": "rule-1", "stage": "PRE_CHECK", "status": "PENDING",
+        "instruction": "检查事务边界。", "sourceRecordIds": ["record-1"],
+    }]})}
+    monkeypatch.setattr(
+        review_server.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _FakeResponse(json.dumps(response_payload).encode("utf-8")),
+    )
+    with pytest.raises(ValueError, match="rule type"):
+        review_server.refine_summary({"projectId": project_id, "skill": "code-review", "version": version})
 
 
 def test_refine_uses_chat_completions_and_rejects_empty_sources(tmp_path, monkeypatch):
@@ -228,7 +339,8 @@ def test_refine_uses_chat_completions_and_rejects_empty_sources(tmp_path, monkey
         "model": "test-model", "wireApi": "chat_completions", "apiKeyEnv": "TEST_KEY",
     })
     payload = {"choices": [{"message": {"content": json.dumps({"rules": [{
-        "id": "rule-1", "stage": "PRE_CHECK", "status": "PENDING",
+        "id": "rule-1", "stage": "PRE_CHECK", "type": "workflow", "title": "事务边界",
+        "rationale": "重复证据", "confidence": "High", "status": "PENDING",
         "instruction": "检查事务边界。", "sourceRecordIds": [],
     }]})}}]}
     monkeypatch.setattr(review_server.urllib.request, "urlopen", lambda *_args, **_kwargs: _FakeResponse(json.dumps(payload).encode()))
@@ -245,6 +357,34 @@ def test_refine_rejects_oversized_response_before_parsing(tmp_path, monkeypatch)
     oversized = b"{" + b"x" * (review_server.MAX_LLM_RESPONSE_BYTES + 1)
     monkeypatch.setattr(review_server.urllib.request, "urlopen", lambda *_args, **_kwargs: _FakeResponse(oversized))
     with pytest.raises(ValueError, match="256 KB"):
+        review_server.refine_summary({"projectId": project_id, "skill": "code-review", "version": version})
+
+
+@pytest.mark.parametrize(
+    ("wire_api", "response_payload", "message"),
+    [
+        ("responses", {"output": [None]}, "Responses output"),
+        ("responses", {"output": [{"content": [None]}]}, "Responses content"),
+        ("chat_completions", {"choices": []}, "Chat Completions choices"),
+        ("chat_completions", {"choices": [{"message": []}]}, "Chat Completions message"),
+    ],
+)
+def test_refine_rejects_malformed_llm_response_shapes(
+    tmp_path, monkeypatch, wire_api, response_payload, message
+):
+    project_id, _database, version = _draft_for_refinement(tmp_path, monkeypatch)
+    endpoint = "https://example.test/v1/responses" if wire_api == "responses" else "https://example.test/v1/chat/completions"
+    review_server.save_llm_config({
+        "enabled": True, "endpoint": endpoint, "model": "test-model",
+        "wireApi": wire_api, "apiKeyEnv": "TEST_KEY",
+    })
+    monkeypatch.setattr(
+        review_server.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _FakeResponse(json.dumps(response_payload).encode("utf-8")),
+    )
+
+    with pytest.raises(ValueError, match=message):
         review_server.refine_summary({"projectId": project_id, "skill": "code-review", "version": version})
 
 
@@ -270,3 +410,32 @@ def test_llm_endpoints_reject_non_object_and_malformed_config(tmp_path, monkeypa
         review_server.save_llm_config([])
     with pytest.raises(ValueError, match="JSON object"):
         review_server.refine_summary([])
+
+
+@pytest.mark.parametrize("registry_value", [None, [], "invalid", {"projects": {}}])
+def test_projects_rejects_structurally_invalid_registry(tmp_path, monkeypatch, registry_value):
+    registry = tmp_path / "project-registry.json"
+    registry.write_text(json.dumps(registry_value), encoding="utf-8")
+    monkeypatch.setattr(review_server, "REGISTRY_PATH", registry)
+
+    assert review_server.projects() == []
+
+
+def test_review_mutations_require_same_origin_json_service_cookie(monkeypatch):
+    monkeypatch.setattr(review_server, "SERVICE_TOKEN", "test-token")
+    valid = {
+        "Host": "127.0.0.1:8765",
+        "Origin": "http://127.0.0.1:8765",
+        "Content-Type": "application/json; charset=utf-8",
+        "Cookie": f"{review_server.SERVICE_COOKIE}=test-token",
+    }
+
+    assert review_server._mutation_request_error(valid, 8765) is None
+    assert review_server._mutation_request_error({**valid, "Cookie": ""}, 8765)[0] == 403
+    assert review_server._mutation_request_error(
+        {**valid, "Origin": "https://attacker.example"}, 8765
+    )[0] == 403
+    assert review_server._mutation_request_error({**valid, "Host": "localhost:8765"}, 8765)[0] == 403
+    assert review_server._mutation_request_error({**valid, "Content-Type": "text/plain"}, 8765)[0] == 415
+    assert "HttpOnly" in review_server._service_cookie()
+    assert "SameSite=Strict" in review_server._service_cookie()

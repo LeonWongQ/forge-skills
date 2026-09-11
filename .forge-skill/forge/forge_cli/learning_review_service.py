@@ -14,6 +14,8 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
 
+from .data_paths import forge_data_root
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -25,6 +27,10 @@ def _skill_root(forge_root: Path) -> Path:
 
 
 def _state_path(forge_root: Path) -> Path:
+    return forge_data_root(forge_root) / "services" / "learning-review-service.json"
+
+
+def _legacy_state_path(forge_root: Path) -> Path:
     return _skill_root(forge_root) / "review-service.json"
 
 
@@ -33,11 +39,19 @@ def _load_state(forge_root: Path) -> dict | None:
         value = json.loads(_state_path(forge_root).read_text(encoding="utf-8"))
         return value if isinstance(value, dict) else None
     except (OSError, json.JSONDecodeError):
+        try:
+            value = json.loads(_legacy_state_path(forge_root).read_text(encoding="utf-8"))
+            if isinstance(value, dict):
+                _save_state(forge_root, value)
+                return value
+        except (OSError, json.JSONDecodeError):
+            pass
         return None
 
 
 def _save_state(forge_root: Path, state: dict) -> None:
     path = _state_path(forge_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temporary.replace(path)
