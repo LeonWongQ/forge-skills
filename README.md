@@ -1,6 +1,6 @@
 # Forge Skills
 
-<!-- forge-facts: skills=31 version=1.2.1 route-regression-count=81 skill-eval-case-count=37 skill-eval-skill-count=31 -->
+<!-- forge-facts: skills=31 version=1.2.1 route-regression-count=81 skill-eval-case-count=38 skill-eval-skill-count=32 -->
 
 Forge Skills is a modular engineering Skill collection for Codex, Claude, and Cursor. It combines focused Skill entrypoints with deterministic routing, reusable engineering guidance, validation tooling, and opt-in LLM behavior evaluation.
 
@@ -18,6 +18,40 @@ Forge-generated runtime data is stored separately under `forge-data`, partitione
 by project ID and Skill. Project repositories retain only lightweight identity
 and learning configuration files; databases, summaries, service state, and
 paused Runtime documents are excluded from Git.
+
+## Optional Skill Training Data
+
+Forge includes an opt-in collector for improving Skill instructions and output
+quality. Collection is disabled by default and is controlled per project in
+`.forge-skill/learning/config.json`:
+
+```json
+{
+  "schemaVersion": "1.0",
+  "enabledSkills": ["code-review"],
+  "collectorSkill": "learning-collector",
+  "storage": "PROJECT_SQLITE"
+}
+```
+
+Only the final, user-visible result of an explicitly enabled Skill is recorded.
+Empty results, hidden reasoning, prompts, credentials, and intermediate Runtime
+stages are excluded. Each project and Skill has an isolated SQLite database at
+`forge-data/projects/<projectId>/learning/<skill>/learning.sqlite`.
+
+Start the local review dashboard when needed:
+
+```text
+forge ask "启动学习审核页面"
+forge ask "关闭学习审核服务"
+```
+
+The dashboard supports filtering, editing, exclusion, deletion, summary
+generation, LLM refinement, and manual version review. Generated versions are
+never enabled automatically; at most one reviewed version can be enabled for a
+project and Skill. Machine-local collector settings live in
+`forge-data/runtime.json`, while project learning configuration remains under
+`.forge-skill/learning/`.
 
 Add `--uninstall` to remove only links created from this source checkout. Existing files and links to other sources are preserved. Use `--check --uninstall` to preview removals.
 
