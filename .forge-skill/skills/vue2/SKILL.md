@@ -13,7 +13,7 @@ allowed-tools: [Read, Glob, Grep, Bash(git diff, git log, git show, git status, 
 
 ## Activation Sequence
 
-1. Load the Forge kernel and AUTOLOAD policy.
+1. Load `.forge-skill/forge/CLAUDE.md` and `.forge-skill/forge/AUTOLOAD.md`, including the shared direct-host learning lifecycle.
 2. Confirm explicit Vue 2.0–2.6 intent; never select this skill from a generic `.vue`, Vue, Vite, or Composition API reference.
 3. Locate the target package. Inspect its lockfile or installed metadata for the resolved `vue` version; use `package.json` only as provisional evidence when needed.
 4. Confirm compiler/toolchain consistency, including `vue-template-compiler` or the project's actual SFC setup. Report mismatch or ambiguity instead of guessing a Vue version.

@@ -11,7 +11,7 @@ allowed-tools: [Read, Glob, Grep, Bash(git diff, git log, git show, git status, 
 
 ## Activation
 
-1. Load Forge kernel and autoload policy.
+1. Load `.forge-skill/forge/CLAUDE.md` and `.forge-skill/forge/AUTOLOAD.md`, including the shared direct-host learning lifecycle.
 2. Classify API versus event, producer versus consumer, and the protected compatibility direction.
 3. Load `domain.api_event_contracts` and `domain.testing`; add technology domains only when artifacts require them.
 4. Inspect registered contract schemas and fixtures. Run `forge validate --check contracts` when artifacts are present.

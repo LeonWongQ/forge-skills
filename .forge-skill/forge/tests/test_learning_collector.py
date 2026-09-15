@@ -20,6 +20,18 @@ SOURCE_FORGE = REPOSITORY_ROOT / "forge"
 SOURCE_SCRIPT = REPOSITORY_ROOT / "skills" / "learning-collector" / "scripts" / "record_direct_result.py"
 
 
+def test_all_learnable_skills_load_the_shared_direct_host_lifecycle():
+    skills_root = REPOSITORY_ROOT / "skills"
+    missing = []
+    for skill_file in sorted(skills_root.glob("*/SKILL.md")):
+        if skill_file.parent.name == "learning-collector":
+            continue
+        if ".forge-skill/forge/CLAUDE.md" not in skill_file.read_text(encoding="utf-8"):
+            missing.append(skill_file.parent.name)
+
+    assert missing == []
+
+
 def isolated_collector(tmp_path: Path) -> tuple[Path, Path]:
     bundle = tmp_path / "bundle"
     forge_root = bundle / "forge"
@@ -151,6 +163,27 @@ def test_one_toolchain_stores_each_enabled_skill_once(tmp_path):
     assert json.loads(rows[0][1]) == {"result": "code-review"}
 
 
+def test_collection_reactivates_archived_registration_and_clears_stale_health(tmp_path):
+    forge_root, _ = isolated_collector(tmp_path)
+    project = enabled_project(tmp_path)
+    assert _collect(forge_root, project, "runtime.first", "code-review", {"result": "first"})
+    registry_path = forge_root.parent / "forge-data" / "project-registry.json"
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    registry["projects"][0].update({
+        "status": "DISABLED", "disabledAt": "2026-09-15T00:00:00Z",
+        "unavailableSince": "2026-09-14T00:00:00Z", "healthReason": "archived by operator",
+    })
+    registry_path.write_text(json.dumps(registry), encoding="utf-8")
+
+    assert _collect(forge_root, project, "runtime.second", "code-review", {"result": "second"})
+
+    restored = json.loads(registry_path.read_text(encoding="utf-8"))["projects"][0]
+    assert restored["status"] == "ACTIVE"
+    assert restored["disabledAt"] is None
+    assert restored["unavailableSince"] is None
+    assert restored["healthReason"] is None
+
+
 def test_empty_result_is_skipped_before_database_creation(tmp_path):
     forge_root, _ = isolated_collector(tmp_path)
     project = enabled_project(tmp_path)
@@ -225,7 +258,24 @@ def test_existing_database_migration_preserves_records(tmp_path):
     assert "collection_key" in columns
     assert "is_classic" in columns
     assert "classic_reason" in columns
-    assert version == 6
+    assert version == 7
+
+
+def test_database_creates_dashboard_filter_indexes(tmp_path):
+    database = tmp_path / "learning.sqlite"
+    connection = connect_database(database)
+    try:
+        indexes = {
+            row["name"] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            )
+        }
+    finally:
+        connection.close()
+
+    assert "idx_learning_filter_capture" in indexes
+    assert "idx_learning_dashboard" in indexes
+    assert "idx_learning_run" in indexes
 
 
 def test_legacy_project_database_is_split_into_skill_data_roots(tmp_path):
@@ -270,8 +320,8 @@ def test_copied_project_gets_new_id_and_cloned_skill_databases(tmp_path):
     with sqlite3.connect(original_database) as connection:
         connection.execute(
             """INSERT INTO learning_summaries
-               (id, project_id, skill, version, created_at, source_count, summary_json, applied)
-               VALUES ('summary-original', ?, 'code-review', 1, '2026-01-01T00:00:00Z', 1, '{}', 1)""",
+               (id, project_id, skill, version, created_at, source_count, summary_json, lifecycle_status)
+               VALUES ('summary-original', ?, 'code-review', 1, '2026-01-01T00:00:00Z', 1, '{}', 'REVIEWED')""",
             (original_identity["projectId"],),
         )
         connection.commit()
@@ -293,13 +343,13 @@ def test_copied_project_gets_new_id_and_cloned_skill_databases(tmp_path):
     with sqlite3.connect(original_code_review) as connection:
         assert connection.execute("SELECT DISTINCT project_id FROM learning_records").fetchall() == [(original_identity["projectId"],)]
         assert connection.execute("SELECT COUNT(*) FROM learning_records").fetchone()[0] == 1
-        assert connection.execute("SELECT applied FROM learning_summaries").fetchone()[0] == 1
+        assert connection.execute("SELECT lifecycle_status FROM learning_summaries").fetchone()[0] == "REVIEWED"
     for skill in ("code-review", "debug"):
         with sqlite3.connect(copied_learning / skill / "learning.sqlite") as connection:
             assert connection.execute("SELECT DISTINCT project_id FROM learning_records").fetchall() == [(copied_identity["projectId"],)]
     with sqlite3.connect(copied_learning / "code-review" / "learning.sqlite") as connection:
         assert connection.execute("SELECT COUNT(*) FROM learning_records").fetchone()[0] == 2
-        assert connection.execute("SELECT applied FROM learning_summaries").fetchone()[0] == 0
+        assert connection.execute("SELECT lifecycle_status FROM learning_summaries").fetchone()[0] == "REVIEWED"
 
 
 def test_moved_project_updates_all_skill_record_paths(tmp_path):

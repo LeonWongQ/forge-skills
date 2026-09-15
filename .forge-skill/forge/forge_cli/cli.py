@@ -739,7 +739,10 @@ def runtime_init(ctx, user_input, preferred_skill, skill_query, pack_query, beha
     try:
         from .runtime_composition import initialize_runtime
 
-        envelope = initialize_runtime(root, manifest, task_statement=task_statement, user_goal=user_goal, artifact_evidence=artifacts)
+        envelope = initialize_runtime(
+            root, manifest, task_statement=task_statement, user_goal=user_goal,
+            artifact_evidence=artifacts, project=_project_directory(root),
+        )
     except ValueError as error:
         raise click.UsageError(str(error)) from error
     if ctx.obj["format"] == "json":

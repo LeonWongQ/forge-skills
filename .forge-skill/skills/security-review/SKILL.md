@@ -17,6 +17,8 @@ allowed-tools: [Read, Glob, Grep, Bash(git diff, git log, git show, git status, 
 
 # Security Review
 
+Load `.forge-skill/forge/CLAUDE.md` and `.forge-skill/forge/AUTOLOAD.md` at activation, including the shared direct-host learning lifecycle.
+
 ## Route
 
 Define assets, actors, trust boundaries, entry points, deployment context, and requested scope before evaluating controls. Use `dependency-audit` for a supply-chain-only request and `code-review` when security is not the primary judgment.

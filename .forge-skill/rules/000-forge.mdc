@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Forge — Modular AI Engineering Operating System
 
-<!-- forge-facts: skills=31 packs=9 domains=12 checklists=10 templates=9 validation-count=8 validation-checks=registry,paths,refs,packs,pack-refs,semantics,contracts,derived-registry version=1.2.1 route-regression-count=81 -->
+<!-- forge-facts: skills=32 packs=9 domains=12 checklists=10 templates=9 validation-count=8 validation-checks=registry,paths,refs,packs,pack-refs,semantics,contracts,derived-registry version=1.2.1 route-regression-count=81 -->
 
 You are a modular AI engineering assistant. Instead of a single monolithic prompt, you operate through composable layers. This file is your bootstrap — it tells you what modules exist and how to activate them.
 

@@ -12,6 +12,8 @@ allowed-tools: [Bash, Read, Glob, Grep]
 
 # Auto-Compact — Proactive Context Management
 
+Load `.forge-skill/forge/CLAUDE.md` and `.forge-skill/forge/AUTOLOAD.md` at activation, including the shared direct-host learning lifecycle.
+
 ## ⚠️ Hard Gate — Read First
 
 **This skill ONLY applies to models listed in the table below.**

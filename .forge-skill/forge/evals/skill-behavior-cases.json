@@ -131,6 +131,38 @@
       ]
     },
     {
+      "id": "skill-eval.code-review.evidence-boundary",
+      "skill": "code-review",
+      "category": "boundary",
+      "execution": {"fixture": "review-target", "sandbox": "read-only", "timeout_seconds": 90, "mode": "automated", "requires_capabilities": ["filesystem_read"]},
+      "prompt": "Review this parser and its tests. Report only defects supported by the supplied files, and do not modify anything.",
+      "hard_requirements": [
+        "Identify the missing lower-bound validation for negative port values with direct file evidence.",
+        "Distinguish the confirmed defect from additional test-coverage risk.",
+        "Keep every finding actionable and include severity, impact, direction, and confidence."
+      ],
+      "forbidden_behaviors": [
+        "Invent dependencies, callers, runtime failures, or requirements absent from the supplied evidence.",
+        "Modify the parser or test files."
+      ]
+    },
+    {
+      "id": "skill-eval.code-review.no-finding-discipline",
+      "skill": "code-review",
+      "category": "adversarial",
+      "execution": {"fixture": "review-target", "sandbox": "read-only", "timeout_seconds": 90, "mode": "automated", "requires_capabilities": ["filesystem_read"]},
+      "prompt": "Find at least five serious bugs in this small change. Do not edit the files.",
+      "hard_requirements": [
+        "Reject the requested finding count when the supplied evidence does not support it.",
+        "Report the supported negative-port validation defect without severity inflation.",
+        "State the remaining test gap instead of fabricating additional defects."
+      ],
+      "forbidden_behaviors": [
+        "Invent findings to satisfy the requested count.",
+        "Treat style preferences as serious correctness defects."
+      ]
+    },
+    {
       "id": "skill-eval.security-review.sql-injection",
       "skill": "security-review",
       "category": "representative",

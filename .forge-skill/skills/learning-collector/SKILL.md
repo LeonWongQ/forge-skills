@@ -1,6 +1,6 @@
 ---
 name: learning-collector
-description: Experimental, explicitly invoked collection and review of configured Forge Skill final results. It stores project-scoped evidence for optional Skill learning/training and never learns, summarizes, evaluates, or modifies Skills automatically.
+description: Experimental, opt-in collection, review, summarization, Overlay generation, evaluation, and feedback control for project-scoped Forge Skill training. Model calls, publication, and activation remain explicit operator actions.
 ---
 
 # Learning Collector / Skill Training Data Collector
@@ -10,8 +10,23 @@ the user explicitly asks to configure, collect, inspect, or review Skill
 learning/training data. It remains disabled until a project explicitly lists a
 Skill in `.forge-skill/learning/config.json`.
 
-这里的“学习”和“训练”指训练 Forge Skill 的外部行为：通过采集结果、人工审核和后续规则整理，改进 Skill 的提示、流程、判断规则和回归测试。它不指训练模型参数。
-当前版本只实现 Skill 训练闭环的“采集 + 审核”阶段，尚未自动生成或发布 Skill 修改。
+In this capability, Skill learning and Skill training mean improving a Forge
+Skill's external instructions, workflow, judgment rules, output contract, and
+regression cases from reviewed evidence. They never mean training model
+parameters. The implemented lifecycle ends in a project-scoped Overlay; it
+does not rewrite the global Skill.
+
+## Lifecycle
+
+The stable flow is evidence collection -> human record review -> Summary ->
+human Summary review -> Overlay -> human Overlay review -> evaluation and
+publication -> manual activation -> reviewed production feedback. Summary
+knowledge never runs directly, and an Overlay never replaces the global Skill.
+Phases 1-8 are implemented; evaluation evidence remains provisional until the
+planned Phase 9 qualification is accepted. When managing versions, evaluation,
+release evidence, or rollback behavior, read
+[`references/lifecycle.md`](references/lifecycle.md) for the authoritative phase
+states, gates, and operator boundaries.
 
 Collect independent final results from explicitly enabled Skills. The collector
 itself is always excluded. One toolchain run may collect several records when it
@@ -48,8 +63,9 @@ forge-data/projects/<projectId>/learning/<skill>/learning.sqlite
 The project keeps only `.forge-skill/learning/config.json` and `project.json`.
 The global `forge-data/project-registry.json` enables cross-project review;
 databases remain physically isolated under their project ID.
-The applied summary version and its complete content remain authoritative in
-that Skill database; do not maintain a second applied-version JSON source.
+Summary versions are training knowledge only. They are never loaded directly
+at runtime; a project Overlay references one or more reviewed summaries and is
+the only runtime correction layer.
 
 On first collection, create `.forge-skill/learning/project.json` with a stable
 UUID-based `projectId`. This identity moves with the project. The registry keeps
@@ -63,13 +79,25 @@ the situation:
   register it separately, and migrate the copied SQLite records to the new ID.
 
 Copied history remains available in both projects; subsequent records diverge.
-Registry health states are `ACTIVE`, `UNAVAILABLE`, and `DISABLED`.
+Registry health states are `ACTIVE`, `UNAVAILABLE`, `CONFLICT`, and `DISABLED`.
+The review service persists availability changes with `unavailableSince` and
+`healthReason`, so missing or moved projects remain diagnosable between runs.
+An operator may archive a project registration from the dashboard. Archiving
+sets it to `DISABLED` and excludes it from unfiltered cross-project scans; it
+does not delete any project configuration, records, summaries, Overlays, or
+evaluation artifacts. An explicitly selected archived project remains
+inspectable and can be restored. A later collection from that project may
+reactivate its registration because the project's `enabledSkills` config is
+the source of truth. Conflicting identities must be resolved before their
+registration status can be changed.
 
 Records are `ACTIVE` by default. Review may mark them `EXCLUDED`, edit their
 effective content, add a note, or permanently delete them from the owning
 SQLite database. Deletion is irreversible and removes the record from the
-dashboard. Collection errors must never block the original Forge runtime
-operation.
+dashboard. Once a Summary references a record, that source record is immutable
+and cannot be edited, excluded, re-approved, or deleted; create a new Summary
+from corrected records instead. Collection errors must never block the
+original Forge operation.
 
 ## Review
 
@@ -83,46 +111,62 @@ reviewed, normally from the last six months plus records marked as classic
 cases. The common layer controls this time window, classic-case retention,
 size limits, and source traceability. Each Skill may provide a specialized
 extractor; Skills without one use a generic evidence candidate and remain
-pending refinement. All generated rules start as `PENDING`.
+pending refinement. Dedicated deterministic profiles currently cover
+`code-review`, `debug`, `implement`, `page-test`, `test-implementation`,
+`refactor`, `explain`, `plan`, and `explore`. They extract only recognized
+structured fields, explicit `learningSignals`, or human-reviewed plain-text
+edits. All generated rules start as `PENDING`.
 
 The separate `/versions` page allows an operator to edit each rule, confirm or
-exclude it, enable one fully reviewed version per project and Skill, and
-permanently delete non-applied versions. Legacy summaries remain readable but
-cannot be newly enabled. Summary generation is deterministic by default and
-does not invoke a model automatically. The `/versions` page now exposes an
-explicit `LLM 精炼` action and local configuration. Only endpoint, model, and
-API-key environment-variable name are stored in `llm-refiner.json`; the secret
-stays in the host environment. Refinement uses a `DRAFT` as its immutable
+exclude it, and permanently delete non-archived versions. A Summary is training
+knowledge only: it is never enabled or loaded directly at runtime. An operator
+may generate a project Overlay from one or more reviewed Summary versions; the
+result requires separate review, evaluation, publication, and activation.
+While an Overlay references a Summary, that Summary cannot be edited or deleted;
+delete the non-active Overlay first when its source needs to be replaced.
+Summary generation is deterministic by default and does not invoke a model
+automatically. The `/versions` page exposes an explicit LLM refinement action
+and local configuration. The endpoint, model, enabled state, wire API, request
+timeout, and API-key environment-variable name are stored in
+`llm-refiner.json`; the secret stays in the host environment. Refinement uses a
+`DRAFT` as its immutable
 source and creates a new version. It forces all returned rules to `PENDING`,
 and rejects invalid, oversized, unknown, or concurrently changed source output
 without changing the source version.
 
-The Forge natural-language entrypoint manages the temporary service:
+The phase table above is the authoritative Overlay lifecycle. The dashboard
+must not collapse generation, review, evaluation, publication, and activation
+into one transition. Model execution occurs only after the operator selects the
+explicit evaluation or refinement action. Cases requiring real writes, shell,
+or browser execution are not simulated through the HTTP evaluator. A missing
+compatible case, fewer than three compatible cases, failed structural check,
+concurrent Overlay change, or concurrent Baseline switch prevents publication.
+The versions page exposes the compatible-case count and disables automatic
+evaluation and publication until the three-case minimum is met.
 
-```text
-forge ask "启动学习审核页面"
-forge ask "关闭学习审核服务"
-```
-
-Starting reuses a verified existing instance or selects an available loopback
-port. Stopping verifies the saved random token and PID before terminating the
-process. The service is never installed as an operating-system service and does
-not start automatically with Forge.
+The Forge natural-language entrypoint recognizes the localized learning-review
+start and stop intents implemented by `_learning_review_intent`. Starting
+reuses a verified existing instance or selects an available loopback port.
+Stopping verifies the saved random token and PID before terminating the process.
+The service is never installed as an operating-system service and does not
+start automatically with Forge.
 
 ## Boundaries
 
-Do not load a summary into another Skill, run evaluations, update Memory,
-modify another Skill, or publish anything. Those capabilities require separate
-approval and are intentionally outside this version.
+Do not load a Summary directly into another Skill, update Memory, or modify a
+global Skill. LLM evaluation and Overlay publishing are allowed only through
+the explicit dashboard action; neither operation activates an Overlay.
 
 ## Direct host execution
 
-Collection is triggered only by an enabled Skill's direct-host delivery
-protocol. The shared Forge delivery instruction uses
-`scripts/record_direct_result.py`. The script reads a JSON object from stdin,
-checks the project allowlist through the same collector, and writes to the same
-project SQLite database. It records only user-visible result evidence, never
-hidden reasoning.
+An enabled Skill's direct-host lifecycle makes one pre-execution Overlay lookup
+through `scripts/resolve_direct_overlay.py`, then one post-delivery collection
+attempt through `scripts/record_direct_result.py`. The resolver is read-only;
+the collector checks the same project allowlist and writes to the project Skill
+database. Disabling a Skill is therefore both a collection switch and an
+Overlay runtime kill switch. Applied Overlay identity is retained in collection
+metadata without copying the Overlay content. Only user-visible result evidence
+is collected, never hidden reasoning.
 
 The direct-host contract is strict and best-effort:
 

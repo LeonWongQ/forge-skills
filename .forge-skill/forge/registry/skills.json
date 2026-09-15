@@ -1219,6 +1219,33 @@
       "context": "fork"
     },
     {
+      "id": "skill.learning_collector",
+      "name": "learning-collector",
+      "path": ".claude/skills/learning-collector/SKILL.md",
+      "description": "Explicitly configure, inspect, review, summarize, evaluate, and control project-scoped Skill training data.",
+      "triggers": [
+        "$learning-collector",
+        "learning-collector",
+        "Skill learning data",
+        "Skill training data",
+        "Skill 学习数据",
+        "Skill 训练数据"
+      ],
+      "behavior": null,
+      "domains": [
+        "domain.testing",
+        "domain.observability_reliability"
+      ],
+      "template": "template.default",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.verification",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.full_default",
+      "context": "fork"
+    },
+    {
       "id": "skill.forge",
       "name": "forge",
       "path": ".claude/skills/forge/SKILL.md",

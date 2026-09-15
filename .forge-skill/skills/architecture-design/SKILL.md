@@ -18,6 +18,8 @@ allowed-tools: [Read, Glob, Grep, Bash(git diff, git log, git show, git status, 
 
 # Architecture Design
 
+Load `.forge-skill/forge/CLAUDE.md` and `.forge-skill/forge/AUTOLOAD.md` at activation, including the shared direct-host learning lifecycle.
+
 ## Route
 
 Classify the request as system/component topology, API design, integration design, broad data architecture, or technology selection. Use `data-design` for detailed schemas/indexes, `contract-compatibility` for compatibility assessment, and `plan` when the architecture is already decided and sequencing is the primary need.

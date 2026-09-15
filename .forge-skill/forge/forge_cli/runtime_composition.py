@@ -11,6 +11,7 @@ from typing import Any, Dict, Iterable, Optional
 from .domain_resolution import resolve_domains
 from .output_validation import resolve_template_output_schema
 from .query_helpers import find_pack_object_by_id
+from .overlay_runtime import load_active_overlay, normalize_skill
 from .runtime_contracts import ExecutionAdapterRequest, RUNTIME_ENVELOPE_VERSION, canonical_digest, validate_resolved_context, validate_runtime_envelope, validate_runtime_state
 from .stage_ledger import append_event, new_ledger
 
@@ -55,6 +56,7 @@ def _runtime_state(manifest: Dict[str, Any], task_statement: str, user_goal: str
         "verification_status": metadata.get("verification_status", {"level": "none", "verified": [], "unverified": []}),
         "open_questions": list(metadata.get("open_questions", [])),
         "confidence": metadata.get("confidence", "low"),
+        "project_overlay": None,
     }
 
 
@@ -83,6 +85,7 @@ def initialize_runtime(
     artifact_evidence: Any = None,
     metadata: Optional[Dict[str, Any]] = None,
     runtime_id: Optional[str] = None,
+    project: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Create a portable runtime envelope from one successful resolved manifest."""
     errors = validate_resolved_context(root, manifest)
@@ -101,6 +104,8 @@ def initialize_runtime(
         protected.extend(eligible)
     domain_result = resolve_domains(root, eligible, task_statement, artifact_evidence, protected)
     state = _runtime_state(manifest, task_statement, user_goal or task_statement, domain_result, metadata)
+    selected_skill = str(selection.get("skill") or "")
+    state["project_overlay"] = load_active_overlay(root, project, normalize_skill(selected_skill))
     state_errors = validate_runtime_state(root, state)
     if state_errors:
         raise ValueError(f"runtime state validation failed: {state_errors}")
@@ -127,6 +132,20 @@ def initialize_runtime(
     envelope = append_event(envelope, "domain_direct_evidence_collected", "runtime", payload={"evidence": domain_result["evidence"], "rejected": domain_result["rejected"]})
     envelope = append_event(envelope, "domain_related_candidates_considered", "runtime", payload={"candidates": domain_result["related_candidates"]})
     envelope = append_event(envelope, "domain_resolution_completed", "runtime", payload={"selected_domains": domain_result["selected_domains"], "confidence": domain_result["confidence"]})
+    if state.get("project_overlay"):
+        overlay = state["project_overlay"]
+        envelope = append_event(
+            envelope,
+            "project_overlay_applied",
+            "runtime",
+            payload={
+                "overlay_id": overlay["id"],
+                "overlay_version": overlay["version"],
+                "overlay_digest": overlay["contentDigest"],
+                "project_id": overlay["projectId"],
+                "skill": overlay["skill"],
+            },
+        )
     envelope["status"] = "ready"
     envelope_errors = validate_runtime_envelope(root, envelope)
     if envelope_errors:

@@ -16,6 +16,8 @@ allowed-tools: [Read, Glob, Grep, Bash(git diff, git log, git show, git status, 
 
 # Dependency Audit
 
+Load `.forge-skill/forge/CLAUDE.md` and `.forge-skill/forge/AUTOLOAD.md` at activation, including the shared direct-host learning lifecycle.
+
 ## Route
 
 Identify package managers, manifests, lockfiles, modules, runtime/build/test scopes, and deployment targets before choosing commands. Use `security-review` when dependency risk is one part of a broader threat review and `migration` for an already-selected major upgrade.

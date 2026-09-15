@@ -266,6 +266,19 @@ It may be simplified for lightweight tasks, but never abandoned carelessly.
 
 ### Opt-in direct-host collection (Skill learning/training)
 
+Before a direct-host Forge Skill executes, check whether the active Skill is
+listed in the current project's `.forge-skill/learning/config.json`. If it is,
+perform one best-effort call to the installed
+`learning-collector/scripts/resolve_direct_overlay.py` with `--skill
+<active-skill>` and `--project <project-root>`. Use `pythonExecutable` from the
+installed `forge-data/runtime.json` and the same short timeout used for direct
+collection. If the resolver returns an Overlay, apply its `content` only as
+project-scoped supplemental pre-check and final-validation instructions; it
+must not replace the global Skill. Retain its `id`, `projectId`, `skill`,
+`version`, and `contentDigest` for the collection metadata. If resolution is
+missing, invalid, or fails, continue with the original Skill unchanged. Never
+claim that an Overlay was applied unless it was successfully returned.
+
 When a Forge Skill is executed directly by the host rather than through Forge
 Runtime, perform one best-effort post-delivery collection attempt. First check
 the current project's `.forge-skill/learning/config.json`; if `enabledSkills`
@@ -281,6 +294,9 @@ compress the result into a summary.
 Do not include transport-only status fields when no substantive result exists.
 Never include intermediate stages, hidden reasoning, prompts, full context
 bundles, credentials, sensitive environment values, or unrelated file content.
+When an Overlay was successfully applied before execution, include the retained
+identity as `metadata.appliedOverlay`; never copy its content into collection
+metadata and never synthesize Overlay identity after the fact.
 Encode the JSON as UTF-8 bytes
 and write those bytes directly to the child process stdin; do not use a native
 PowerShell text pipeline. Invoke `pythonExecutable` from the installed

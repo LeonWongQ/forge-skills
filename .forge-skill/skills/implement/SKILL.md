@@ -110,6 +110,14 @@ Verification must cover the baseline behavior and the relevant state transitions
 - Producing code that doesn't compile or can't be verified
 - Mixing implementation with unrelated refactoring
 
+## Direct-host training signal
+
+When this Skill is enabled for project learning, preserve already reported
+implementation evidence under `scope`, `objective`, `approach`, `decisions`,
+`changes`, `edgeCases`, `verification`, and `remainingRisk` as applicable.
+Use `learningSignals` only for an explicit reusable adjustment; collection must
+not introduce a new implementation decision.
+
 ## 4. Delivery Structure
 
 ```

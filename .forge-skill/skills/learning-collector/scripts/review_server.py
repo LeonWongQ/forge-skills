@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import hmac
 import json
 import os
@@ -27,6 +28,8 @@ if str(FORGE_ROOT) not in sys.path:
     sys.path.insert(0, str(FORGE_ROOT))
 from summary_engine import build_summary, encoded_size
 from forge_cli.data_paths import forge_data_root
+from forge_cli.learning_collector import _registry_file_lock, connect_database
+from overlay_evaluator import evaluate_overlay, evaluation_readiness
 
 SKILL_ROOT = Path(__file__).absolute().parents[1]
 DATA_ROOT = forge_data_root(FORGE_ROOT)
@@ -37,8 +40,11 @@ VERSIONS_PATH = SKILL_ROOT / "assets" / "versions.html"
 LLM_CONFIG_PATH = DATA_ROOT / "llm-refiner.json"
 LEGACY_LLM_CONFIG_PATH = SKILL_ROOT / "llm-refiner.json"
 _LLM_CONFIG_LOCK = threading.Lock()
+_PROJECT_REGISTRY_LOCK = threading.Lock()
 MAX_LLM_RESPONSE_BYTES = 256 * 1024
 ALLOWED_ACTIONS = {"ACTIVE", "EXCLUDED", "DELETED"}
+OVERLAY_ROLLBACK_MIN_REVIEWS = 10
+OVERLAY_ROLLBACK_NEGATIVE_RATE = 0.30
 SERVICE_TOKEN = ""
 SERVICE_COOKIE = "forge_learning_service"
 _QUERY_WARNINGS = threading.local()
@@ -139,50 +145,138 @@ def save_llm_config(payload: dict) -> dict:
     return {**config, "configured": bool(config["enabled"] and config["endpoint"] and config["model"] and _environment_value(config["apiKeyEnv"]))}
 
 
+def _configured_llm() -> tuple[dict, str]:
+    config = llm_config()
+    if (config.get("enabled") is not True or not isinstance(config.get("endpoint"), str)
+            or not config["endpoint"].strip() or not isinstance(config.get("model"), str)
+            or not config["model"].strip() or config.get("wireApi") not in {"responses", "chat_completions"}):
+        raise ValueError("LLM refinement and evaluation is disabled or not configured")
+    api_key_env = config.get("apiKeyEnv")
+    if not isinstance(api_key_env, str) or not api_key_env.strip():
+        raise ValueError("LLM credential environment variable is invalid")
+    api_key = _environment_value(api_key_env)
+    if not api_key:
+        raise ValueError(f"LLM credential environment variable is missing: {api_key_env}")
+    return config, api_key
+
+
+def _llm_usage(response_value: dict, wire_api: str) -> dict:
+    usage = response_value.get("usage")
+    if not isinstance(usage, dict):
+        return {"status": "unavailable", "reason": "backend_did_not_report_usage"}
+    if wire_api == "responses":
+        input_tokens = usage.get("input_tokens")
+        output_tokens = usage.get("output_tokens")
+    else:
+        input_tokens = usage.get("prompt_tokens")
+        output_tokens = usage.get("completion_tokens")
+    total_tokens = usage.get("total_tokens")
+    values = (input_tokens, output_tokens, total_tokens)
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in values):
+        return {"status": "unavailable", "reason": "backend_reported_invalid_usage"}
+    return {
+        "status": "reported", "inputTokens": input_tokens,
+        "outputTokens": output_tokens, "totalTokens": total_tokens,
+    }
+
+
+def _call_llm(config: dict, api_key: str, instruction: str, payload: object) -> tuple[str, dict]:
+    user_text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    if config["wireApi"] == "responses":
+        request_payload = {
+            "model": config["model"], "temperature": 0,
+            "input": [
+                {"role": "system", "content": [{"type": "input_text", "text": instruction}]},
+                {"role": "user", "content": [{"type": "input_text", "text": user_text}]},
+            ],
+        }
+    else:
+        request_payload = {
+            "model": config["model"], "temperature": 0,
+            "messages": [
+                {"role": "system", "content": instruction},
+                {"role": "user", "content": user_text},
+            ],
+        }
+    request = urllib.request.Request(
+        config["endpoint"],
+        data=json.dumps(request_payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=config["timeoutSeconds"]) as response:
+            chunks, total = [], 0
+            while True:
+                chunk = response.read(min(16 * 1024, MAX_LLM_RESPONSE_BYTES - total + 1))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > MAX_LLM_RESPONSE_BYTES:
+                    raise ValueError("LLM response exceeds the 256 KB limit")
+            response_value = json.loads(b"".join(chunks).decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise ValueError(f"LLM request failed: {type(error).__name__}") from error
+    if not isinstance(response_value, dict):
+        raise ValueError("LLM returned an invalid response object")
+    if config["wireApi"] == "responses":
+        content = response_value.get("output_text")
+        if content is None:
+            output_items = response_value.get("output")
+            if not isinstance(output_items, list):
+                raise ValueError("LLM returned invalid Responses output")
+            text_parts = []
+            for output_item in output_items:
+                if not isinstance(output_item, dict):
+                    raise ValueError("LLM returned invalid Responses output")
+                content_items = output_item.get("content", [])
+                if not isinstance(content_items, list):
+                    raise ValueError("LLM returned invalid Responses content")
+                for content_item in content_items:
+                    if not isinstance(content_item, dict):
+                        raise ValueError("LLM returned invalid Responses content")
+                    text = content_item.get("text")
+                    if text is not None and not isinstance(text, str):
+                        raise ValueError("LLM returned invalid Responses text")
+                    if text:
+                        text_parts.append(text)
+            content = "".join(text_parts)
+    else:
+        choices = response_value.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise ValueError("LLM returned invalid Chat Completions choices")
+        message = choices[0].get("message")
+        if not isinstance(message, dict):
+            raise ValueError("LLM returned invalid Chat Completions message")
+        content = message.get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("LLM returned empty content")
+    return content, _llm_usage(response_value, config["wireApi"])
+
+
 def refine_summary(payload: dict) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("refinement request must be a JSON object")
     project_id, skill, version = payload.get("projectId"), payload.get("skill"), payload.get("version")
     if not isinstance(project_id, str) or not isinstance(skill, str) or not isinstance(version, int):
         raise ValueError("projectId, skill and integer version are required")
-    config = llm_config()
-    if (config.get("enabled") is not True or not isinstance(config.get("endpoint"), str)
-            or not config["endpoint"].strip() or not isinstance(config.get("model"), str)
-            or not config["model"].strip() or config.get("wireApi") not in {"responses", "chat_completions"}):
-        raise ValueError("LLM refinement is disabled or not configured")
-    api_key_env = config.get("apiKeyEnv")
-    if not isinstance(api_key_env, str) or not api_key_env.strip():
-        raise ValueError("LLM credential environment variable is invalid")
-    api_key = _environment_value(api_key_env)
-    if not api_key:
-        raise ValueError(f"LLM credential environment variable is missing: {config['apiKeyEnv']}")
+    config, api_key = _configured_llm()
     project = next((item for item in projects() if item.get("projectId") == project_id), None)
     if project is None:
         raise ValueError("project not found")
-    connection = sqlite3.connect(_database_for_skill(project, skill), timeout=5)
+    connection = connect_database(_database_for_skill(project, skill), timeout=5)
     try:
-        connection.execute(
-            """CREATE TABLE IF NOT EXISTS learning_summary_rule_sources (
-                summary_id TEXT NOT NULL,
-                rule_id TEXT NOT NULL,
-                record_id TEXT NOT NULL,
-                PRIMARY KEY(summary_id, rule_id, record_id)
-            )"""
-        )
-        connection.execute(
-            "CREATE INDEX IF NOT EXISTS idx_learning_summary_rule_source_record "
-            "ON learning_summary_rule_sources(record_id)"
-        )
         row = connection.execute(
-            "SELECT id, summary_json, applied, source_count FROM learning_summaries "
+            "SELECT id, summary_json, lifecycle_status, source_count FROM learning_summaries "
             "WHERE project_id = ? AND skill = ? AND version = ?",
             (project_id, skill, version),
         ).fetchone()
         if row is None:
             raise ValueError("summary version not found")
-        source_summary_id, source_summary_json, source_applied, source_count = row
-        if source_applied:
-            raise ValueError("an enabled summary cannot be refined")
+        source_summary_id, source_summary_json, source_status, source_count = row
+        if source_status == "ARCHIVED":
+            raise ValueError("an archived summary cannot be refined")
         snapshot = decode_json(source_summary_json)
         if not isinstance(snapshot, dict) or snapshot.get("status") != "DRAFT":
             raise ValueError("only DRAFT summaries can be refined")
@@ -191,60 +285,7 @@ def refine_summary(payload: dict) -> dict:
         source_ids = {row[0] for row in source_rows}
         prompt = {"task": "Refine Skill training candidates conservatively. Return JSON only.", "skill": skill, "rules": rules, "constraints": ["Do not invent evidence or sources", "Every rule must cite at least one sourceRecordId", "Only use sourceRecordIds from the input", "Return at most 12 rules", "All rules must have status PENDING", "Identify conflicts instead of merging contradictory instructions"]}
         instruction = "You are a conservative Skill-training editor. Output a JSON object with a rules array. Each rule needs id, stage, type, title, instruction, rationale, status, supportCount, sourceRecordIds, confidence. Every rule must cite at least one sourceRecordId."
-        if config["wireApi"] == "responses":
-            request_payload = {"model": config["model"], "temperature": 0, "input": [{"role": "system", "content": [{"type": "input_text", "text": instruction}]}, {"role": "user", "content": [{"type": "input_text", "text": json.dumps(prompt, ensure_ascii=False)}]}]}
-        else:
-            request_payload = {"model": config["model"], "temperature": 0, "messages": [{"role": "system", "content": instruction}, {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)}]}
-        request_body = json.dumps(request_payload, ensure_ascii=False).encode("utf-8")
-        request = urllib.request.Request(config["endpoint"], data=request_body, headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}, method="POST")
-        try:
-            with urllib.request.urlopen(request, timeout=config["timeoutSeconds"]) as response:
-                chunks, total = [], 0
-                while True:
-                    chunk = response.read(min(16 * 1024, MAX_LLM_RESPONSE_BYTES - total + 1))
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                    total += len(chunk)
-                    if total > MAX_LLM_RESPONSE_BYTES:
-                        raise ValueError("LLM response exceeds the 256 KB limit")
-                response_value = json.loads(b"".join(chunks).decode("utf-8"))
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as error:
-            raise ValueError(f"LLM refinement failed: {type(error).__name__}") from error
-        if not isinstance(response_value, dict):
-            raise ValueError("LLM returned an invalid response object")
-        if config["wireApi"] == "responses":
-            content = response_value.get("output_text")
-            if content is None:
-                output_items = response_value.get("output")
-                if not isinstance(output_items, list):
-                    raise ValueError("LLM returned invalid Responses output")
-                text_parts = []
-                for output_item in output_items:
-                    if not isinstance(output_item, dict):
-                        raise ValueError("LLM returned invalid Responses output")
-                    content_items = output_item.get("content", [])
-                    if not isinstance(content_items, list):
-                        raise ValueError("LLM returned invalid Responses content")
-                    for content_item in content_items:
-                        if not isinstance(content_item, dict):
-                            raise ValueError("LLM returned invalid Responses content")
-                        text = content_item.get("text")
-                        if text is not None and not isinstance(text, str):
-                            raise ValueError("LLM returned invalid Responses text")
-                        if text:
-                            text_parts.append(text)
-                content = "".join(text_parts)
-        else:
-            choices = response_value.get("choices")
-            if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-                raise ValueError("LLM returned invalid Chat Completions choices")
-            message = choices[0].get("message")
-            if not isinstance(message, dict):
-                raise ValueError("LLM returned invalid Chat Completions message")
-            content = message.get("content")
-        if not isinstance(content, str) or not content.strip():
-            raise ValueError("LLM returned empty refinement content")
+        content, _usage = _call_llm(config, api_key, instruction, prompt)
         refined = json.loads(content)
         if not isinstance(refined, dict) or not isinstance(refined.get("rules"), list) or not 1 <= len(refined["rules"]) <= 12:
             raise ValueError("LLM returned invalid rules")
@@ -291,12 +332,12 @@ def refine_summary(payload: dict) -> dict:
         with connection:
             connection.execute("BEGIN IMMEDIATE")
             current = connection.execute(
-                "SELECT summary_json, applied FROM learning_summaries WHERE id = ?",
+                "SELECT summary_json, lifecycle_status FROM learning_summaries WHERE id = ?",
                 (source_summary_id,),
             ).fetchone()
             if current is None:
                 raise ValueError("source summary was deleted while LLM refinement was running")
-            if current[1] or current[0] != source_summary_json:
+            if current[1] == "ARCHIVED" or current[0] != source_summary_json:
                 raise ValueError("source summary changed while LLM refinement was running")
             next_version = int(connection.execute(
                 "SELECT COALESCE(MAX(version), 0) FROM learning_summaries "
@@ -307,8 +348,8 @@ def refine_summary(payload: dict) -> dict:
             summary_id = f"summary-{uuid.uuid4()}"
             connection.execute(
                 "INSERT INTO learning_summaries "
-                "(id, project_id, skill, version, created_at, source_count, summary_json, applied) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+                "(id, project_id, skill, version, created_at, source_count, summary_json, lifecycle_status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'DRAFT')",
                 (
                     summary_id, project_id, skill, next_version, refined_at, source_count,
                     json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")),
@@ -330,34 +371,115 @@ def refine_summary(payload: dict) -> dict:
         connection.close()
 
 
+def _write_registry(path: Path, value: dict) -> None:
+    temporary = path.with_suffix(f".{os.getpid()}.{uuid.uuid4().hex}.json.tmp")
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def _registered_project_path_available(project: dict) -> bool:
+    value = project.get("path")
+    return isinstance(value, str) and bool(value.strip()) and Path(value).is_dir()
+
+
 def projects() -> list[dict]:
     registry_path = REGISTRY_PATH if REGISTRY_PATH.is_file() else LEGACY_REGISTRY_PATH
-    try:
-        value = json.loads(registry_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
-    if not isinstance(value, dict):
-        return []
-    project_items = value.get("projects", [])
-    if not isinstance(project_items, list):
-        return []
-    result = []
-    for item in project_items:
-        if not isinstance(item, dict):
-            continue
-        project = dict(item)
-        project["projectId"] = project.get("projectId", project.get("id"))
-        if not _project_databases(project):
-            continue
-        configured = project.get("status")
-        if configured not in {"CONFLICT", "DISABLED"}:
-            path = Path(str(project.get("path", "")))
-            databases = _project_databases(project)
-            project["status"] = "ACTIVE" if path.is_dir() and any(
-                database.is_file() for database in databases
-            ) else "UNAVAILABLE"
-        result.append(project)
-    return result
+    with _PROJECT_REGISTRY_LOCK:
+        with _registry_file_lock(registry_path):
+            try:
+                value = json.loads(registry_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return []
+            if not isinstance(value, dict):
+                return []
+            project_items = value.get("projects", [])
+            if not isinstance(project_items, list):
+                return []
+            result = []
+            changed = False
+            for item in project_items:
+                if not isinstance(item, dict):
+                    continue
+                project = dict(item)
+                project["projectId"] = project.get("projectId", project.get("id"))
+                if not _project_databases(project):
+                    continue
+                configured = project.get("status")
+                if configured not in {"CONFLICT", "DISABLED"}:
+                    databases = _project_databases(project)
+                    path_available = _registered_project_path_available(project)
+                    database_available = any(database.is_file() for database in databases)
+                    status = "ACTIVE" if path_available and database_available else "UNAVAILABLE"
+                    updates = {"status": status}
+                    if status == "ACTIVE":
+                        updates.update({"unavailableSince": None, "healthReason": None})
+                    else:
+                        updates.update({
+                            "unavailableSince": item.get("unavailableSince") or now(),
+                            "healthReason": (
+                                "project path unavailable" if not path_available
+                                else "learning database unavailable"
+                            ),
+                        })
+                    for key, value_item in updates.items():
+                        if item.get(key) != value_item:
+                            item[key] = value_item
+                            changed = True
+                    project.update(updates)
+                result.append(project)
+            if changed:
+                _write_registry(registry_path, value)
+            return result
+
+
+def set_project_registration_status(payload: dict) -> dict:
+    project_id = payload.get("projectId")
+    action = payload.get("action")
+    if not isinstance(project_id, str) or action not in {"ARCHIVE", "RESTORE"}:
+        raise ValueError("projectId and ARCHIVE or RESTORE action are required")
+    registry_path = REGISTRY_PATH if REGISTRY_PATH.is_file() else LEGACY_REGISTRY_PATH
+    with _PROJECT_REGISTRY_LOCK:
+        with _registry_file_lock(registry_path):
+            try:
+                registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                raise ValueError("project registry is unavailable") from error
+            entries = registry.get("projects") if isinstance(registry, dict) else None
+            if not isinstance(entries, list):
+                raise ValueError("project registry is invalid")
+            matches = [item for item in entries if isinstance(item, dict)
+                       and item.get("projectId", item.get("id")) == project_id]
+            if not matches:
+                raise ValueError("project not found")
+            if len(matches) != 1 or matches[0].get("status") == "CONFLICT":
+                raise ValueError("conflicting project identity must be resolved before changing status")
+            entry = matches[0]
+            timestamp = now()
+            if action == "ARCHIVE":
+                entry.update({
+                    "status": "DISABLED", "disabledAt": timestamp,
+                    "unavailableSince": None, "healthReason": "archived by operator",
+                })
+            else:
+                path_available = _registered_project_path_available(entry)
+                database_available = any(path.is_file() for path in _project_databases(entry))
+                available = path_available and database_available
+                entry.update({
+                    "status": "ACTIVE" if available else "UNAVAILABLE",
+                    "disabledAt": None,
+                    "unavailableSince": None if available else timestamp,
+                    "healthReason": None if available else (
+                        "project path unavailable" if not path_available
+                        else "learning database unavailable"
+                    ),
+                })
+            _write_registry(registry_path, registry)
+            return {
+                "projectId": project_id, "status": entry["status"],
+                "disabledAt": entry.get("disabledAt"),
+                "unavailableSince": entry.get("unavailableSince"),
+                "healthReason": entry.get("healthReason"),
+            }
 
 
 def decode_json(value):
@@ -381,12 +503,81 @@ def has_meaningful_content(value) -> bool:
     return True
 
 
-def query_records(query: dict[str, list[str]]) -> list[dict]:
-    _warnings().clear()
+def _project_matches_scan(project: dict, project_filter: str) -> bool:
+    """Exclude archived projects from broad scans while allowing explicit inspection."""
+    if project_filter:
+        return project.get("projectId") == project_filter
+    return project.get("status") != "DISABLED"
+
+
+def _record_query_options(query: dict[str, list[str]]) -> tuple[str, str, str, str, str, list[str]]:
     project_filter = query.get("project", [""])[0]
     skill_filter = query.get("skill", [""])[0]
     status_filter = query.get("status", [""])[0]
     search = query.get("q", [""])[0].strip()
+    clauses, values = [], []
+    if skill_filter:
+        clauses.append("skill = ?")
+        values.append(skill_filter)
+    if status_filter:
+        clauses.append("review_status = ?")
+        values.append(status_filter)
+    if search:
+        clauses.append("(output_json LIKE ? OR edited_content LIKE ? OR review_note LIKE ? OR run_id LIKE ?)")
+        values.extend([f"%{search}%"] * 4)
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    return project_filter, skill_filter, status_filter, search, where, values
+
+
+def _query_record_snapshot(
+    query: dict[str, list[str]], project_items: list[dict], *, limit: int, offset: int,
+    include_total: bool,
+) -> tuple[list[dict], int | None]:
+    project_filter, skill_filter, _status_filter, _search, where, values = _record_query_options(query)
+    records = []
+    total = 0 if include_total else None
+    fetch_limit = limit + offset
+    for project in project_items:
+        if not _project_matches_scan(project, project_filter):
+            continue
+        databases = [_database_for_skill(project, skill_filter)] if skill_filter else _project_databases(project)
+        for database in databases:
+            if not database.is_file():
+                continue
+            try:
+                connection = sqlite3.connect(database, timeout=5)
+                try:
+                    connection.row_factory = sqlite3.Row
+                    if include_total:
+                        total += int(connection.execute(
+                            "SELECT COUNT(*) FROM learning_records" + where, values,
+                        ).fetchone()[0])
+                    rows = connection.execute(
+                        "SELECT * FROM learning_records" + where
+                        + " ORDER BY captured_at DESC LIMIT ? OFFSET ?",
+                        (*values, fetch_limit, 0),
+                    ).fetchall()
+                finally:
+                    connection.close()
+            except sqlite3.DatabaseError:
+                _warnings().append({
+                    "projectId": project.get("projectId"), "path": project.get("path"),
+                    "error": "database unavailable",
+                })
+                continue
+            for row in rows:
+                item = dict(row)
+                for field in ("output_json", "diagnostics_json", "metadata_json", "evaluation_json"):
+                    item[field.removesuffix("_json")] = decode_json(item.pop(field))
+                records.append(item)
+    records.sort(key=lambda item: item["captured_at"], reverse=True)
+    return records[offset:offset + limit], total
+
+
+def query_records(
+    query: dict[str, list[str]], *, project_items: list[dict] | None = None,
+) -> list[dict]:
+    _warnings().clear()
     try:
         limit = min(max(int(query.get("limit", ["200"])[0]), 1), 1000)
     except ValueError:
@@ -395,46 +586,11 @@ def query_records(query: dict[str, list[str]]) -> list[dict]:
         offset = max(int(query.get("offset", ["0"])[0]), 0)
     except ValueError:
         offset = 0
-    records = []
-    fetch_limit = limit + offset
-    for project in projects():
-        if project_filter and project.get("projectId") != project_filter:
-            continue
-        databases = [_database_for_skill(project, skill_filter)] if skill_filter else _project_databases(project)
-        clauses, values = [], []
-        if skill_filter:
-            clauses.append("skill = ?")
-            values.append(skill_filter)
-        if status_filter:
-            clauses.append("review_status = ?")
-            values.append(status_filter)
-        if search:
-            clauses.append("(output_json LIKE ? OR edited_content LIKE ? OR review_note LIKE ? OR run_id LIKE ?)")
-            values.extend([f"%{search}%"] * 4)
-        where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        for database in databases:
-            if not database.is_file():
-                continue
-            try:
-                connection = sqlite3.connect(database, timeout=5)
-                try:
-                    connection.row_factory = sqlite3.Row
-                    rows = connection.execute(
-                        "SELECT * FROM learning_records" + where + " ORDER BY captured_at DESC LIMIT ? OFFSET ?",
-                        (*values, fetch_limit, 0),
-                    ).fetchall()
-                finally:
-                    connection.close()
-            except sqlite3.DatabaseError:
-                _warnings().append({"projectId": project.get("projectId"), "path": project.get("path"), "error": "database unavailable"})
-                continue
-            for row in rows:
-                item = dict(row)
-                for field in ("output_json", "diagnostics_json", "metadata_json", "evaluation_json"):
-                    item[field.removesuffix("_json")] = decode_json(item.pop(field))
-                records.append(item)
-    records.sort(key=lambda item: item["captured_at"], reverse=True)
-    return records[offset:offset + limit]
+    records, _total = _query_record_snapshot(
+        query, project_items if project_items is not None else projects(),
+        limit=limit, offset=offset, include_total=False,
+    )
+    return records
 
 
 def query_record_page(query: dict[str, list[str]]) -> dict:
@@ -447,34 +603,17 @@ def query_record_page(query: dict[str, list[str]]) -> dict:
     base = {key: value for key, value in query.items() if key not in {"page", "limit", "offset"}}
     base["limit"] = [str(page_size)]
     base["offset"] = [str((page - 1) * page_size)]
-    items = query_records(base)
-    project_filter = base.get("project", [""])[0]
-    skill_filter = base.get("skill", [""])[0]
-    status_filter = base.get("status", [""])[0]
-    search = base.get("q", [""])[0].strip()
-    total = 0
-    for project in projects():
-        if project_filter and project.get("projectId") != project_filter:
-            continue
-        databases = [_database_for_skill(project, skill_filter)] if skill_filter else _project_databases(project)
-        clauses, values = [], []
-        if skill_filter:
-            clauses.append("skill = ?"); values.append(skill_filter)
-        if status_filter:
-            clauses.append("review_status = ?"); values.append(status_filter)
-        if search:
-            clauses.append("(output_json LIKE ? OR edited_content LIKE ? OR review_note LIKE ? OR run_id LIKE ?)")
-            values.extend([f"%{search}%"] * 4)
-        where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        for database in databases:
-            if not database.is_file():
-                continue
-            try:
-                with sqlite3.connect(database, timeout=5) as connection:
-                    total += int(connection.execute("SELECT COUNT(*) FROM learning_records" + where, values).fetchone()[0])
-            except sqlite3.DatabaseError:
-                continue
-    return {"items": items, "page": page, "pageSize": page_size, "total": total, "hasMore": page * page_size < total}
+    project_items = projects()
+    _warnings().clear()
+    items, total = _query_record_snapshot(
+        base, project_items, limit=page_size, offset=(page - 1) * page_size,
+        include_total=True,
+    )
+    assert total is not None
+    return {
+        "items": items, "page": page, "pageSize": page_size, "total": total,
+        "hasMore": page * page_size < total, "projects": project_items,
+    }
 
 
 def query_summaries(query: dict[str, list[str]]) -> list[dict]:
@@ -492,7 +631,7 @@ def query_summaries(query: dict[str, list[str]]) -> list[dict]:
         offset = 0
     result = []
     for project in projects():
-        if project_id and project.get("projectId") != project_id:
+        if not _project_matches_scan(project, project_id):
             continue
         databases = [_database_for_skill(project, skill)] if skill else _project_databases(project)
         for database in databases:
@@ -548,6 +687,10 @@ def _database_for_skill(project: dict, skill: str) -> Path:
     return Path(str(project.get("database", "")))
 
 
+def _normalize_skill(skill: str) -> str:
+    return skill.strip().removeprefix("skill.").replace("_", "-")
+
+
 def _project_databases(project: dict) -> list[Path]:
     databases = project.get("databases")
     values = databases.values() if isinstance(databases, dict) else [project.get("database")]
@@ -560,12 +703,644 @@ def _project_databases(project: dict) -> list[Path]:
     return result
 
 
+MAX_OVERLAY_RULES = 30
+MAX_OVERLAY_CONTENT_BYTES = 20_000
+
+
+class OverlayConflict(ValueError):
+    def __init__(self, message: str, *, overlay_id: str, version: int, replaceable: bool):
+        super().__init__(message)
+        self.overlay_id = overlay_id
+        self.version = version
+        self.replaceable = replaceable
+
+
+def _overlay_content(skill: str, rules: list[dict]) -> str:
+    sections = {
+        "PRE_CHECK": "Additional Pre-Review Checks",
+        "FINAL_VALIDATION": "Additional Final Validation",
+    }
+    lines = [
+        f"# Project Overlay: {skill}",
+        "",
+        "This overlay supplements the global Skill and applies only to the current project.",
+        "",
+    ]
+    for stage, heading in sections.items():
+        stage_rules = [rule for rule in rules if rule["stage"] == stage]
+        if not stage_rules:
+            continue
+        lines.extend([f"## {heading}", ""])
+        for rule in stage_rules:
+            lines.append(f"- {rule['instruction']}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def create_overlay(payload: dict) -> dict:
+    project_id = payload.get("projectId")
+    skill = payload.get("skill")
+    versions = payload.get("summaryVersions")
+    if not isinstance(project_id, str) or not project_id.strip():
+        raise ValueError("projectId is required")
+    if not isinstance(skill, str) or not skill.strip():
+        raise ValueError("skill is required")
+    skill = _normalize_skill(skill)
+    if (not isinstance(versions, list) or not versions or len(versions) > 12
+            or any(isinstance(version, bool) or not isinstance(version, int) or version < 1 for version in versions)
+            or len(set(versions)) != len(versions)):
+        raise ValueError("summaryVersions must contain 1-12 unique positive integers")
+    project = next((item for item in projects() if item.get("projectId") == project_id), None)
+    if project is None:
+        raise ValueError("project not found")
+    if skill not in _enabled_skills(project):
+        raise ValueError("skill is not enabled for learning in this project")
+    database = _database_for_skill(project, skill)
+    if not database.is_file():
+        raise ValueError("project database is unavailable")
+    versions = sorted(versions)
+    connection = connect_database(database, timeout=5)
+    connection.row_factory = sqlite3.Row
+    try:
+        with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "SELECT id, version, lifecycle_status, summary_json FROM learning_summaries "
+                f"WHERE project_id = ? AND skill = ? AND version IN ({','.join('?' for _ in versions)}) "
+                "ORDER BY version",
+                (project_id, skill, *versions),
+            ).fetchall()
+            by_version = {int(row["version"]): row for row in rows}
+            if len(by_version) != len(versions):
+                missing = sorted(set(versions) - set(by_version))
+                raise ValueError(f"summary versions not found: {missing}")
+            all_rules = []
+            source_items = []
+            seen_rules = set()
+            for version in versions:
+                row = by_version[version]
+                if row["lifecycle_status"] != "REVIEWED":
+                    raise ValueError(f"summary v{version} must be REVIEWED before overlay generation")
+                snapshot = decode_json(row["summary_json"])
+                if (not isinstance(snapshot, dict)
+                        or snapshot.get("format") != "forge-skill-training-summary-v5"
+                        or snapshot.get("status") != "REVIEWED"):
+                    raise ValueError(f"summary v{version} is not a current summary")
+                summary_digest = "sha256:" + hashlib.sha256(row["summary_json"].encode("utf-8")).hexdigest()
+                source_items.append((row["id"], summary_digest, version))
+                for rule in snapshot.get("rules", []):
+                    if not isinstance(rule, dict) or rule.get("status") != "CONFIRMED":
+                        continue
+                    instruction = str(rule.get("instruction") or "").strip()
+                    stage = rule.get("stage")
+                    if not instruction or stage not in {"PRE_CHECK", "FINAL_VALIDATION"}:
+                        continue
+                    key = (stage, " ".join(instruction.split()).casefold())
+                    if key in seen_rules:
+                        continue
+                    seen_rules.add(key)
+                    all_rules.append({
+                        "stage": stage,
+                        "instruction": instruction,
+                        "sourceSummaryVersion": version,
+                        "sourceRuleId": rule.get("id"),
+                    })
+            if not all_rules:
+                raise ValueError("selected summaries contain no confirmed rules")
+            if len(all_rules) > MAX_OVERLAY_RULES:
+                raise ValueError(f"overlay would contain {len(all_rules)} rules; maximum is {MAX_OVERLAY_RULES}")
+            content = _overlay_content(skill, all_rules)
+            if len(content.encode("utf-8")) > MAX_OVERLAY_CONTENT_BYTES:
+                raise ValueError("overlay content exceeds the 20 KB quality limit")
+            manifest = {
+                "format": "forge-skill-project-overlay-v1",
+                "projectId": project_id,
+                "skill": skill,
+                "rules": all_rules,
+                "summaryVersions": sorted(versions),
+                "executionSource": "content",
+            }
+            manifest_json = json.dumps(manifest, ensure_ascii=False, separators=(",", ":"))
+            content_digest = "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
+            replace_existing = payload.get("replaceExisting") is True
+            source_ids = {summary_id for summary_id, _digest, _version in source_items}
+            matching = []
+            for candidate in connection.execute(
+                "SELECT id, version, status FROM skill_overlays WHERE project_id = ? AND skill = ? ORDER BY version DESC",
+                (project_id, skill),
+            ).fetchall():
+                candidate_sources = {
+                    row[0] for row in connection.execute(
+                        "SELECT summary_id FROM skill_overlay_sources WHERE overlay_id = ?",
+                        (candidate["id"],),
+                    ).fetchall()
+                }
+                if candidate_sources == source_ids:
+                    matching.append(candidate)
+            if matching:
+                existing = matching[-1]
+                if existing["status"] != "DRAFT":
+                    raise OverlayConflict(
+                        "an Overlay with the same Summary sources is already reviewed or active",
+                        overlay_id=existing["id"], version=existing["version"], replaceable=False,
+                    )
+                if not replace_existing:
+                    raise OverlayConflict(
+                        "an Overlay draft with the same Summary sources already exists",
+                        overlay_id=existing["id"], version=existing["version"], replaceable=True,
+                    )
+                overlay_id = existing["id"]
+                next_version = existing["version"]
+                connection.execute("DELETE FROM skill_overlay_sources WHERE overlay_id = ?", (overlay_id,))
+                connection.execute(
+                    "UPDATE skill_overlays SET status = 'DRAFT', content = ?, manifest_json = ?, "
+                    "content_digest = ?, created_at = ?, reviewed_at = NULL, enabled_at = NULL, disabled_at = NULL "
+                    "WHERE id = ?",
+                    (content, manifest_json, content_digest, now(), overlay_id),
+                )
+            else:
+                next_version = int(connection.execute(
+                    "SELECT COALESCE(MAX(version), 0) FROM skill_overlays WHERE project_id = ? AND skill = ?",
+                    (project_id, skill),
+                ).fetchone()[0]) + 1
+                overlay_id = f"overlay-{uuid.uuid4()}"
+                connection.execute(
+                    "INSERT INTO skill_overlays "
+                    "(id, project_id, skill, version, status, content, manifest_json, content_digest, created_at) "
+                    "VALUES (?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?)",
+                    (overlay_id, project_id, skill, next_version, content, manifest_json, content_digest, now()),
+                )
+            created_at = now()
+            connection.executemany(
+                "INSERT INTO skill_overlay_sources(overlay_id, summary_id, summary_digest) VALUES (?, ?, ?)",
+                ((overlay_id, summary_id, digest) for summary_id, digest, _version in source_items),
+            )
+            return {
+                "id": overlay_id, "projectId": project_id, "skill": skill,
+                "version": next_version, "status": "DRAFT", "content": content,
+                "manifest": manifest, "sourceVersions": sorted(versions),
+            }
+    finally:
+        connection.close()
+
+
+def query_overlays(query: dict[str, list[str]]) -> list[dict]:
+    project_id = query.get("project", [""])[0]
+    skill = query.get("skill", [""])[0]
+    if skill:
+        skill = _normalize_skill(skill)
+    result = []
+    readiness_by_skill: dict[str, dict] = {}
+    for project in projects():
+        if not _project_matches_scan(project, project_id):
+            continue
+        databases = [_database_for_skill(project, skill)] if skill else _project_databases(project)
+        for database in databases:
+            if not database.is_file():
+                continue
+            try:
+                connection = connect_database(database, timeout=5)
+                connection.row_factory = sqlite3.Row
+                try:
+                    clauses, values = [], []
+                    if project_id:
+                        clauses.append("project_id = ?")
+                        values.append(project_id)
+                    if skill:
+                        clauses.append("skill = ?")
+                        values.append(skill)
+                    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+                    rows = connection.execute(
+                        "SELECT * FROM skill_overlays" + where + " ORDER BY skill, version DESC", values
+                    ).fetchall()
+                    for row in rows:
+                        item = dict(row)
+                        item["manifest"] = decode_json(item.pop("manifest_json"))
+                        item["evaluation"] = decode_json(item.pop("evaluation_json"))
+                        item["sourceSummaryIds"] = [source[0] for source in connection.execute(
+                            "SELECT summary_id FROM skill_overlay_sources WHERE overlay_id = ? ORDER BY summary_id",
+                            (item["id"],),
+                        ).fetchall()]
+                        if item["skill"] not in readiness_by_skill:
+                            readiness_by_skill[item["skill"]] = evaluation_readiness(FORGE_ROOT, item["skill"])
+                        item["evaluationReadiness"] = readiness_by_skill[item["skill"]]
+                        result.append(item)
+                finally:
+                    connection.close()
+            except sqlite3.DatabaseError:
+                _warnings().append({"projectId": project.get("projectId"), "path": project.get("path"), "error": "database unavailable"})
+    return result
+
+
+def _overlay_database(payload: dict) -> tuple[dict, Path, sqlite3.Connection]:
+    project_id = payload.get("projectId")
+    skill = payload.get("skill")
+    overlay_id = payload.get("overlayId")
+    if not all(isinstance(value, str) and value.strip() for value in (project_id, skill, overlay_id)):
+        raise ValueError("projectId, skill and overlayId are required")
+    project = next((item for item in projects() if item.get("projectId") == project_id), None)
+    if project is None:
+        raise ValueError("project not found")
+    normalized_skill = _normalize_skill(skill)
+    database = _database_for_skill(project, normalized_skill)
+    if not database.is_file():
+        raise ValueError("project database is unavailable")
+    connection = connect_database(database, timeout=5)
+    return project, database, connection
+
+
+def review_overlay(payload: dict) -> dict:
+    project, database, connection = _overlay_database(payload)
+    content = payload.get("content")
+    if not isinstance(content, str) or not content.strip() or len(content.encode("utf-8")) > MAX_OVERLAY_CONTENT_BYTES:
+        connection.close()
+        raise ValueError("overlay content must be non-empty and at most 20 KB")
+    try:
+        with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT id, project_id, skill, status, manifest_json, published_at FROM skill_overlays WHERE id = ? AND project_id = ? AND skill = ?",
+                (payload["overlayId"], payload["projectId"], _normalize_skill(payload["skill"])),
+            ).fetchone()
+            if row is None:
+                raise ValueError("overlay not found")
+            if row["status"] not in {"DRAFT", "REVIEWED"}:
+                raise ValueError("only DRAFT or REVIEWED overlays can be edited")
+            if row["published_at"]:
+                raise ValueError("published overlay must be replaced by a new version")
+            manifest = decode_json(row["manifest_json"])
+            if not isinstance(manifest, dict):
+                raise ValueError("overlay manifest is invalid")
+            manifest["executionSource"] = "content"
+            manifest["contentDigest"] = "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
+            manifest["contentEdited"] = True
+            manifest["editedAt"] = now()
+            manifest_json = json.dumps(manifest, ensure_ascii=False, separators=(",", ":"))
+            digest = "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
+            connection.execute(
+                "UPDATE skill_overlays SET content = ?, manifest_json = ?, content_digest = ?, status = 'REVIEWED', reviewed_at = ? "
+                "WHERE id = ?",
+                (content, manifest_json, digest, now(), payload["overlayId"]),
+            )
+            return {"overlayId": payload["overlayId"], "status": "REVIEWED", "contentDigest": digest}
+    finally:
+        connection.close()
+
+
+def _structural_overlay_evaluation(connection: sqlite3.Connection, row: sqlite3.Row, skill: str) -> dict:
+    checks = []
+    content = row["content"] if isinstance(row["content"], str) else ""
+    digest = "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
+    manifest = decode_json(row["manifest_json"])
+
+    def check(name: str, passed: bool, detail: str):
+        checks.append({"id": name, "passed": bool(passed), "detail": detail})
+
+    check("content_present", bool(content.strip()), "content is non-empty")
+    check("content_size", len(content.encode("utf-8")) <= MAX_OVERLAY_CONTENT_BYTES, "content is within 20 KB")
+    check("content_digest", digest == row["content_digest"], "content digest matches stored digest")
+    check("manifest_valid", isinstance(manifest, dict), "manifest is valid JSON")
+    if isinstance(manifest, dict):
+        check("manifest_content_digest", manifest.get("contentDigest") in (None, digest), "manifest content digest matches content")
+        check("execution_source", manifest.get("executionSource") == "content", "execution source is reviewed content")
+        check("scope_match", manifest.get("projectId") == row["project_id"] and _normalize_skill(str(manifest.get("skill", ""))) == skill, "manifest scope matches project and Skill")
+        rules = manifest.get("rules", [])
+        check("rule_count", isinstance(rules, list) and 0 < len(rules) <= MAX_OVERLAY_RULES, "rule count is within the release limit")
+        normalized = [" ".join(str(item.get("instruction", "")).split()).casefold() for item in rules if isinstance(item, dict)]
+        check("duplicate_rules", len(normalized) == len(set(normalized)), "rules contain no duplicate instructions")
+        source_rows = connection.execute(
+            "SELECT summary_id, summary_digest FROM skill_overlay_sources WHERE overlay_id = ? ORDER BY summary_id",
+            (row["id"],),
+        ).fetchall()
+        source_ok = bool(source_rows)
+        for source in source_rows:
+            summary = connection.execute(
+                "SELECT summary_json, lifecycle_status FROM learning_summaries WHERE id = ? AND project_id = ? AND skill = ?",
+                (source["summary_id"], row["project_id"], skill),
+            ).fetchone()
+            if summary is None or summary["lifecycle_status"] != "REVIEWED":
+                source_ok = False
+                continue
+            current_digest = "sha256:" + hashlib.sha256(summary["summary_json"].encode("utf-8")).hexdigest()
+            source_ok = source_ok and current_digest == source["summary_digest"]
+        check("source_summaries", source_ok, "all source Summaries still exist, are reviewed, and retain their digest")
+    else:
+        for check_id in ("manifest_content_digest", "execution_source", "scope_match", "rule_count", "duplicate_rules", "source_summaries"):
+            check(check_id, False, "manifest is unavailable")
+    return {
+        "format": "forge-overlay-structural-evaluation-v1",
+        "evaluator": "deterministic-overlay-gate-v1",
+        "passed": all(item["passed"] for item in checks),
+        "checks": checks,
+    }
+
+
+def _usable_active_baseline(row: sqlite3.Row, skill: str) -> bool:
+    """Only use an ACTIVE overlay as a baseline if it still matches its evaluation inputs."""
+    content = row["content"] if isinstance(row["content"], str) else ""
+    digest = "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
+    if digest != row["content_digest"] or not row["published_at"]:
+        return False
+    evaluation = decode_json(row["evaluation_json"])
+    behavior = evaluation.get("behavior") if isinstance(evaluation, dict) else None
+    if (not isinstance(behavior, dict) or evaluation.get("passed") is not True
+            or behavior.get("passed") is not True
+            or behavior.get("candidateOverlayDigest") != digest):
+        return False
+    skill_path = SKILL_ROOT.parent / skill / "SKILL.md"
+    try:
+        current_skill_digest = "sha256:" + hashlib.sha256(skill_path.read_bytes()).hexdigest()
+    except OSError:
+        return False
+    return behavior.get("skillDigest") == current_skill_digest
+
+
+def _active_baseline_snapshot(
+    connection: sqlite3.Connection, project_id: str, skill: str,
+) -> dict | None:
+    """Return the current usable runtime baseline in one canonical shape."""
+    row = connection.execute(
+        "SELECT * FROM skill_overlays "
+        "WHERE project_id = ? AND skill = ? AND status = 'ACTIVE'",
+        (project_id, skill),
+    ).fetchone()
+    if row is None or not _usable_active_baseline(row, skill):
+        return None
+    return {
+        "id": row["id"], "version": row["version"],
+        "content": row["content"], "content_digest": row["content_digest"],
+    }
+
+
+def _write_evaluation_artifact(database: Path, overlay_id: str, version: int, artifact: dict) -> str:
+    directory = database.parent / "evaluations"
+    name = f"overlay-v{version}-{overlay_id}-{uuid.uuid4().hex[:8]}.json"
+    destination = directory / name
+    temporary = destination.with_suffix(".json.tmp")
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(destination)
+    except OSError as error:
+        raise ValueError(f"cannot persist evaluation artifact: {type(error).__name__}") from error
+    return f"evaluations/{name}"
+
+
+def evaluate_and_publish_overlay(payload: dict) -> dict:
+    """Run structural and LLM behavior gates, then publish without activating."""
+    project, database, connection = _overlay_database(payload)
+    skill = _normalize_skill(payload["skill"])
+    force_evaluation = payload.get("forceEvaluation", False)
+    if not isinstance(force_evaluation, bool):
+        connection.close()
+        raise ValueError("forceEvaluation must be a boolean")
+    try:
+        row = connection.execute(
+            "SELECT * FROM skill_overlays WHERE id = ? AND project_id = ? AND skill = ?",
+            (payload["overlayId"], payload["projectId"], skill),
+        ).fetchone()
+        if row is None:
+            raise ValueError("overlay not found")
+        if row["status"] != "REVIEWED":
+            raise ValueError("only REVIEWED overlays can be automatically published")
+        if row["published_at"]:
+            raise ValueError("overlay is already published")
+        structural = _structural_overlay_evaluation(connection, row, skill)
+        active = _active_baseline_snapshot(connection, payload["projectId"], skill)
+        snapshot = {
+            "content": row["content"], "contentDigest": row["content_digest"],
+            "manifestJson": row["manifest_json"], "version": row["version"],
+            "activeOverlay": active,
+        }
+    finally:
+        connection.close()
+
+    evaluated_at = now()
+    if not structural["passed"]:
+        evaluation = {
+            "format": "forge-overlay-release-evaluation-v2", "evaluatedAt": evaluated_at,
+            "passed": False, "structural": structural, "behavior": None,
+        }
+        behavior_artifact = None
+    else:
+        try:
+            config, api_key = _configured_llm()
+            endpoint_digest = "sha256:" + hashlib.sha256(config["endpoint"].encode("utf-8")).hexdigest()
+            behavior, behavior_artifact = evaluate_overlay(
+                forge_root=FORGE_ROOT, skill_root=SKILL_ROOT,
+                skill=skill, overlay_content=snapshot["content"], model=config["model"],
+                output_root=database.parent / "evaluations",
+                call_llm=lambda instruction, value: _call_llm(config, api_key, instruction, value),
+                baseline_overlay_content=(snapshot["activeOverlay"] or {}).get("content"),
+                baseline_cache_identity=f"{config['wireApi']}:{endpoint_digest}",
+                force_baseline=force_evaluation,
+            )
+            baseline_identity = None
+            if snapshot["activeOverlay"] is not None:
+                baseline_identity = {
+                    "id": snapshot["activeOverlay"]["id"],
+                    "version": snapshot["activeOverlay"]["version"],
+                    "contentDigest": snapshot["activeOverlay"]["content_digest"],
+                }
+            execution = {
+                "wireApi": config["wireApi"], "temperature": 0,
+                "timeoutSecondsPerCall": config["timeoutSeconds"],
+                "endpointDigest": endpoint_digest,
+            }
+            behavior["baselineOverlay"] = baseline_identity
+            behavior["execution"] = execution
+            behavior_artifact["baselineOverlay"] = baseline_identity
+            behavior_artifact["execution"] = execution
+            evaluation = {
+                "format": "forge-overlay-release-evaluation-v2", "evaluatedAt": evaluated_at,
+                "passed": behavior["passed"], "structural": structural, "behavior": behavior,
+            }
+        except ValueError as error:
+            behavior_artifact = None
+            evaluation = {
+                "format": "forge-overlay-release-evaluation-v2", "evaluatedAt": evaluated_at,
+                "passed": False, "structural": structural,
+                "behavior": {"passed": False, "error": str(error)},
+            }
+
+    artifact_path = None
+    connection = None
+    try:
+        connection = connect_database(_database_for_skill(project, skill), timeout=5)
+        connection.row_factory = sqlite3.Row
+        if behavior_artifact is not None:
+            artifact_path = _write_evaluation_artifact(
+                database, payload["overlayId"], snapshot["version"],
+                {**evaluation, "behavior": behavior_artifact},
+            )
+        with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                "SELECT * FROM skill_overlays "
+                "WHERE id = ? AND project_id = ? AND skill = ?",
+                (payload["overlayId"], payload["projectId"], skill),
+            ).fetchone()
+            if current is None:
+                raise ValueError("overlay was deleted while evaluation was running")
+            if (current["status"] != "REVIEWED" or current["content"] != snapshot["content"]
+                    or current["content_digest"] != snapshot["contentDigest"]
+                    or current["manifest_json"] != snapshot["manifestJson"] or current["published_at"]):
+                raise ValueError("overlay changed while evaluation was running; evaluation was not published")
+            active = _active_baseline_snapshot(connection, payload["projectId"], skill)
+            if active != snapshot["activeOverlay"]:
+                raise ValueError("active baseline changed while evaluation was running; evaluation was not published")
+            current_structural = _structural_overlay_evaluation(connection, current, skill)
+            if current_structural != structural:
+                raise ValueError("overlay sources changed while evaluation was running; evaluation was not published")
+            if artifact_path is not None:
+                evaluation["artifactPath"] = artifact_path
+            evaluation_json = json.dumps(evaluation, ensure_ascii=False, separators=(",", ":"))
+            if not evaluation["passed"]:
+                connection.execute(
+                    "UPDATE skill_overlays SET evaluation_json = ?, published_at = NULL WHERE id = ?",
+                    (evaluation_json, payload["overlayId"]),
+                )
+                return {"overlayId": payload["overlayId"], "status": "REJECTED", "evaluation": evaluation}
+            published_at = now()
+            connection.execute(
+                "UPDATE skill_overlays SET evaluation_json = ?, published_at = ? "
+                "WHERE id = ? AND status = 'REVIEWED'",
+                (evaluation_json, published_at, payload["overlayId"]),
+            )
+            return {
+                "overlayId": payload["overlayId"], "version": snapshot["version"],
+                "status": "PUBLISHED", "publishedAt": published_at, "evaluation": evaluation,
+            }
+    except Exception:
+        if artifact_path:
+            try:
+                (database.parent / artifact_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def activate_overlay(payload: dict) -> dict:
+    project, database, connection = _overlay_database(payload)
+    skill = _normalize_skill(payload["skill"])
+    try:
+        if skill not in _enabled_skills(project):
+            raise ValueError("skill is not enabled for learning in this project")
+        with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM skill_overlays WHERE id = ? AND project_id = ? AND skill = ?",
+                (payload["overlayId"], payload["projectId"], skill),
+            ).fetchone()
+            if row is None:
+                raise ValueError("overlay not found")
+            if row["status"] != "REVIEWED":
+                raise ValueError("only REVIEWED overlays can be activated")
+            evaluation = decode_json(row["evaluation_json"])
+            behavior = evaluation.get("behavior") if isinstance(evaluation, dict) else None
+            if (not row["published_at"] or not isinstance(behavior, dict)
+                    or evaluation.get("passed") is not True or behavior.get("passed") is not True
+                    or behavior.get("candidateOverlayDigest") != row["content_digest"]):
+                raise ValueError("overlay must pass evaluation and be published before activation")
+            current_skill_path = SKILL_ROOT.parent / skill / "SKILL.md"
+            current_corpus_path = FORGE_ROOT / "evals" / "skill-behavior-cases.json"
+            try:
+                current_skill_digest = "sha256:" + hashlib.sha256(current_skill_path.read_bytes()).hexdigest()
+                current_corpus_digest = "sha256:" + hashlib.sha256(current_corpus_path.read_bytes()).hexdigest()
+            except OSError as error:
+                raise ValueError("evaluation inputs are unavailable; run evaluation again") from error
+            if (behavior.get("skillDigest") != current_skill_digest
+                    or behavior.get("corpusDigest") != current_corpus_digest):
+                raise ValueError("Skill or evaluation corpus changed after publication; run evaluation again")
+            active = connection.execute(
+                "SELECT * FROM skill_overlays "
+                "WHERE project_id = ? AND skill = ? AND status = 'ACTIVE'",
+                (payload["projectId"], skill),
+            ).fetchone()
+            if active is not None and not _usable_active_baseline(active, skill):
+                active = None
+            current_baseline = ({
+                "id": active["id"], "version": active["version"],
+                "contentDigest": active["content_digest"],
+            } if active is not None else None)
+            if current_baseline != behavior.get("baselineOverlay"):
+                raise ValueError("active evaluation baseline changed after publication; run evaluation again")
+            structural = _structural_overlay_evaluation(connection, row, skill)
+            if not structural["passed"]:
+                raise ValueError("Overlay or its Summary sources changed after publication; run evaluation again")
+            timestamp = now()
+            connection.execute(
+                "UPDATE skill_overlays SET status = 'DISABLED', disabled_at = ? "
+                "WHERE project_id = ? AND skill = ? AND status = 'ACTIVE'",
+                (timestamp, payload["projectId"], skill),
+            )
+            connection.execute(
+                "UPDATE skill_overlays SET status = 'ACTIVE', enabled_at = ?, disabled_at = NULL WHERE id = ?",
+                (timestamp, payload["overlayId"]),
+            )
+            return {"overlayId": payload["overlayId"], "status": "ACTIVE", "enabledAt": timestamp}
+    finally:
+        connection.close()
+
+
+def disable_overlay(payload: dict) -> dict:
+    _project, database, connection = _overlay_database(payload)
+    try:
+        with connection:
+            timestamp = now()
+            cursor = connection.execute(
+                "UPDATE skill_overlays SET status = 'DISABLED', disabled_at = ? "
+                "WHERE id = ? AND project_id = ? AND status = 'ACTIVE'",
+                (timestamp, payload["overlayId"], payload["projectId"]),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("only an ACTIVE overlay can be disabled")
+            return {"overlayId": payload["overlayId"], "status": "DISABLED", "disabledAt": timestamp}
+    finally:
+        connection.close()
+
+
+def delete_overlay(payload: dict) -> dict:
+    _project, database, connection = _overlay_database(payload)
+    overlay_id = payload["overlayId"]
+    try:
+        with connection:
+            row = connection.execute(
+                "SELECT status FROM skill_overlays WHERE id = ? AND project_id = ?",
+                (overlay_id, payload["projectId"]),
+            ).fetchone()
+            if row is None:
+                raise ValueError("overlay not found")
+            if row[0] == "ACTIVE":
+                raise ValueError("active overlay must be disabled before deletion")
+            connection.execute("DELETE FROM skill_overlay_sources WHERE overlay_id = ?", (overlay_id,))
+            connection.execute("DELETE FROM skill_overlays WHERE id = ?", (overlay_id,))
+        # Evaluation artifacts are deliberately outside the SQLite transaction.
+        # Remove only files carrying this exact Overlay ID; a cleanup failure
+        # must not turn a committed physical deletion into a false failure.
+        evaluations = database.parent / "evaluations"
+        if evaluations.is_dir():
+            marker = f"-{overlay_id}-"
+            for artifact in evaluations.iterdir():
+                if artifact.is_file() and artifact.name.startswith("overlay-v") and marker in artifact.name:
+                    try:
+                        artifact.unlink()
+                    except OSError:
+                        pass
+        return {"overlayId": overlay_id, "deleted": True}
+    finally:
+        connection.close()
+
+
 def create_summary(payload: dict) -> dict:
     project_id = payload.get("projectId")
     skill = payload.get("skill")
     if not isinstance(project_id, str) or not isinstance(skill, str) or not skill.strip():
         raise ValueError("projectId and skill are required")
-    skill = skill.strip().removeprefix("skill.").replace("_", "-")
+    skill = _normalize_skill(skill)
     try:
         window_months = int(payload.get("windowMonths", 6))
     except (TypeError, ValueError):
@@ -580,36 +1355,10 @@ def create_summary(payload: dict) -> dict:
     database = _database_for_skill(project, skill)
     if not database.is_file():
         raise ValueError("project database is unavailable")
-    connection = sqlite3.connect(database, timeout=5)
-    connection.row_factory = sqlite3.Row
+    connection = connect_database(database, timeout=5)
     try:
         with connection:
             connection.execute("BEGIN IMMEDIATE")
-            record_columns = {row[1] for row in connection.execute("PRAGMA table_info(learning_records)")}
-            if "is_classic" not in record_columns:
-                connection.execute("ALTER TABLE learning_records ADD COLUMN is_classic INTEGER NOT NULL DEFAULT 0")
-            if "classic_reason" not in record_columns:
-                connection.execute("ALTER TABLE learning_records ADD COLUMN classic_reason TEXT NOT NULL DEFAULT ''")
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS learning_summaries (
-                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL, skill TEXT NOT NULL,
-                    version INTEGER NOT NULL, created_at TEXT NOT NULL, source_count INTEGER NOT NULL,
-                    summary_json TEXT NOT NULL, applied INTEGER NOT NULL DEFAULT 0,
-                    UNIQUE(project_id, skill, version)
-                )"""
-            )
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS learning_summary_sources (
-                    summary_id TEXT NOT NULL, record_id TEXT NOT NULL,
-                    PRIMARY KEY(summary_id, record_id)
-                )"""
-            )
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS learning_summary_rule_sources (
-                    summary_id TEXT NOT NULL, rule_id TEXT NOT NULL, record_id TEXT NOT NULL,
-                    PRIMARY KEY(summary_id, rule_id, record_id)
-                )"""
-            )
             rows = connection.execute(
                 """SELECT id, run_id, captured_at, output_json, edited_content, review_note,
                           is_classic, classic_reason
@@ -675,8 +1424,8 @@ def create_summary(payload: dict) -> dict:
             summary_id = f"summary-{uuid.uuid4()}"
             connection.execute(
                 """INSERT INTO learning_summaries
-                   (id, project_id, skill, version, created_at, source_count, summary_json, applied)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, 0)""",
+                   (id, project_id, skill, version, created_at, source_count, summary_json, lifecycle_status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'DRAFT')""",
                 (summary_id, project_id, skill, version, created_at,
                  len(source_records), json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))),
             )
@@ -685,41 +1434,8 @@ def create_summary(payload: dict) -> dict:
                 ((summary_id, record["recordId"]) for record in source_records),
             )
             return {"projectId": project_id, "skill": skill, "version": version,
-                    "createdAt": created_at, "sourceCount": len(source_records), "applied": False,
+                    "createdAt": created_at, "sourceCount": len(source_records),
                     "summary": snapshot}
-    finally:
-        connection.close()
-
-
-def apply_summary(payload: dict) -> dict:
-    project_id, skill, version = payload.get("projectId"), payload.get("skill"), payload.get("version")
-    if not isinstance(project_id, str) or not isinstance(skill, str) or not isinstance(version, int):
-        raise ValueError("projectId, skill and integer version are required")
-    project = next((item for item in projects() if item.get("projectId") == project_id), None)
-    if project is None or skill not in _enabled_skills(project):
-        raise ValueError("project or enabled skill not found")
-    database = _database_for_skill(project, skill)
-    connection = sqlite3.connect(database, timeout=5)
-    connection.row_factory = sqlite3.Row
-    try:
-        with connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT summary_json FROM learning_summaries WHERE project_id = ? AND skill = ? AND version = ?",
-                (project_id, skill, version),
-            ).fetchone()
-            if row is None:
-                raise ValueError("summary version not found")
-            snapshot = decode_json(row["summary_json"])
-            if not isinstance(snapshot, dict) or snapshot.get("format") not in {"forge-skill-training-summary-v4", "forge-skill-training-summary-v5"}:
-                raise ValueError("legacy summary versions cannot be newly enabled; generate and review a current version")
-            if snapshot.get("status") != "REVIEWED":
-                raise ValueError("summary rules must be fully reviewed before enabling")
-            if not any(rule.get("status") == "CONFIRMED" for rule in snapshot.get("rules", [])):
-                raise ValueError("at least one confirmed rule is required before enabling")
-            connection.execute("UPDATE learning_summaries SET applied = 0 WHERE project_id = ? AND skill = ?", (project_id, skill))
-            connection.execute("UPDATE learning_summaries SET applied = 1 WHERE project_id = ? AND skill = ? AND version = ?", (project_id, skill, version))
-            return {"projectId": project_id, "skill": skill, "version": version, "applied": True}
     finally:
         connection.close()
 
@@ -734,20 +1450,27 @@ def review_summary(payload: dict) -> dict:
     project = next((item for item in projects() if item.get("projectId") == project_id), None)
     if project is None:
         raise ValueError("project not found")
-    connection = sqlite3.connect(_database_for_skill(project, skill), timeout=5)
+    connection = connect_database(_database_for_skill(project, skill), timeout=5)
     try:
         with connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT summary_json, applied FROM learning_summaries WHERE project_id = ? AND skill = ? AND version = ?",
+                "SELECT summary_json, lifecycle_status FROM learning_summaries WHERE project_id = ? AND skill = ? AND version = ?",
                 (project_id, skill, version),
             ).fetchone()
             if row is None:
                 raise ValueError("summary version not found")
-            if row[1]:
-                raise ValueError("an enabled summary cannot be edited; create a new version")
+            if row[1] == "ARCHIVED":
+                raise ValueError("an archived summary cannot be edited; create a new version")
+            referenced = connection.execute(
+                "SELECT 1 FROM skill_overlay_sources WHERE summary_id = "
+                "(SELECT id FROM learning_summaries WHERE project_id = ? AND skill = ? AND version = ?)",
+                (project_id, skill, version),
+            ).fetchone()
+            if referenced is not None:
+                raise ValueError("a Summary referenced by an Overlay cannot be edited; create a new version")
             snapshot = decode_json(row[0])
-            if not isinstance(snapshot, dict) or snapshot.get("format") not in {"forge-skill-training-summary-v4", "forge-skill-training-summary-v5"}:
+            if not isinstance(snapshot, dict) or snapshot.get("format") != "forge-skill-training-summary-v5":
                 raise ValueError("legacy summary versions cannot be reviewed")
             originals = {rule.get("id"): rule for rule in snapshot.get("rules", []) if isinstance(rule, dict)}
             if (len(updates) != len(originals)
@@ -779,8 +1502,9 @@ def review_summary(payload: dict) -> dict:
             if encoded_size(snapshot) > 20_000:
                 raise ValueError("reviewed summary exceeds the 20 KB quality limit")
             connection.execute(
-                "UPDATE learning_summaries SET summary_json = ? WHERE project_id = ? AND skill = ? AND version = ?",
-                (json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")), project_id, skill, version),
+                "UPDATE learning_summaries SET summary_json = ?, lifecycle_status = ? "
+                "WHERE project_id = ? AND skill = ? AND version = ?",
+                (json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")), snapshot["status"], project_id, skill, version),
             )
             return {"projectId": project_id, "skill": skill, "version": version,
                     "status": snapshot["status"], "statistics": snapshot["statistics"]}
@@ -796,27 +1520,25 @@ def delete_summary(payload: dict) -> dict:
     if project is None:
         raise ValueError("project not found")
     database = _database_for_skill(project, skill)
-    connection = sqlite3.connect(database, timeout=5)
+    connection = connect_database(database, timeout=5)
     try:
         with connection:
             row = connection.execute(
-                "SELECT applied FROM learning_summaries WHERE project_id = ? AND skill = ? AND version = ?",
+                "SELECT lifecycle_status FROM learning_summaries WHERE project_id = ? AND skill = ? AND version = ?",
                 (project_id, skill, version),
             ).fetchone()
             if row is None:
                 raise ValueError("summary version not found")
-            if row[0]:
-                raise ValueError("cannot delete the applied version; apply another version first")
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS learning_summary_sources (
-                    summary_id TEXT NOT NULL, record_id TEXT NOT NULL,
-                    PRIMARY KEY(summary_id, record_id)
-                )"""
-            )
+            if row[0] == "ARCHIVED":
+                raise ValueError("cannot delete an archived summary; preserve it for Overlay traceability")
             summary_id = connection.execute(
                 "SELECT id FROM learning_summaries WHERE project_id = ? AND skill = ? AND version = ?",
                 (project_id, skill, version),
             ).fetchone()[0]
+            if connection.execute(
+                "SELECT 1 FROM skill_overlay_sources WHERE summary_id = ?", (summary_id,)
+            ).fetchone() is not None:
+                raise ValueError("cannot delete a Summary referenced by an Overlay")
             connection.execute("DELETE FROM learning_summary_sources WHERE summary_id = ?", (summary_id,))
             connection.execute("DELETE FROM learning_summary_rule_sources WHERE summary_id = ?", (summary_id,))
             cursor = connection.execute(
@@ -828,21 +1550,93 @@ def delete_summary(payload: dict) -> dict:
         connection.close()
 
 
-def update_record(payload: dict) -> bool:
+def _maybe_disable_overlay_from_reviews(
+    connection: sqlite3.Connection,
+    record: sqlite3.Row,
+) -> dict | None:
+    metadata = decode_json(record["metadata_json"])
+    overlay = metadata.get("appliedOverlay") if isinstance(metadata, dict) else None
+    if not isinstance(overlay, dict):
+        return None
+    overlay_id = overlay.get("id")
+    overlay_project = overlay.get("projectId")
+    overlay_skill = _normalize_skill(str(overlay.get("skill") or ""))
+    overlay_version = overlay.get("version")
+    overlay_digest = overlay.get("contentDigest")
+    if (not isinstance(overlay_id, str) or overlay_project != record["project_id"]
+            or overlay_skill != _normalize_skill(record["skill"])
+            or not isinstance(overlay_version, int) or overlay_version < 1
+            or not isinstance(overlay_digest, str)):
+        return None
+    reviewed_count = 0
+    negative_count = 0
+    rows = connection.execute(
+        """SELECT review_status, metadata_json FROM learning_records
+           WHERE project_id = ? AND skill = ? AND reviewed = 1""",
+        (record["project_id"], overlay_skill),
+    ).fetchall()
+    for candidate in rows:
+        candidate_metadata = decode_json(candidate["metadata_json"])
+        candidate_overlay = candidate_metadata.get("appliedOverlay") if isinstance(candidate_metadata, dict) else None
+        if not isinstance(candidate_overlay, dict):
+            continue
+        if (candidate_overlay.get("id") != overlay_id
+                or candidate_overlay.get("version") != overlay_version
+                or candidate_overlay.get("contentDigest") != overlay_digest):
+            continue
+        reviewed_count += 1
+        if candidate["review_status"] == "EXCLUDED":
+            negative_count += 1
+    negative_rate = negative_count / reviewed_count if reviewed_count else 0.0
+    if reviewed_count <= OVERLAY_ROLLBACK_MIN_REVIEWS or negative_rate <= OVERLAY_ROLLBACK_NEGATIVE_RATE:
+        return None
+    disabled_at = now()
+    cursor = connection.execute(
+        """UPDATE skill_overlays SET status = 'DISABLED', disabled_at = ?
+           WHERE id = ? AND project_id = ? AND skill = ? AND version = ?
+             AND content_digest = ? AND status = 'ACTIVE'""",
+        (disabled_at, overlay_id, record["project_id"], overlay_skill, overlay_version, overlay_digest),
+    )
+    if cursor.rowcount != 1:
+        return None
+    return {
+        "overlayId": overlay_id, "version": overlay_version,
+        "reviewedCount": reviewed_count, "negativeCount": negative_count,
+        "negativeRate": negative_rate, "disabledAt": disabled_at,
+    }
+
+
+def update_record(payload: dict) -> dict | None:
     project_id = payload.get("projectId")
     record_id = payload.get("recordId")
     action = payload.get("action")
     if not isinstance(project_id, str) or not isinstance(record_id, str) or action not in ALLOWED_ACTIONS:
-        return False
+        return None
     project = next((item for item in projects() if item.get("projectId") == project_id), None)
     if project is None:
-        return False
+        return None
     for database in _project_databases(project):
         if not database.is_file():
             continue
-        connection = sqlite3.connect(database, timeout=5)
+        connection = connect_database(database, timeout=5)
         try:
             with connection:
+                record = connection.execute(
+                    "SELECT id, project_id, skill, metadata_json FROM learning_records WHERE id = ? AND project_id = ?",
+                    (record_id, project_id),
+                ).fetchone()
+                if record is None:
+                    continue
+                summary_sources_exist = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'learning_summary_sources'"
+                ).fetchone()
+                if summary_sources_exist and connection.execute(
+                    "SELECT 1 FROM learning_summary_sources WHERE record_id = ? LIMIT 1", (record_id,)
+                ).fetchone():
+                    raise ValueError(
+                        "learning record is referenced by a Summary and cannot be modified or deleted"
+                    )
+                reviewed_at = now()
                 if action == "DELETED":
                     cursor = connection.execute(
                         "DELETE FROM learning_records WHERE id = ? AND project_id = ?",
@@ -851,20 +1645,21 @@ def update_record(payload: dict) -> bool:
                 else:
                     classic = payload.get("isClassic", False)
                     if not isinstance(classic, bool):
-                        return False
+                        return None
                     cursor = connection.execute(
                         """UPDATE learning_records
                            SET review_status = ?, reviewed = 1, edited_content = ?, review_note = ?,
                                reviewed_at = ?, deleted_at = ?, is_classic = ?, classic_reason = ?
                            WHERE id = ? AND project_id = ?""",
-                        (action, payload.get("editedContent"), str(payload.get("note") or ""), now(), None,
+                        (action, payload.get("editedContent"), str(payload.get("note") or ""), reviewed_at, None,
                          int(classic), str(payload.get("classicReason") or ""), record_id, project_id),
                     )
                 if cursor.rowcount == 1:
-                    return True
+                    disabled_overlay = _maybe_disable_overlay_from_reviews(connection, record)
+                    return {"updated": True, "disabledOverlay": disabled_overlay}
         finally:
             connection.close()
-    return False
+    return None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -910,6 +1705,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(query_record_page(parse_qs(parsed.query)))
             elif parsed.path == "/api/summaries":
                 self.send_json(query_summaries(parse_qs(parsed.query)))
+            elif parsed.path == "/api/overlays":
+                self.send_json(query_overlays(parse_qs(parsed.query)))
             elif parsed.path == "/api/llm-config":
                 self.send_json(llm_config_status())
             else:
@@ -921,7 +1718,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": str(error)}, 500)
 
     def do_POST(self):
-        if self.path not in {"/api/review", "/api/summarize", "/api/apply", "/api/delete-summary", "/api/review-summary", "/api/llm-config", "/api/refine"}:
+        if self.path not in {"/api/review", "/api/summarize", "/api/create-overlay", "/api/review-overlay", "/api/evaluate-publish-overlay", "/api/activate-overlay", "/api/disable-overlay", "/api/delete-overlay", "/api/delete-summary", "/api/review-summary", "/api/llm-config", "/api/refine", "/api/project-status"}:
             self.send_json({"error": "not found"}, 404)
             return
         authorization_error = _mutation_request_error(self.headers, self.server.server_port)
@@ -934,6 +1731,9 @@ class Handler(BaseHTTPRequestHandler):
             if length > 1_000_000:
                 raise ValueError("request too large")
             payload = json.loads(self.rfile.read(length))
+            if self.path == "/api/project-status":
+                self.send_json(set_project_registration_status(payload))
+                return
             if self.path == "/api/llm-config":
                 self.send_json(save_llm_config(payload))
                 return
@@ -943,8 +1743,24 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/summarize":
                 self.send_json(create_summary(payload), 201)
                 return
-            if self.path == "/api/apply":
-                self.send_json(apply_summary(payload))
+            if self.path == "/api/create-overlay":
+                self.send_json(create_overlay(payload), 201)
+                return
+            if self.path == "/api/review-overlay":
+                self.send_json(review_overlay(payload))
+                return
+            if self.path == "/api/evaluate-publish-overlay":
+                evaluation_result = evaluate_and_publish_overlay(payload)
+                self.send_json(evaluation_result, 201 if evaluation_result.get("status") == "PUBLISHED" else 422)
+                return
+            if self.path == "/api/activate-overlay":
+                self.send_json(activate_overlay(payload))
+                return
+            if self.path == "/api/disable-overlay":
+                self.send_json(disable_overlay(payload))
+                return
+            if self.path == "/api/delete-overlay":
+                self.send_json(delete_overlay(payload))
                 return
             if self.path == "/api/delete-summary":
                 self.send_json(delete_summary(payload))
@@ -952,10 +1768,14 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/review-summary":
                 self.send_json(review_summary(payload))
                 return
-            if not update_record(payload):
+            update_result = update_record(payload)
+            if update_result is None:
                 self.send_json({"error": "record not found or invalid action"}, 400)
                 return
-            self.send_json({"ok": True})
+            self.send_json({"ok": True, **update_result})
+        except OverlayConflict as error:
+            self.send_json({"error": str(error), "code": "OVERLAY_CONFLICT", "overlayId": error.overlay_id,
+                            "version": error.version, "replaceable": error.replaceable}, 409)
         except (ValueError, json.JSONDecodeError, sqlite3.IntegrityError) as error:
             self.send_json({"error": str(error)}, 400)
         except sqlite3.OperationalError as error:

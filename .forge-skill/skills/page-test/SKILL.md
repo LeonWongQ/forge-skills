@@ -39,7 +39,7 @@ Classify the request before loading details:
 - Review an existing test without changing it: use `code-review` with the Playwright domain.
 - Component or unit testing: use `test-implementation`.
 
-Load `.forge-skill/forge/CLAUDE.md`, `.forge-skill/forge/AUTOLOAD.md`, `.forge-skill/forge/domains/playwright.md`, and `.forge-skill/forge/domains/testing.md` only when the selected path needs them.
+Always load `.forge-skill/forge/CLAUDE.md` and `.forge-skill/forge/AUTOLOAD.md`, including the shared direct-host learning lifecycle. Load `.forge-skill/forge/domains/playwright.md` and `.forge-skill/forge/domains/testing.md` only when the selected path needs them.
 
 ## Standalone Browser Runtime
 
@@ -70,6 +70,14 @@ Keep generated tests behavior-focused and isolated:
 Define the symptom from the exact error, test, step, environment, and frequency. Collect failure output before adding reruns. Rank multiple hypotheses and identify root cause as trigger, mechanism, and enabling condition.
 
 Fix the cause, then verify proportionally: exact test once, containing file/project once, `--repeat-each=3` only for a timing or shared-state hypothesis, and larger repeat/parallel runs only for confirmed flakiness or a release gate.
+
+## Direct-host training signal
+
+When this Skill is enabled for project learning, preserve already reported
+browser-test evidence under `scope`, `symptom`, `rootCause`, `evidence`,
+`testCases`, `locatorStrategy`, `waitStrategy`, `assertions`, `fixes`,
+`executionResults`, and `residualRisk` as applicable. Do not turn an unexecuted
+test or unconfirmed diagnosis into a reusable learning signal.
 
 ## Delivery
 

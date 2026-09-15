@@ -71,6 +71,14 @@ The system must work the same way after refactoring. Changed structure, preserve
 - Introducing abstractions without demonstrated need
 - Changing public APIs without migration path
 
+## Direct-host training signal
+
+When this Skill is enabled for project learning, preserve already reported
+refactoring evidence under `objective`, `currentState`, `structuralProblems`,
+`targetStructure`, `transformations`, `behaviorPreservation`, `risks`, and
+`validation` as applicable. Do not promote a speculative target structure into
+a reusable rule during collection.
+
 ## 4. Output Structure
 
 ```

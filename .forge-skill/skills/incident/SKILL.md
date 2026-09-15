@@ -16,6 +16,8 @@ allowed-tools: [Read, Glob, Grep, Bash(git diff, git log, git show, git status, 
 
 # Incident
 
+Load `.forge-skill/forge/CLAUDE.md` and `.forge-skill/forge/AUTOLOAD.md` at activation, including the shared direct-host learning lifecycle.
+
 ## Route
 
 Use this Skill for production impact or active operational risk. Use `debug` for a non-production defect and `error-analysis` when the primary task is interpreting supplied logs without incident coordination.

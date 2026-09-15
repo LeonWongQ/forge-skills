@@ -78,6 +78,14 @@ Note: Implementation plans are task-level orchestrators — they have no single 
 - **Phased sequencing**: safe foundational changes → core refactor → cleanup
 - Identify current structural problems before proposing solutions
 
+## Direct-host training signal
+
+When this Skill is enabled for project learning, preserve already reported plan
+evidence under `objective`, `scope`, `assumptions`, `constraints`, `approach`,
+`dependencies`, `implementationSteps`, `phases`, `risks`, `mitigations`, and
+`validationPlan` as applicable. Keep provisional assumptions identifiable and
+do not make them reusable rules during collection.
+
 ## 5. Output Structure
 
 ### Implementation Plan

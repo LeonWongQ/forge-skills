@@ -19,6 +19,69 @@ _FINAL_TERMS = (
     "false positive", "false negative", "severity", "confidence", "evidence", "output",
 )
 
+_TEXT_KEYS = (
+    "instruction", "recommendation", "action", "step", "description",
+    "summary", "title", "name", "value",
+)
+
+_GENERIC_TOPIC_TERMS = {
+    "check", "incorrect", "issue", "missing", "problem", "result",
+    "failure", "failed", "handling", "implementation", "validation",
+}
+
+_SPECIALIZED_PROFILES = {
+    "debug": (
+        (("fix", "fixes", "remediation", "correctiveAction", "nextDiagnosticStep"),
+         ("rootCause", "diagnosis", "symptom"), ("rootCause", "evidence"), "PRE_CHECK", "DIAGNOSTIC_CORRECTION"),
+        (("verification", "verificationPlan", "validation"),
+         ("rootCause", "diagnosis"), ("evidence", "openQuestions"), "FINAL_VALIDATION", "VERIFY_DIAGNOSIS"),
+        (("rootCause", "diagnosis"),
+         ("symptom",), ("evidence",), "PRE_CHECK", "ROOT_CAUSE_CANDIDATE"),
+    ),
+    "implement": (
+        (("changes", "implementation", "decisions", "approach", "edgeCases"),
+         ("scope", "objective"), ("constraints", "rationale"), "PRE_CHECK", "IMPLEMENTATION_ADJUSTMENT"),
+        (("verification", "validation", "tests"),
+         ("scope", "objective"), ("remainingRisk", "residualRisk", "caveats"), "FINAL_VALIDATION", "VERIFY_IMPLEMENTATION"),
+    ),
+    "page-test": (
+        (("fix", "fixes", "testCases", "scenarios", "locatorStrategy", "waitStrategy", "assertions"),
+         ("symptom", "rootCause", "scope"), ("evidence", "rootCause"), "PRE_CHECK", "PAGE_TEST_ADJUSTMENT"),
+        (("verification", "executionResults", "residualRisk"),
+         ("scope", "symptom"), ("environment", "caveats"), "FINAL_VALIDATION", "VERIFY_PAGE_TEST"),
+    ),
+    "test-implementation": (
+        (("tests", "testCases", "scenarios", "assertions", "edgeCases"),
+         ("testScope", "scope", "targetBehavior"), ("risk", "rationale"), "PRE_CHECK", "TEST_COVERAGE_ADJUSTMENT"),
+        (("verification", "coverageGaps", "remainingCoverage", "uncovered"),
+         ("testScope", "scope"), ("limitations", "risk"), "FINAL_VALIDATION", "VERIFY_TEST_COVERAGE"),
+    ),
+    "refactor": (
+        (("structuralProblems", "transformations", "steps", "targetStructure", "refactoring"),
+         ("objective", "currentState"), ("evidence", "whyItMatters"), "PRE_CHECK", "REFACTOR_ADJUSTMENT"),
+        (("behaviorPreservation", "validation", "verification", "risks"),
+         ("objective", "targetStructure"), ("currentState", "constraints"), "FINAL_VALIDATION", "VERIFY_REFACTOR"),
+    ),
+    "explain": (
+        (("corrections", "misconceptions", "commonPitfalls", "pitfalls", "tradeoffs"),
+         ("concept", "topic", "whatItIs"), ("whyItMatters", "example"), "FINAL_VALIDATION", "EXPLANATION_ADJUSTMENT"),
+        (("keyPoints", "mentalModel"),
+         ("concept", "topic"), ("whyItMatters",), "PRE_CHECK", "EXPLANATION_CANDIDATE"),
+    ),
+    "plan": (
+        (("constraints", "assumptions", "steps", "implementationSteps", "phases", "dependencies"),
+         ("objective", "scope"), ("approach", "rationale"), "PRE_CHECK", "PLAN_ADJUSTMENT"),
+        (("risks", "mitigations", "validationPlan", "verification"),
+         ("objective", "scope"), ("constraints", "assumptions"), "FINAL_VALIDATION", "VERIFY_PLAN"),
+    ),
+    "explore": (
+        (("constraints", "observations", "options", "directions", "decisionCriteria", "evidenceNeeded"),
+         ("currentUnderstanding", "goal", "scope"), ("unknowns", "openQuestions"), "PRE_CHECK", "EXPLORATION_CANDIDATE"),
+        (("recommendedNextStep", "nextStep"),
+         ("goal", "scope"), ("decisionCriteria", "evidenceNeeded"), "FINAL_VALIDATION", "VERIFY_EXPLORATION"),
+    ),
+}
+
 
 def _text(value) -> str:
     return value.strip() if isinstance(value, str) else ""
@@ -63,8 +126,46 @@ def _direction_similarity(left: dict, right: dict) -> float:
 
 
 def _same_topic(left: dict, right: dict) -> bool:
+    if left.get("stage") and right.get("stage") and left["stage"] != right["stage"]:
+        return False
     title_score = _similarity(left, right)
-    return title_score >= 0.25 or (title_score >= 0.195 and _direction_similarity(left, right) >= 0.19)
+    if title_score == 1.0:
+        left_direction = _normalize(_text(left.get("direction")))
+        right_direction = _normalize(_text(right.get("direction")))
+        if left_direction == right_direction:
+            return True
+        negation = ("不要", "不应", "不得", "禁止", "never", "don't", "do not", "must not")
+        left_negative = any(term in _text(left.get("direction")).lower() for term in negation)
+        right_negative = any(term in _text(right.get("direction")).lower() for term in negation)
+        if left_negative != right_negative:
+            return False
+        # Treat common opposite actions as a conflict even when neither side
+        # uses an explicit negation word.
+        opposite_pairs = (
+            ("increase", "decrease"), ("enable", "disable"),
+            ("allow", "deny"), ("add", "remove"), ("include", "exclude"),
+            ("增加", "减少"), ("启用", "停用"), ("允许", "禁止"),
+            ("添加", "删除"), ("纳入", "排除"),
+        )
+        left_text = _text(left.get("direction")).lower()
+        right_text = _text(right.get("direction")).lower()
+        if any((a in left_text and b in right_text) or (b in left_text and a in right_text)
+               for a, b in opposite_pairs):
+            return False
+        return _direction_similarity(left, right) >= 0.55
+    left_terms = {
+        term for term in re.findall(r"[a-z][a-z0-9_.-]{2,}", _text(left.get("title")).lower())
+        if term not in _GENERIC_TOPIC_TERMS
+    }
+    right_terms = {
+        term for term in re.findall(r"[a-z][a-z0-9_.-]{2,}", _text(right.get("title")).lower())
+        if term not in _GENERIC_TOPIC_TERMS
+    }
+    if left_terms and right_terms and not left_terms.intersection(right_terms):
+        return False
+    return title_score >= 0.55 or (
+        title_score >= 0.24 and _direction_similarity(left, right) >= 0.35
+    )
 
 
 def _extract_findings(records: list[dict]) -> tuple[list[dict], int]:
@@ -135,6 +236,8 @@ def _rule(cluster: list[dict], index: int) -> dict:
     representative = _representative(cluster)
     source_ids = list(dict.fromkeys(item["sourceRecordId"] for item in cluster))
     stage, rule_type = _stage(representative)
+    stage = representative.get("stage") or stage
+    rule_type = representative.get("type") or rule_type
     digest = hashlib.sha256("\0".join(sorted(source_ids)).encode("utf-8")).hexdigest()[:10]
     severities = {item["severity"] for item in cluster}
     return {
@@ -192,6 +295,135 @@ def encoded_size(value: dict) -> int:
     return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
 
 
+def _key(value: object) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value).casefold())
+
+
+def _field(container: dict, aliases: tuple[str, ...]):
+    wanted = {_key(alias) for alias in aliases}
+    for name, value in container.items():
+        if _key(name) in wanted:
+            return value
+    return None
+
+
+def _fields(container: dict, aliases: tuple[str, ...]) -> list:
+    wanted = {_key(alias) for alias in aliases}
+    return [value for name, value in container.items() if _key(name) in wanted]
+
+
+def _candidate_texts(value) -> list[str]:
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, list):
+        return [text for item in value for text in _candidate_texts(item)]
+    if isinstance(value, dict):
+        texts = []
+        for alias in _TEXT_KEYS:
+            selected = _field(value, (alias,))
+            if selected is not None:
+                texts.extend(_candidate_texts(selected))
+        return list(dict.fromkeys(texts))
+    return []
+
+
+def _first_text(container: dict, aliases: tuple[str, ...]) -> str:
+    texts = _candidate_texts(_field(container, aliases))
+    return texts[0] if texts else ""
+
+
+def _containers(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _containers(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _containers(child)
+
+
+def _profile_candidates(record: dict, profile: tuple) -> list[dict]:
+    content = record.get("content")
+    if isinstance(content, str) and content.strip():
+        text = _clip(content, MAX_INSTRUCTION_CHARS)
+        return [{
+            "sourceRecordId": record["recordId"], "capturedAt": record.get("capturedAt", ""),
+            "title": text, "direction": text, "impact": _text(record.get("reviewNote")),
+            "severity": "UNSPECIFIED", "confidence": "LOW", "stage": "FINAL_VALIDATION",
+            "type": "HUMAN_REVIEWED_CANDIDATE", "reviewNote": _text(record.get("reviewNote")),
+        }]
+    if not isinstance(content, dict):
+        return []
+    candidates = []
+    seen = set()
+    root_context = _first_text(content, ("objective", "scope", "topic", "concept", "overallAssessment"))
+    for container in _containers(content):
+        signals = _field(container, ("learningSignals",))
+        if isinstance(signals, list):
+            for signal in signals:
+                if not isinstance(signal, dict):
+                    continue
+                instruction = _first_text(signal, ("instruction", "recommendation", "action"))
+                normalized = _normalize(instruction)
+                if not normalized or normalized in seen:
+                    continue
+                seen.add(normalized)
+                stage = str(signal.get("stage") or "FINAL_VALIDATION").upper()
+                if stage not in {"PRE_CHECK", "FINAL_VALIDATION"}:
+                    stage = "FINAL_VALIDATION"
+                candidates.append({
+                    "sourceRecordId": record["recordId"], "capturedAt": record.get("capturedAt", ""),
+                    "title": _first_text(signal, ("title",)) or instruction,
+                    "direction": instruction,
+                    "impact": _first_text(signal, ("rationale", "evidence", "whyItMatters")),
+                    "severity": "UNSPECIFIED", "confidence": "LOW", "stage": stage,
+                    "type": "LEARNING_SIGNAL", "reviewNote": _text(record.get("reviewNote")),
+                })
+        for instruction_keys, title_keys, rationale_keys, stage, rule_type in profile:
+            context = _first_text(container, title_keys) or root_context
+            rationale = _first_text(container, rationale_keys) or context
+            for value in _fields(container, instruction_keys):
+                for instruction in _candidate_texts(value):
+                    normalized = _normalize(instruction)
+                    if not normalized or normalized in seen:
+                        continue
+                    seen.add(normalized)
+                    candidates.append({
+                        "sourceRecordId": record["recordId"], "capturedAt": record.get("capturedAt", ""),
+                        "title": instruction, "direction": instruction, "impact": rationale,
+                        "severity": "UNSPECIFIED", "confidence": "LOW", "stage": stage,
+                        "type": rule_type, "reviewNote": _text(record.get("reviewNote")),
+                    })
+    return candidates
+
+
+def build_specialized_summary(records: list[dict], *, skill: str, max_rules: int = MAX_RULES) -> dict:
+    """Extract Skill-specific, evidence-bound candidates without semantic invention."""
+    profile = _SPECIALIZED_PROFILES[skill]
+    candidates = [candidate for record in records for candidate in _profile_candidates(record, profile)]
+    clusters = _cluster(candidates)
+    clusters.sort(key=lambda group: (
+        len({item["sourceRecordId"] for item in group}), max(item["capturedAt"] for item in group)
+    ), reverse=True)
+    rules = [_rule(cluster, index + 1) for index, cluster in enumerate(clusters[:max_rules])]
+    records_with_signals = len({item["sourceRecordId"] for item in candidates})
+    return {
+        "status": "DRAFT", "statistics": {
+            "eligibleRecords": len(records), "emptySignalResults": len(records) - records_with_signals,
+            "originalFindings": len(candidates), "candidateClusters": len(clusters),
+            "generatedRules": len(rules), "discardedClusters": max(0, len(clusters) - len(rules)),
+        }, "rules": rules, "quality": {
+            "summarizer": f"{skill}-deterministic-v1", "ruleLimit": max_rules,
+            "semanticInference": False,
+            "limitations": [
+                "Only Skill-specific structured fields and explicit learningSignals are extracted.",
+                "Candidates preserve source wording and remain PENDING until human or explicit LLM refinement.",
+                "Lexical similarity may leave semantic duplicates separate or merge close wording; review is required.",
+            ],
+        },
+    }
+
+
 def _generic_text(value) -> str:
     if isinstance(value, str):
         return value.strip()
@@ -240,4 +472,6 @@ def build_generic_summary(records: list[dict], *, skill: str, max_rules: int = M
 def build_summary(records: list[dict], *, skill: str, max_rules: int = MAX_RULES) -> dict:
     if skill == "code-review":
         return build_code_review_summary(records)
+    if skill in _SPECIALIZED_PROFILES:
+        return build_specialized_summary(records, skill=skill, max_rules=max_rules)
     return build_generic_summary(records, skill=skill, max_rules=max_rules)

@@ -16,7 +16,7 @@ from .data_paths import forge_data_root, skill_data_root
 
 COLLECTOR_SKILL = "learning-collector"
 DATABASE_NAME = "learning.sqlite"
-DATABASE_SCHEMA_VERSION = 6
+DATABASE_SCHEMA_VERSION = 7
 _REGISTRY_LOCK = threading.Lock()
 
 
@@ -117,16 +117,30 @@ def _load_enabled_skills(forge_root: Path, project: Path) -> set[str] | None:
     return enabled
 
 
-def connect_database(path: Path) -> sqlite3.Connection:
+def connect_database(path: Path, *, timeout: float = 2) -> sqlite3.Connection:
     needs_initialization = not path.exists()
-    connection = sqlite3.connect(path, timeout=2)
+    connection = sqlite3.connect(path, timeout=timeout)
     connection.row_factory = sqlite3.Row
     try:
         connection.execute("PRAGMA busy_timeout=2000")
         journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
         if needs_initialization and str(journal_mode).lower() != "truncate":
             connection.execute("PRAGMA journal_mode=TRUNCATE")
-        if connection.execute("PRAGMA user_version").fetchone()[0] < DATABASE_SCHEMA_VERSION:
+        current_schema = connection.execute("PRAGMA user_version").fetchone()[0]
+        summaries_exist = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'learning_summaries'"
+        ).fetchone() is not None
+        summaries_need_migration = summaries_exist and not any(
+            row[1] == "lifecycle_status"
+            for row in connection.execute("PRAGMA table_info(learning_summaries)")
+        )
+        overlays_exist = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'skill_overlays'"
+        ).fetchone() is not None
+        overlays_need_migration = not overlays_exist
+        overlay_columns = {row[1] for row in connection.execute("PRAGMA table_info(skill_overlays)")}
+        overlay_columns_need_migration = overlays_exist and not {"evaluation_json", "published_at"}.issubset(overlay_columns)
+        if current_schema < DATABASE_SCHEMA_VERSION or summaries_need_migration or overlays_need_migration or overlay_columns_need_migration:
             with connection:
                 connection.execute(
                 """
@@ -171,6 +185,17 @@ def connect_database(path: Path) -> sqlite3.Connection:
                 connection.execute("CREATE INDEX IF NOT EXISTS idx_learning_review ON learning_records(review_status, reviewed)")
                 connection.execute("CREATE INDEX IF NOT EXISTS idx_learning_captured ON learning_records(captured_at DESC)")
                 connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_filter_capture "
+                    "ON learning_records(skill, review_status, reviewed, captured_at DESC)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_dashboard "
+                    "ON learning_records(skill, review_status, captured_at DESC)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_run ON learning_records(run_id)"
+                )
+                connection.execute(
                     "CREATE UNIQUE INDEX IF NOT EXISTS idx_learning_collection_key "
                     "ON learning_records(collection_key) WHERE collection_key IS NOT NULL"
                 )
@@ -184,11 +209,25 @@ def connect_database(path: Path) -> sqlite3.Connection:
                         created_at TEXT NOT NULL,
                         source_count INTEGER NOT NULL,
                         summary_json TEXT NOT NULL,
-                        applied INTEGER NOT NULL DEFAULT 0 CHECK (applied IN (0, 1)),
+                        lifecycle_status TEXT NOT NULL DEFAULT 'DRAFT'
+                            CHECK (lifecycle_status IN ('DRAFT', 'REVIEWED', 'ARCHIVED', 'DELETED')),
                         UNIQUE(project_id, skill, version)
                     )
                     """
                 )
+                summary_columns = {
+                    row["name"]
+                    for row in connection.execute("PRAGMA table_info(learning_summaries)")
+                }
+                if "lifecycle_status" not in summary_columns:
+                    connection.execute(
+                        "ALTER TABLE learning_summaries ADD COLUMN lifecycle_status TEXT NOT NULL DEFAULT 'DRAFT'"
+                    )
+                    connection.execute(
+                        "UPDATE learning_summaries SET lifecycle_status = CASE "
+                        "WHEN json_extract(summary_json, '$.status') = 'REVIEWED' THEN 'REVIEWED' "
+                        "ELSE 'DRAFT' END"
+                    )
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_learning_summary_skill "
                     "ON learning_summaries(project_id, skill, version DESC)"
@@ -215,6 +254,47 @@ def connect_database(path: Path) -> sqlite3.Connection:
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_learning_summary_rule_source_record "
                     "ON learning_summary_rule_sources(record_id)"
+                )
+                connection.execute(
+                    """CREATE TABLE IF NOT EXISTS skill_overlays (
+                        id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL,
+                        skill TEXT NOT NULL,
+                        version INTEGER NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'DRAFT'
+                            CHECK (status IN ('DRAFT', 'REVIEWED', 'ACTIVE', 'DISABLED', 'DELETED')),
+                        content TEXT NOT NULL,
+                        manifest_json TEXT NOT NULL,
+                        content_digest TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        reviewed_at TEXT,
+                        enabled_at TEXT,
+                        disabled_at TEXT,
+                        evaluation_json TEXT,
+                        published_at TEXT,
+                        UNIQUE(project_id, skill, version)
+                    )"""
+                )
+                overlay_columns = {row["name"] for row in connection.execute("PRAGMA table_info(skill_overlays)")}
+                if "evaluation_json" not in overlay_columns:
+                    connection.execute("ALTER TABLE skill_overlays ADD COLUMN evaluation_json TEXT")
+                if "published_at" not in overlay_columns:
+                    connection.execute("ALTER TABLE skill_overlays ADD COLUMN published_at TEXT")
+                connection.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_overlay "
+                    "ON skill_overlays(project_id, skill) WHERE status = 'ACTIVE'"
+                )
+                connection.execute(
+                    """CREATE TABLE IF NOT EXISTS skill_overlay_sources (
+                        overlay_id TEXT NOT NULL,
+                        summary_id TEXT NOT NULL,
+                        summary_digest TEXT NOT NULL,
+                        PRIMARY KEY(overlay_id, summary_id)
+                    )"""
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_overlay_source_summary "
+                    "ON skill_overlay_sources(summary_id)"
                 )
                 connection.execute(f"PRAGMA user_version={DATABASE_SCHEMA_VERSION}")
     except Exception:
@@ -348,8 +428,22 @@ def _adopt_copied_database(database: Path, previous_id: str, identity: dict[str,
             # A copied project inherits reviewed candidates, but activating a
             # training version always requires a new explicit human action.
             connection.execute(
-                "UPDATE learning_summaries SET applied = 0 WHERE project_id = ?",
+                "UPDATE learning_summaries SET lifecycle_status = "
+                "CASE WHEN lifecycle_status = 'REVIEWED' THEN 'REVIEWED' ELSE 'ARCHIVED' END "
+                "WHERE project_id = ?",
                 (identity["projectId"],),
+            )
+            # A copied project must not inherit an active runtime correction.
+            # Keep the snapshot and its source links for auditability, but make
+            # it explicitly require review and activation in the new project.
+            connection.execute(
+                """UPDATE skill_overlays
+                   SET project_id = ?,
+                       status = CASE WHEN status = 'ACTIVE' THEN 'DISABLED' ELSE status END,
+                       enabled_at = CASE WHEN status = 'ACTIVE' THEN NULL ELSE enabled_at END,
+                       disabled_at = CASE WHEN status = 'ACTIVE' THEN ? ELSE disabled_at END
+                   WHERE project_id = ?""",
+                (identity["projectId"], _now(), previous_id),
             )
     finally:
         connection.close()
@@ -466,13 +560,16 @@ def _register_project_locked(forge_root: Path, project: Path, database: Path, id
                 forge_root, source_entry, identity["copiedFromProjectId"], identity, project
             )
             database = _project_database(forge_root, pid, skill)
-    value: dict[str, str] = {
+    value: dict[str, Any] = {
         "projectId": pid,
         "name": identity.get("name") or project.name,
         "path": str(project),
         "database": str(database),
         "databases": {**inherited_databases, skill: str(database)},
         "status": "ACTIVE",
+        "disabledAt": None,
+        "unavailableSince": None,
+        "healthReason": None,
         "lastSeenAt": _now(),
     }
     if identity.get("copiedFromProjectId"):
@@ -482,7 +579,10 @@ def _register_project_locked(forge_root: Path, project: Path, database: Path, id
     else:
         existing_databases = entry.get("databases") if isinstance(entry.get("databases"), dict) else {}
         value["databases"] = {**existing_databases, skill: str(database)}
-        stable_fields = ("projectId", "name", "path", "database", "databases", "status", "copiedFromProjectId")
+        stable_fields = (
+            "projectId", "name", "path", "database", "databases", "status",
+            "copiedFromProjectId", "disabledAt", "unavailableSince", "healthReason",
+        )
         if all(entry.get(field) == value.get(field) for field in stable_fields):
             return identity
         entry.pop("id", None)
@@ -535,6 +635,19 @@ def collect_imported_result(
     pid = identity["projectId"]
     run_id = envelope.get("runtime_id")
     collection_key = f"{pid}:{skill}:{run_id}" if isinstance(run_id, str) and run_id else None
+    metadata = result.get("metadata")
+    overlay = envelope.get("runtime_state", {}).get("project_overlay")
+    if isinstance(overlay, dict):
+        # Keep provenance compact; the reviewed content is already versioned in
+        # the Overlay table and must not be duplicated in every learning row.
+        metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        metadata["appliedOverlay"] = {
+            "id": overlay.get("id"),
+            "projectId": overlay.get("projectId"),
+            "skill": overlay.get("skill"),
+            "version": overlay.get("version"),
+            "contentDigest": overlay.get("contentDigest"),
+        }
     connection = connect_database(database)
     try:
         with connection:
@@ -552,7 +665,7 @@ def collect_imported_result(
                     run_id, active.get("stage_id"), result.get("status"),
                     timestamp, _json(output) if has_output else None,
                     _json(diagnostics) if has_diagnostics else None,
-                    _json(result.get("metadata")), None, collection_key,
+                    _json(metadata), None, collection_key,
                 ),
             )
     finally:

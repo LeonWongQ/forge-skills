@@ -17,6 +17,8 @@ allowed-tools: [Read, Glob, Grep, Bash(git diff, git log, git show, git status, 
 
 # Data Design
 
+Load `.forge-skill/forge/CLAUDE.md` and `.forge-skill/forge/AUTOLOAD.md` at activation, including the shared direct-host learning lifecycle.
+
 ## Route
 
 Classify the focus as greenfield schema, schema evolution, index/query optimization, or data architecture. Use `architecture-design` for broader system topology, `migration` for platform/framework upgrades, and `optimize` when database work is only one part of a measured application bottleneck.

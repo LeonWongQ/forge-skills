@@ -5,6 +5,8 @@ description: Design, implement, run, or review LLM evaluations and regression ga
 
 # LLM Evaluation
 
+Load `.forge-skill/forge/CLAUDE.md` and `.forge-skill/forge/AUTOLOAD.md` at activation, including the shared direct-host learning lifecycle.
+
 Turn an LLM change into evidence, not an impression. Preserve the existing production behavior unless the user explicitly requests a behavior change.
 
 ## Workflow

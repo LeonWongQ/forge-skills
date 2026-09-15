@@ -1,6 +1,6 @@
 # Forge Skills
 
-<!-- forge-facts: skills=31 -->
+<!-- forge-facts: skills=32 -->
 
 This directory contains the project-owned Skill entrypoints. Each Skill routes one task family into the smallest useful Forge behavior, domain, workflow, template, and checklist composition.
 

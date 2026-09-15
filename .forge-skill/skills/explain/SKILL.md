@@ -66,6 +66,14 @@ allowed-tools: [Read, Glob, Grep, Bash(git diff, git log, git show, git status, 
 - Code restatement without interpretation
 - Domain-specific details without domain context
 
+## Direct-host training signal
+
+When this Skill is enabled for project learning, preserve already reported
+explanation adjustments under `concept`, `whatItIs`, `whyItMatters`,
+`keyPoints`, `mentalModel`, `corrections`, `misconceptions`, `commonPitfalls`,
+and `tradeoffs` as applicable. Prefer corrections and misconceptions over
+topic-specific prose; do not invent a learning signal during collection.
+
 ## 4. Output Structure
 
 ```

@@ -19,6 +19,8 @@ allowed-tools: [Read, Glob, Grep, Bash(git diff, git log, git show, git status, 
 
 # Test Strategy
 
+Load `.forge-skill/forge/CLAUDE.md` and `.forge-skill/forge/AUTOLOAD.md` at activation, including the shared direct-host learning lifecycle.
+
 ## Route
 
 Use this Skill only when existing execution evidence, reports, coverage data, or defects drive the strategy. Use `test-design` for a strategy derived mainly from requirements and `test-implementation` when the user primarily wants test code.

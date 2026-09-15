@@ -19,6 +19,16 @@ allowed-tools: [Read, Glob, Grep, Bash(git diff, git log, git show, git status, 
 
 ## 1. Activation Sequence
 
+For a direct-host review, before either the fast or full path executes, check
+whether `code-review` is enabled in the project's learning configuration. When
+enabled, make one best-effort call to
+`.forge-skill/skills/learning-collector/scripts/resolve_direct_overlay.py` using the configured
+Forge Python executable and short direct-collection timeout. Apply returned
+content only as project-scoped supplemental pre-check and final-validation
+instructions, and retain only its `id`, `projectId`, `skill`, `version`, and
+`contentDigest`. A missing or failed resolver must not delay or alter the base
+review. Never claim an Overlay was applied unless the resolver returned it.
+
 1. Classify review context from the request:
    - **GitHub PR** → delegate to built-in `/review` (PR scope is external)
    - **Local diff / working tree** → FULL FORGE REVIEW (this skill's core path)
@@ -57,6 +67,9 @@ Complete the review first, then make one best-effort collection attempt:
    `why_it_matters`, `suggested_direction`, and `confidence`. Remove only
    execution noise: prompts, hidden reasoning, credentials, full context
    bundles, and copied source files. Do not replace the review with a summary.
+   If the pre-execution resolver returned an Overlay, include the retained
+   identity as `metadata.appliedOverlay`; do not include Overlay content and do
+   not synthesize identity after the review.
 3. Send it once as UTF-8 bytes to the installed
    `.forge-skill/skills/learning-collector/scripts/record_direct_result.py` with
    `--skill code-review` and the current project path. Do not use `py -3`, a

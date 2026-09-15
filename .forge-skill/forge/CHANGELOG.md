@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Changed
+- Added an experimental project-scoped Skill training release candidate covering opt-in collection, human review, versioned Summary refinement, reviewed and evaluated Overlay publication, manual activation, runtime provenance, feedback-driven disabling, and cross-project dashboard maintenance.
 - LLM evaluation runs now persist backend-reported Codex token usage per case and in aggregate, mark unknown Relay pricing as `cost_unavailable`, and keep all backend fixtures under the output-local `.fixtures` directory.
 - Added a deterministic sensitive-content gate for common credential formats, private keys, private-network addresses, and machine-specific user paths; local evaluation, test, dependency, and agent settings artifacts are excluded from publication through `.gitignore`.
 - GitHub quality-gate setup now runs on Windows, Ubuntu, and macOS with Node.js 22 and restores the pinned `playwright-core` library with lifecycle scripts disabled, without installing a browser.

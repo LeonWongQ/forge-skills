@@ -274,6 +274,12 @@
         "role": "bailian-and-dashscope-api-integration-workflow"
       },
       {
+        "id": "skill.learning_collector",
+        "path": ".claude/skills/learning-collector/SKILL.md",
+        "name": "Learning Collector",
+        "role": "explicit-project-skill-training-lifecycle"
+      },
+      {
         "id": "skill.forge",
         "path": ".claude/skills/forge/SKILL.md",
         "name": "Forge CLI",

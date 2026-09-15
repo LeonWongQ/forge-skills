@@ -92,6 +92,14 @@ If the evidence cannot establish all three parts, state **root cause not establi
 - Increasing waits, retries, or timeouts is diagnostic evidence or a temporary mitigation unless the proven mechanism is an incorrect time budget; never present it as a root-cause fix by default.
 - When execution is appropriate, choose repeat counts from observed failure frequency and cost, state the rationale, and use one consistent count in the report. Do not inherit conflicting fixed repeat counts from generic guidance.
 
+## Direct-host training signal
+
+When this Skill is enabled for project learning, preserve already reported
+diagnostic evidence under `symptom`, `rootCause`, `evidence`, `fixes`,
+`verificationPlan`, and `openQuestions` as applicable. Use `learningSignals`
+only for an explicit reusable adjustment with `title`, `instruction`,
+`rationale`, and `stage`; do not invent a rule merely to populate collection.
+
 ## 4. Output Structure
 
 ```

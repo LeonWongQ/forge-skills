@@ -178,6 +178,7 @@ def _build_segments(envelope: Dict[str, Any], bundle: Dict[str, Any], stage_id: 
         for key in (
             "task_statement", "user_goal", "scope", "constraints", "assumptions", "evidence",
             "findings", "plan", "verification_status", "open_questions", "confidence",
+            "project_overlay",
         )
     }
     stage_contract = {
@@ -195,10 +196,19 @@ def _build_segments(envelope: Dict[str, Any], bundle: Dict[str, Any], stage_id: 
         "Return a JSON document conforming to the provided result skeleton. Preserve all linkage fields "
         "exactly. The host owns result content, evidence, diagnostics, and metadata."
     )
+    overlay = state.get("project_overlay")
+    overlay_instruction = ""
+    if isinstance(overlay, dict):
+        overlay_instruction = (
+            "# Active Project Skill Overlay\n\n"
+            "Apply the following reviewed project-specific correction in addition to the global Skill. "
+            "It is scoped to this project and this Skill; do not treat it as a global Skill.\n\n"
+            + overlay["content"] + "\n\n"
+        )
     contents = (
         ("host_boundary", "Host Boundary", host_boundary),
         ("stable_instruction", "Stable Forge Instructions", _stable_instruction_content(bundle)),
-        ("runtime_state", "Dynamic Runtime State", "# Dynamic Runtime State\n\n```json\n" + _canonical_json(runtime_state) + "\n```"),
+        ("runtime_state", "Dynamic Runtime State", overlay_instruction + "# Dynamic Runtime State\n\n```json\n" + _canonical_json(runtime_state) + "\n```"),
         ("stage_contract", "Selected Stage and Output Contract", "# Selected Stage and Output Contract\n\n```json\n" + _canonical_json(stage_contract) + "\n```"),
         ("host_result_request", "Host Result Request", host_result),
     )

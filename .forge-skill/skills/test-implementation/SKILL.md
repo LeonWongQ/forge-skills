@@ -84,6 +84,13 @@ Tests must be meaningful — they should catch real bugs, not just prove code ru
 - Writing tests that depend on external service availability
 - Duplicating coverage already provided by existing tests
 
+## Direct-host training signal
+
+When this Skill is enabled for project learning, preserve already reported test
+evidence under `testScope`, `targetBehavior`, `tests`, `testCases`, `scenarios`,
+`assertions`, `edgeCases`, `verification`, and `coverageGaps` as applicable.
+Do not infer coverage or execution success during collection.
+
 ## 4. Output Structure
 
 ```

@@ -1,6 +1,6 @@
 # Forge Skills
 
-<!-- forge-facts: skills=31 version=1.2.1 route-regression-count=81 skill-eval-case-count=38 skill-eval-skill-count=32 -->
+<!-- forge-facts: skills=32 version=1.2.1 route-regression-count=81 skill-eval-case-count=40 skill-eval-skill-count=32 -->
 
 Forge Skills is a modular engineering Skill collection for Codex, Claude, and Cursor. It combines focused Skill entrypoints with deterministic routing, reusable engineering guidance, validation tooling, and opt-in LLM behavior evaluation.
 
@@ -46,12 +46,14 @@ forge ask "启动学习审核页面"
 forge ask "关闭学习审核服务"
 ```
 
-The dashboard supports filtering, editing, exclusion, deletion, summary
-generation, LLM refinement, and manual version review. Generated versions are
-never enabled automatically; at most one reviewed version can be enabled for a
-project and Skill. Machine-local collector settings live in
-`forge-data/runtime.json`, while project learning configuration remains under
-`.forge-skill/learning/`.
+The dashboard supports filtering, editing, exclusion, deletion, Summary
+generation, LLM refinement, and manual version review. Reviewed Summary versions
+can produce a project Overlay, but evaluation, publication, and activation remain
+separate operator actions. At most one Overlay can be active for a project and
+Skill. Machine-local collector settings live in `forge-data/runtime.json`, while
+project learning configuration remains under `.forge-skill/learning/`. See the
+[RC1 test guide](.forge-skill/forge/docs/SKILL-TRAINING-RC1.md) for the complete
+test workflow and current limitations.
 
 Add `--uninstall` to remove only links created from this source checkout. Existing files and links to other sources are preserved. Use `--check --uninstall` to preview removals.
 

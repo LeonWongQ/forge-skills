@@ -60,6 +60,14 @@ is exploration, not a premature plan or diagnosis.
 - Does NOT explain a known concept (that's `explain`)
 - Does NOT commit to structural changes (that's `refactor`)
 
+## Direct-host training signal
+
+When this Skill is enabled for project learning, preserve already reported
+exploration evidence under `currentUnderstanding`, `goal`, `scope`,
+`constraints`, `observations`, `options`, `decisionCriteria`, `evidenceNeeded`,
+`unknowns`, and `recommendedNextStep` as applicable. Options remain candidates,
+not decisions; collection must not collapse exploration into a chosen design.
+
 ## 4. Output Structure
 
 Exploration output should be lightweight and scannable:

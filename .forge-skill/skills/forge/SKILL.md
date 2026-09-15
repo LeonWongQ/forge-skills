@@ -10,6 +10,8 @@ description: >-
 
 # Forge CLI
 
+Load `.forge-skill/forge/CLAUDE.md` and `.forge-skill/forge/AUTOLOAD.md` at activation, including the shared direct-host learning lifecycle.
+
 <!-- forge-facts: validation-count=8 validation-checks=registry,paths,refs,packs,pack-refs,semantics,contracts,derived-registry -->
 
 The forge CLI validates registry integrity, path consistency, cross-references, and pack structure for the modular AI engineering operating system.

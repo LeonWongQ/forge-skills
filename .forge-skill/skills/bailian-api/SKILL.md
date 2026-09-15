@@ -5,6 +5,8 @@ description: Design, implement, debug, and review Alibaba Bailian and DashScope 
 
 # Bailian API
 
+Load `.forge-skill/forge/CLAUDE.md` and `.forge-skill/forge/AUTOLOAD.md` at activation, including the shared direct-host learning lifecycle.
+
 Use the existing project SDK, endpoint conventions, and model configuration before adding new integration code. Preserve the current request and response contract unless the user explicitly requests a behavior change.
 
 ## Credential Boundary
