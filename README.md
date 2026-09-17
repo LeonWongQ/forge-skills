@@ -4,6 +4,19 @@
 
 Forge Skills is a modular engineering Skill collection for Codex, Claude, and Cursor. It combines focused Skill entrypoints with deterministic routing, reusable engineering guidance, validation tooling, and opt-in LLM behavior evaluation.
 
+## What Forge Includes
+
+- **32 focused engineering Skills** for review, debugging, implementation,
+  planning, testing, architecture, documentation, and related workflows.
+- **Deterministic routing and validation** so Skill selection, registry links,
+  paths, contracts, and evaluation assets can be checked before release.
+- **Cross-host installation** for Codex, Claude Code, and Cursor from one source
+  checkout, at either global or project scope.
+- **Project-isolated runtime data** under `forge-data`, separated by project ID
+  and Skill rather than mixed into source repositories.
+- **An opt-in Skill training loop** that turns reviewed execution evidence into
+  versioned, project-specific guidance without rewriting the global Skill.
+
 ## Requirements
 
 - Python 3.11 or later for Forge validation and installation tooling; CI verifies 3.11, 3.12, and 3.13.
@@ -15,15 +28,37 @@ Forge Skills is a modular engineering Skill collection for Codex, Claude, and Cu
 The installer creates only missing links and preserves existing files, directories, and conflicting links. Every global or project installation links the shared `forge` and `forge-data` companions beside the target `skills` directory.
 
 Forge-generated runtime data is stored separately under `forge-data`, partitioned
-by project ID and Skill. Project repositories retain only lightweight identity
-and learning configuration files; databases, summaries, service state, and
-paused Runtime documents are excluded from Git.
+by project ID and Skill. Project repositories retain only lightweight project
+identity and local configuration files. Learning configuration is ignored by
+Git, while databases, summaries, evaluation artifacts, service state, and paused
+Runtime documents stay outside the tracked source tree.
 
-## Optional Skill Training Data
+## Project-Scoped Skill Training
 
-Forge includes an opt-in collector for improving Skill instructions and output
-quality. Collection is disabled by default and is controlled per project in
-`.forge-skill/learning/config.json`:
+Forge can train a Skill by improving its external instructions, checks, and
+output behavior from reviewed results. It does **not** train model parameters.
+The global Skill remains unchanged; the final artifact is a versioned Overlay
+that can supplement one Skill in one project.
+
+The lifecycle is deliberately gated:
+
+```text
+opt-in Skill
+  -> collect final result
+  -> human record review
+  -> versioned Summary
+  -> optional LLM refinement
+  -> human Summary review
+  -> project Overlay
+  -> evaluation and publication
+  -> manual activation
+  -> reviewed feedback and automatic disabling
+```
+
+Collection is disabled by default. Copy
+`.forge-skill/learning/config.example.json` to
+`.forge-skill/learning/config.json`, then explicitly list the Skills that may
+collect data:
 
 ```json
 {
@@ -39,6 +74,20 @@ Empty results, hidden reasoning, prompts, credentials, and intermediate Runtime
 stages are excluded. Each project and Skill has an isolated SQLite database at
 `forge-data/projects/<projectId>/learning/<skill>/learning.sqlite`.
 
+The local dashboard provides three focused workspaces:
+
+- **Review dashboard** — inspect, search, edit, exclude, or delete collected
+  records, with 20-item pagination and project/Skill filtering.
+- **Summary management** — generate versioned summaries, inspect source
+  evidence, review individual rules, and explicitly request LLM refinement.
+- **Overlay management** — combine reviewed Summary versions into a
+  project-specific Overlay, review and evaluate it, publish it, then activate it
+  as a separate manual action.
+
+The interface supports English and Simplified Chinese. The selected language is
+shared across pages and also controls the human-readable output language of LLM
+refinement and Overlay generation; collected evidence is preserved as written.
+
 Start the local review dashboard when needed:
 
 ```text
@@ -46,14 +95,30 @@ forge ask "启动学习审核页面"
 forge ask "关闭学习审核服务"
 ```
 
-The dashboard supports filtering, editing, exclusion, deletion, Summary
-generation, LLM refinement, and manual version review. Reviewed Summary versions
-can produce a project Overlay, but evaluation, publication, and activation remain
-separate operator actions. At most one Overlay can be active for a project and
-Skill. Machine-local collector settings live in `forge-data/runtime.json`, while
-project learning configuration remains under `.forge-skill/learning/`. See the
-[RC1 test guide](.forge-skill/forge/docs/SKILL-TRAINING-RC1.md) for the complete
-test workflow and current limitations.
+### Quality and Safety Boundaries
+
+- Deterministic extraction requires repeated independent evidence for ordinary
+  candidates; explicit learning signals or human review notes may admit a
+  single-record candidate.
+- LLM refinement first classifies every candidate as `KEEP`, `DISCARD`, or
+  `CONFLICT`, then synthesizes only retained evidence into a new Summary version.
+  It never overwrites the source version or activates the result.
+- Evaluation compares Baseline and Candidate behavior using compatible fixed
+  cases. Publication does not activate an Overlay, and only one Overlay can be
+  active for a project and Skill.
+- Runtime application fails open: missing or invalid Overlay data leaves the
+  global Skill unchanged.
+- Once an active Overlay has more than 10 reviewed results, an exclusion rate
+  above 30% disables that exact Overlay. Forge does not automatically activate a
+  replacement.
+- Direct-host collection remains best-effort because current hosts do not expose
+  a universal after-response hook. It must not be described as 100% capture.
+
+Machine-local settings live in `forge-data/runtime.json`; API credentials remain
+in environment variables. Project learning configuration remains local at
+`.forge-skill/learning/config.json` and is intentionally excluded from Git. See
+the [RC1 test guide](.forge-skill/forge/docs/SKILL-TRAINING-RC1.md) for the full
+workflow, acceptance evidence, and current evaluation limitations.
 
 Add `--uninstall` to remove only links created from this source checkout. Existing files and links to other sources are preserved. Use `--check --uninstall` to preview removals.
 
