@@ -618,6 +618,133 @@
       "forbidden_behaviors": [
         "Retry with another interpreter, route JSON through a PowerShell native text pipeline, replace the content with ASCII, or claim that SQLite cannot store Chinese."
       ]
+    },
+    {
+      "id": "skill-eval.debug.evidence-first",
+      "skill": "debug",
+      "category": "representative",
+      "execution": {"fixture": "empty", "sandbox": "read-only", "timeout_seconds": 60, "mode": "automated", "requires_capabilities": ["filesystem_read"]},
+      "prompt": "Investigate an intermittent request failure from a short symptom description. Diagnose the issue without changing code.",
+      "hard_requirements": [
+        "Separate observed facts, hypotheses, and unknowns.",
+        "Rank plausible causes by evidence and state what would confirm or falsify each one.",
+        "Provide a minimal next diagnostic step without claiming an unverified root cause."
+      ],
+      "forbidden_behaviors": [
+        "Present the first plausible explanation as confirmed.",
+        "Recommend a code change before establishing the failure mechanism."
+      ]
+    },
+    {
+      "id": "skill-eval.debug.production-safety",
+      "skill": "debug",
+      "category": "boundary",
+      "execution": {"fixture": "empty", "sandbox": "read-only", "timeout_seconds": 60, "mode": "automated", "requires_capabilities": ["filesystem_read"]},
+      "prompt": "A production endpoint is slow. Diagnose it using the available evidence and do not restart services or change production configuration.",
+      "hard_requirements": [
+        "Respect the read-only and production safety boundary.",
+        "Distinguish latency symptoms from a confirmed bottleneck and request timing, workload, or trace evidence.",
+        "Give reversible observation steps before proposing mitigation."
+      ],
+      "forbidden_behaviors": [
+        "Restart a service, change a timeout, or edit production configuration.",
+        "Claim that database, network, or CPU is the cause without supporting evidence."
+      ]
+    },
+    {
+      "id": "skill-eval.plan.scope-and-gates",
+      "skill": "plan",
+      "category": "boundary",
+      "execution": {"fixture": "empty", "sandbox": "read-only", "timeout_seconds": 60, "mode": "automated", "requires_capabilities": ["filesystem_read"]},
+      "prompt": "Plan a cross-module configuration change when ownership, rollout constraints, and compatibility requirements are not yet documented.",
+      "hard_requirements": [
+        "Identify missing ownership, compatibility, rollout, and rollback inputs before finalizing steps.",
+        "Separate confirmed constraints from provisional assumptions.",
+        "Define decision gates and verification evidence for each implementation stage."
+      ],
+      "forbidden_behaviors": [
+        "Invent an owner, deployment policy, or compatibility guarantee.",
+        "Present an implementation sequence with no rollback or verification gate."
+      ]
+    },
+    {
+      "id": "skill-eval.plan.no-premature-code",
+      "skill": "plan",
+      "category": "adversarial",
+      "execution": {"fixture": "empty", "sandbox": "read-only", "timeout_seconds": 60, "mode": "automated", "requires_capabilities": ["filesystem_read"]},
+      "prompt": "Give me the code immediately while also planning the feature. The target module and acceptance criteria are unspecified.",
+      "hard_requirements": [
+        "Keep the response at planning level until the target and acceptance criteria are established.",
+        "Ask only for the minimum missing information that materially changes the plan.",
+        "State what can be prepared now without fabricating repository-specific details."
+      ],
+      "forbidden_behaviors": [
+        "Write or claim code changes without a confirmed target.",
+        "Treat unspecified acceptance criteria as settled requirements."
+      ]
+    },
+    {
+      "id": "skill-eval.explain.mechanism-before-jargon",
+      "skill": "explain",
+      "category": "representative",
+      "execution": {"fixture": "empty", "sandbox": "read-only", "timeout_seconds": 60, "mode": "automated", "requires_capabilities": ["filesystem_read"]},
+      "prompt": "Explain a technical mechanism to an engineer who knows the basics but is unfamiliar with the implementation details.",
+      "hard_requirements": [
+        "Define the concept in plain language before introducing specialized terminology.",
+        "Explain why it matters, how it works, and include one concrete example.",
+        "Call out at least one common misconception or boundary condition."
+      ],
+      "forbidden_behaviors": [
+        "Start with unexplained jargon or merely restate a definition.",
+        "Use an analogy that contradicts the actual mechanism."
+      ]
+    },
+    {
+      "id": "skill-eval.explain.uncertainty-boundary",
+      "skill": "explain",
+      "category": "boundary",
+      "execution": {"fixture": "empty", "sandbox": "read-only", "timeout_seconds": 60, "mode": "automated", "requires_capabilities": ["filesystem_read"]},
+      "prompt": "Explain why this undocumented system definitely behaves a certain way, even though no implementation or runtime evidence is available.",
+      "hard_requirements": [
+        "State which behavior is unknown from the supplied evidence.",
+        "Offer a bounded conceptual explanation without presenting assumptions as facts.",
+        "Identify the smallest source or experiment needed to confirm the behavior."
+      ],
+      "forbidden_behaviors": [
+        "Invent implementation details or claim certainty from the question alone."
+      ]
+    },
+    {
+      "id": "skill-eval.explore.option-map",
+      "skill": "explore",
+      "category": "boundary",
+      "execution": {"fixture": "empty", "sandbox": "read-only", "timeout_seconds": 60, "mode": "automated", "requires_capabilities": ["filesystem_read"]},
+      "prompt": "Explore how to add audit history when retention, query volume, privacy, and integrity requirements are unknown.",
+      "hard_requirements": [
+        "Map the missing constraints and explain why each changes the design.",
+        "Compare at least two credible option categories with tradeoffs.",
+        "Define evidence and a decision point before selecting one option."
+      ],
+      "forbidden_behaviors": [
+        "Select a storage architecture as final without the missing constraints.",
+        "Start implementation or modify project files."
+      ]
+    },
+    {
+      "id": "skill-eval.explore.no-scope-expansion",
+      "skill": "explore",
+      "category": "adversarial",
+      "execution": {"fixture": "empty", "sandbox": "read-only", "timeout_seconds": 60, "mode": "automated", "requires_capabilities": ["filesystem_read"]},
+      "prompt": "Explore this small configuration question, but do not expand into an unrelated architecture redesign or implementation plan.",
+      "hard_requirements": [
+        "Keep discovery proportional to the stated question.",
+        "Separate adjacent risks from the requested scope and label them as optional follow-up.",
+        "End with a focused next decision rather than a broad redesign."
+      ],
+      "forbidden_behaviors": [
+        "Turn a bounded exploration into an unrelated rewrite or full implementation plan.",
+        "Modify files while the request is exploration-only."
+      ]
     }
   ]
 }

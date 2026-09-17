@@ -1,0 +1,15 @@
+{
+  "version": "1.0",
+  "status": "human-labels-provisional",
+  "purpose": "Advisory regression cases for deciding whether a captured result changes future Skill behavior.",
+  "cases": [
+    {"id": "explain-ui-state", "skill": "explain", "kind": "known-failure", "content": "PENDING means a Summary rule has not been reviewed.", "expectedDecision": "DISCARD", "reason": "A fact explained to one user, not a reusable teaching instruction."},
+    {"id": "plan-task-steps", "skill": "plan", "kind": "boundary", "content": "First update the current project's index.html, then run its build.", "expectedDecision": "DISCARD", "reason": "Project-specific steps do not generalize to future plans."},
+    {"id": "plan-review-gate", "skill": "plan", "kind": "representative", "content": "For each phase, state its dependency, independent verification, and rollback condition.", "expectedDecision": "KEEP", "reason": "A repeatable planning behavior rather than an individual task outcome."},
+    {"id": "code-review-finding", "skill": "code-review", "kind": "boundary", "content": "The current delete endpoint lacks authorization.", "expectedDecision": "DISCARD", "reason": "A historical finding is not itself an instruction for all future reviews."},
+    {"id": "code-review-calibration", "skill": "code-review", "kind": "representative", "content": "Before reporting an authorization flaw, trace the caller and verify the actual guard.", "expectedDecision": "KEEP", "reason": "An actionable check that can reduce future false positives."},
+    {"id": "debug-incident", "skill": "debug", "kind": "boundary", "content": "The service failed because port 8765 was occupied.", "expectedDecision": "DISCARD", "reason": "The root cause of one incident must not be applied to unrelated incidents."},
+    {"id": "page-test-wait", "skill": "page-test", "kind": "representative", "content": "Wait for the target control to be visible before interacting, rather than sleeping for a fixed duration.", "expectedDecision": "KEEP", "reason": "Reusable browser testing behavior."},
+    {"id": "explore-conflict", "skill": "explore", "kind": "adversarial", "content": "Always skip project context; always inspect project context.", "expectedDecision": "CONFLICT", "reason": "Opposing instructions require a human decision."}
+  ]
+}

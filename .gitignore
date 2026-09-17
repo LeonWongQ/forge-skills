@@ -14,6 +14,7 @@ __pycache__/
 !.forge-skill/forge-data/README.md
 !.forge-skill/forge-data/runtime.json
 .forge-skill/learning/learning.sqlite*
+.forge-skill/learning/config.json
 .forge-skill/learning/applied/
 .forge-skill/skills/learning-collector/project-registry.json*
 .forge-skill/skills/learning-collector/review-service.json

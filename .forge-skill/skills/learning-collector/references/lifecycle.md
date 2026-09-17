@@ -34,15 +34,52 @@ explicit feedback threshold below says otherwise.
    Skill evaluation directory. Baseline responses are cached by Skill, corpus,
    active Overlay, model, wire API, and endpoint digests; Candidate generation
    and blind judging always run fresh. Explicit retry refreshes the Baseline.
+   Responses API refinement and evaluation use the same relay-compatible
+   non-stream-requesting payload. If a relay returns server-sent events anyway,
+   output is accepted only after `response.completed`; interrupted, failed,
+   incomplete, malformed, or oversized streams fail closed without persisting
+   partial model output.
+   LLM configuration stores an API base URL and derives `/responses` or
+   `/chat/completions` from the selected wire API. Legacy full endpoint values
+   are normalized before use to prevent duplicate operation paths.
 8. **Production feedback and automatic disabling (`COMPLETE`)** uses human-
    reviewed, Overlay-tagged records. When one exact ACTIVE Overlay has more than
    10 reviewed records and over 30 percent are EXCLUDED, it is disabled without
    activating an older version.
 
+## Summary Quality Gates
+
+- In a specialized deterministic extractor, ordinary Skill output becomes a
+  candidate only when the same adjustment is supported by at least two
+  independent records. An explicit `learningSignal` or a non-empty human review
+  note may admit a single-record candidate. The generic fallback remains a
+  review queue because it cannot infer semantic agreement safely.
+- LLM refinement removes task-specific facts, current project or UI state, and
+  subject-matter answers. Returning zero rules is valid when no reusable Skill
+  adjustment remains.
+- Refinement rejects replacement characters and isolated Unicode surrogates so
+  damaged source text cannot become a new Summary version.
+- Explicit refinement sends a bounded packet of reviewed effective content,
+  review notes, candidate IDs and evidence to the configured model. All
+  candidates receive a KEEP/DISCARD/CONFLICT decision before a second call
+  synthesizes only KEEP candidates into at most six rules. Unknown citations,
+  duplicate instructions, missing triggers and verification, oversized input,
+  changed evidence, and malformed output fail without creating a version.
+- The Summary review page displays classification reasons and linked source
+  evidence. The labeled cases in `forge/evals/summary-refinement-cases.json`
+  are an advisory starting set, not an approved judge calibration or evidence
+  that the target precision and acceptance thresholds have been reached.
+
 ## Phase 9: Evaluation Qualification
 
-Phase 9 is planned and is required before treating Phase 7 evidence as a
-production release signal:
+Phase 9 is in progress and is required before treating Phase 7 evidence as a
+production release signal. The initial case-coverage milestone is complete:
+the current project's enabled `code-review`, `debug`, `plan`, `explain`, and
+`explore` Skills each have at least three compatible read-only automated cases
+covering representative, boundary, and adversarial behavior. This milestone
+does not qualify an LLM judge or authorize automatic publication.
+
+The remaining qualification work is:
 
 - provide at least three independent HTTP-compatible, read-only cases for every
   Skill allowed to use automatic publication;

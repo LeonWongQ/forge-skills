@@ -347,7 +347,7 @@ def _profile_candidates(record: dict, profile: tuple) -> list[dict]:
     if isinstance(content, str) and content.strip():
         text = _clip(content, MAX_INSTRUCTION_CHARS)
         return [{
-            "sourceRecordId": record["recordId"], "capturedAt": record.get("capturedAt", ""),
+            "sourceRecordId": record["recordId"], "runId": record.get("runId") or record["recordId"], "capturedAt": record.get("capturedAt", ""),
             "title": text, "direction": text, "impact": _text(record.get("reviewNote")),
             "severity": "UNSPECIFIED", "confidence": "LOW", "stage": "FINAL_VALIDATION",
             "type": "HUMAN_REVIEWED_CANDIDATE", "reviewNote": _text(record.get("reviewNote")),
@@ -372,7 +372,7 @@ def _profile_candidates(record: dict, profile: tuple) -> list[dict]:
                 if stage not in {"PRE_CHECK", "FINAL_VALIDATION"}:
                     stage = "FINAL_VALIDATION"
                 candidates.append({
-                    "sourceRecordId": record["recordId"], "capturedAt": record.get("capturedAt", ""),
+                    "sourceRecordId": record["recordId"], "runId": record.get("runId") or record["recordId"], "capturedAt": record.get("capturedAt", ""),
                     "title": _first_text(signal, ("title",)) or instruction,
                     "direction": instruction,
                     "impact": _first_text(signal, ("rationale", "evidence", "whyItMatters")),
@@ -389,7 +389,7 @@ def _profile_candidates(record: dict, profile: tuple) -> list[dict]:
                         continue
                     seen.add(normalized)
                     candidates.append({
-                        "sourceRecordId": record["recordId"], "capturedAt": record.get("capturedAt", ""),
+                        "sourceRecordId": record["recordId"], "runId": record.get("runId") or record["recordId"], "capturedAt": record.get("capturedAt", ""),
                         "title": instruction, "direction": instruction, "impact": rationale,
                         "severity": "UNSPECIFIED", "confidence": "LOW", "stage": stage,
                         "type": rule_type, "reviewNote": _text(record.get("reviewNote")),
@@ -401,22 +401,31 @@ def build_specialized_summary(records: list[dict], *, skill: str, max_rules: int
     """Extract Skill-specific, evidence-bound candidates without semantic invention."""
     profile = _SPECIALIZED_PROFILES[skill]
     candidates = [candidate for record in records for candidate in _profile_candidates(record, profile)]
-    clusters = _cluster(candidates)
+    all_clusters = _cluster(candidates)
+    clusters = [group for group in all_clusters if (
+        any(item["type"] == "LEARNING_SIGNAL" or item["reviewNote"] for item in group)
+        or len({item["runId"] for item in group}) >= 2
+    )]
     clusters.sort(key=lambda group: (
-        len({item["sourceRecordId"] for item in group}), max(item["capturedAt"] for item in group)
+        len({item["runId"] for item in group}), max(item["capturedAt"] for item in group)
     ), reverse=True)
     rules = [_rule(cluster, index + 1) for index, cluster in enumerate(clusters[:max_rules])]
+    for rule, cluster in zip(rules, clusters):
+        independent = len({item["runId"] for item in cluster})
+        rule["confidence"] = "HIGH" if independent >= 3 else "MEDIUM" if independent == 2 else "LOW"
     records_with_signals = len({item["sourceRecordId"] for item in candidates})
     return {
         "status": "DRAFT", "statistics": {
             "eligibleRecords": len(records), "emptySignalResults": len(records) - records_with_signals,
             "originalFindings": len(candidates), "candidateClusters": len(clusters),
-            "generatedRules": len(rules), "discardedClusters": max(0, len(clusters) - len(rules)),
+            "generatedRules": len(rules), "lowEvidenceClusters": len(all_clusters) - len(clusters),
+            "discardedClusters": max(0, len(clusters) - len(rules)),
         }, "rules": rules, "quality": {
             "summarizer": f"{skill}-deterministic-v1", "ruleLimit": max_rules,
             "semanticInference": False,
             "limitations": [
                 "Only Skill-specific structured fields and explicit learningSignals are extracted.",
+                "Ordinary output candidates require two independent records unless explicitly marked by a learningSignal or human review note.",
                 "Candidates preserve source wording and remain PENDING until human or explicit LLM refinement.",
                 "Lexical similarity may leave semantic duplicates separate or merge close wording; review is required.",
             ],

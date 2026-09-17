@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import socket
 import sqlite3
 import sys
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -18,6 +21,7 @@ import review_server
 import overlay_evaluator
 from forge_cli.learning_collector import _adopt_copied_database, connect_database
 from summary_engine import build_code_review_summary, build_generic_summary, build_summary, encoded_size
+from refinement_quality import SKILL_CRITERIA, evidence_packet, validate_decisions, validate_rules
 
 
 def test_overlay_llm_evaluation_applies_user_approved_default_gate(tmp_path):
@@ -363,12 +367,15 @@ def test_create_overlay_merges_reviewed_summary_rules_into_draft(tmp_path, monke
 
     created = review_server.create_overlay({
         "projectId": project_id, "skill": "code-review", "summaryVersions": [1, 2],
+        "language": "zh-CN",
     })
 
     assert created["status"] == "DRAFT"
     assert created["version"] == 1
     assert created["manifest"]["summaryVersions"] == [1, 2]
     assert created["manifest"]["executionSource"] == "content"
+    assert created["manifest"]["outputLanguage"] == "zh-CN"
+    assert "# 项目 Overlay：code-review" in created["content"]
     assert created["content"].count("检查 API 错误码是否稳定") == 1
     with sqlite3.connect(database) as check:
         assert check.execute("SELECT status FROM skill_overlays").fetchone()[0] == "DRAFT"
@@ -462,6 +469,29 @@ def test_create_overlay_merges_reviewed_summary_rules_into_draft(tmp_path, monke
     assert review_server.disable_overlay({
         "projectId": project_id, "skill": "code-review", "overlayId": created["id"],
     })["status"] == "DISABLED"
+
+
+def test_overlay_content_follows_selected_language_and_rejects_unknown_language():
+    rules = [
+        {"stage": "PRE_CHECK", "instruction": "检查输入边界。"},
+        {"stage": "FINAL_VALIDATION", "instruction": "确认输出完整。"},
+    ]
+
+    chinese = review_server._overlay_content("code-review", rules, "zh-CN")
+    english = review_server._overlay_content("code-review", rules, "en")
+
+    assert "# 项目 Overlay：code-review" in chinese
+    assert "## 执行前附加检查" in chinese
+    assert "## 输出前附加校验" in chinese
+    assert "# Project Overlay: code-review" in english
+    assert "## Additional Pre-Review Checks" in english
+    assert "检查输入边界。" in chinese
+    assert "检查输入边界。" in english
+    with pytest.raises(ValueError, match="language must be zh-CN or en"):
+        review_server.create_overlay({
+            "projectId": "project", "skill": "code-review",
+            "summaryVersions": [1], "language": "fr",
+        })
 
 
 def test_create_overlay_rejects_unreviewed_summary(tmp_path, monkeypatch):
@@ -782,6 +812,33 @@ def test_specialized_summary_does_not_extract_unrecognized_arbitrary_fields():
     assert summary["statistics"]["emptySignalResults"] == 1
 
 
+def test_specialized_summary_drops_single_unreviewed_task_output():
+    summary = build_summary([{
+        "recordId": "record-explain", "capturedAt": "2026-09-15T00:00:00Z",
+        "reviewNote": "", "content": {
+            "concept": "Summary rule status",
+            "keyPoints": ["PENDING blocks Summary review completion"],
+            "misconceptions": ["PENDING does not mean enabled"],
+        },
+    }], skill="explain")
+
+    assert summary["rules"] == []
+    assert summary["statistics"]["lowEvidenceClusters"] == 2
+
+
+def test_specialized_summary_requires_independent_runs_for_repeated_output():
+    records = [{"recordId": f"record-{index}", "runId": "same-run",
+                "capturedAt": f"2026-09-15T00:00:0{index}Z", "content": {
+                    "concept": "API errors", "keyPoints": ["Explain the error condition before its remedy."]}}
+               for index in range(2)]
+    summary = build_summary(records, skill="explain")
+    assert summary["rules"] == []
+    records[1]["runId"] = "other-run"
+    summary = build_summary(records, skill="explain")
+    assert summary["rules"][0]["supportCount"] == 2
+    assert summary["rules"][0]["confidence"] == "MEDIUM"
+
+
 def test_specialized_summary_does_not_flatten_verification_metadata_into_rules():
     summary = build_summary([{
         "recordId": "record-implement", "capturedAt": "2026-09-15T00:00:00Z",
@@ -797,6 +854,7 @@ def test_specialized_summary_does_not_flatten_verification_metadata_into_rules()
 def test_specialized_summary_keeps_all_instruction_aliases_in_nested_objects():
     summary = build_summary([{
         "recordId": "record-implement", "capturedAt": "2026-09-15T00:00:00Z",
+        "reviewNote": "人工确认这些指令可复用",
         "content": {"changes": [{
             "instruction": "Validate the input first.",
             "recommendation": "Preserve the original error chain.",
@@ -822,6 +880,7 @@ def test_specialized_summary_preserves_human_reviewed_plain_text():
 def test_specialized_summary_keeps_all_matching_fields_from_one_result():
     summary = build_summary([{
         "recordId": "record-implement", "capturedAt": "2026-09-15T00:00:00Z",
+        "reviewNote": "人工确认这些指令可复用",
         "content": {
             "scope": "配置保存", "decisions": ["使用临时文件完成原子替换。"],
             "changes": ["写入前递归校验配置字段。"],
@@ -973,6 +1032,21 @@ class _FakeResponse:
         return chunk
 
 
+class _FakeStreamingResponse:
+    def __init__(self, payload: bytes):
+        self.stream = io.BytesIO(payload)
+        self.headers = {"Content-Type": "text/event-stream; charset=utf-8"}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def readline(self, size=-1):
+        return self.stream.readline(size)
+
+
 def _draft_for_refinement(tmp_path, monkeypatch):
     project = tmp_path / "refine-project"
     database = project / ".forge-skill" / "learning" / "learning.sqlite"
@@ -997,6 +1071,17 @@ def _draft_for_refinement(tmp_path, monkeypatch):
     config_path = tmp_path / "llm-refiner.json"
     monkeypatch.setattr(review_server, "LLM_CONFIG_PATH", config_path)
     monkeypatch.setattr(review_server, "_environment_value", lambda _name: "test-key")
+    original_call = review_server._call_llm
+
+    def call_with_classification(config, api_key, instruction, payload):
+        if "Classify every candidate" in instruction:
+            return json.dumps({"decisions": [
+                {"candidateId": rule["id"], "decision": "KEEP", "reason": "Reusable check"}
+                for rule in payload["candidates"]
+            ]}), {}
+        return original_call(config, api_key, instruction, payload)
+
+    monkeypatch.setattr(review_server, "_call_llm", call_with_classification)
     return project_id, database, created["version"]
 
 
@@ -1006,6 +1091,7 @@ def test_refine_uses_responses_api_and_persists_rule_sources(tmp_path, monkeypat
         source_json = connection.execute(
             "SELECT summary_json FROM learning_summaries WHERE version = ?", (version,)
         ).fetchone()[0]
+    candidate_id = json.loads(source_json)["rules"][0]["id"]
     review_server.save_llm_config({
         "enabled": True, "endpoint": "https://example.test/v1/responses",
         "model": "test-model", "wireApi": "responses", "apiKeyEnv": "TEST_KEY",
@@ -1015,6 +1101,8 @@ def test_refine_uses_responses_api_and_persists_rule_sources(tmp_path, monkeypat
         "id": "rule-1", "stage": "PRE_CHECK", "type": "workflow",
         "title": "检查事务边界", "instruction": "检查并发写入是否具备事务边界。",
         "rationale": "重复证据", "status": "PENDING", "supportCount": 1,
+        "candidateIds": [candidate_id], "trigger": "When reviewing concurrent writes",
+        "verification": "Confirm transactions protect the write path",
         "sourceRecordIds": ["record-1"], "confidence": "High",
     }]}, ensure_ascii=False)}
 
@@ -1023,13 +1111,24 @@ def test_refine_uses_responses_api_and_persists_rule_sources(tmp_path, monkeypat
         return _FakeResponse(json.dumps(response_payload).encode("utf-8"))
 
     monkeypatch.setattr(review_server.urllib.request, "urlopen", fake_urlopen)
-    refined = review_server.refine_summary({"projectId": project_id, "skill": "code-review", "version": version})
+    refined = review_server.refine_summary({
+        "projectId": project_id, "skill": "code-review", "version": version,
+        "language": "en",
+    })
     assert calls[0][2]["input"]
     assert "messages" not in calls[0][2]
+    assert "temperature" not in calls[0][2]
+    assert "stream" not in calls[0][2]
+    request_text = json.dumps(calls[0][2], ensure_ascii=False)
+    assert "Simplified Chinese" not in request_text
+    assert "English" in request_text
     assert refined["sourceVersion"] == version
     assert refined["version"] == version + 1
     assert refined["summary"]["version"] == version + 1
     assert refined["summary"]["refinement"]["mode"] == "explicit_llm"
+    assert refined["summary"]["refinement"]["outputLanguage"] == "en"
+    assert refined["summary"]["rules"][0]["confidence"] == "LOW"
+    assert refined["summary"]["candidateDecisions"][0]["decision"] == "KEEP"
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT summary_json FROM learning_summaries WHERE version = ?", (version,)
@@ -1038,8 +1137,67 @@ def test_refine_uses_responses_api_and_persists_rule_sources(tmp_path, monkeypat
         assert connection.execute("SELECT rule_id, record_id FROM learning_summary_rule_sources").fetchall() == [("rule-1", "record-1")]
 
 
+def test_refine_rejects_unsupported_output_language():
+    with pytest.raises(ValueError, match="language must be zh-CN or en"):
+        review_server.refine_summary({
+            "projectId": "project", "skill": "code-review", "version": 1,
+            "language": "fr",
+        })
+
+
+def test_learning_pages_share_language_asset_and_refinement_contract():
+    review_html = review_server.HTML_PATH.read_text(encoding="utf-8")
+    versions_html = review_server.VERSIONS_PATH.read_text(encoding="utf-8")
+    overlays_html = review_server.OVERLAYS_PATH.read_text(encoding="utf-8")
+    i18n_javascript = review_server.I18N_PATH.read_text(encoding="utf-8")
+
+    assert '/assets/learning-i18n.js' in review_html
+    assert '/assets/learning-i18n.js' in versions_html
+    assert '/assets/learning-i18n.js' in overlays_html
+    assert 'forge-learning-language-v2' in i18n_javascript
+    assert 'localStorage.setItem' in i18n_javascript
+    assert 'return SUPPORTED.has(saved) ? saved : "en"' in i18n_javascript
+    assert "mountSelector(document.querySelector('.hero-tools'))" in review_html
+    assert "mountSelector(document.querySelector('.hero-tools'))" in versions_html
+    assert "repeat(3,minmax(0,1fr))" in review_html
+    assert "tr('pageDeleted')" not in review_html
+    assert "value&&$('project').selectedOptions[0]?.textContent)||tr('allProjects')" in review_html
+    assert "${esc(tr('allProjects'))}" in review_html
+    assert "${esc(tr('allSkills'))}" in review_html
+    assert "language:window.ForgeI18n?.language||'zh-CN'" in versions_html
+    assert '<option value="PRE_CHECK"' in versions_html
+    assert '<option value="FINAL_VALIDATION"' in versions_html
+    assert '<option value="PENDING"' in versions_html
+    assert '<option value="CONFIRMED"' in versions_html
+    assert '<option value="EXCLUDED"' in versions_html
+    assert "'执行前检查':'Pre-check'" in versions_html
+    assert "'待审核':'Pending'" in versions_html
+    assert 'data-overlay-select' in versions_html
+    assert "modern&&state==='REVIEWED'" in versions_html
+    assert "tag?.textContent==='REVIEWED'" not in versions_html
+    assert 'class="danger" data-delete' in versions_html
+    assert "[data-delete]" in versions_html
+    assert "if(!selected.length)" in versions_html
+    assert "overlayButton.disabled=selected===0" in versions_html
+    assert "language=window.ForgeI18n?.language||'en'" in versions_html
+    assert "'Skill 汇总管理':'Skill Summary Management'" in versions_html
+    assert 'href="/overlays"' in review_html
+    assert 'href="/overlays"' in versions_html
+    assert 'id="overlays"' not in versions_html
+    assert 'id="overlays"' in overlays_html
+    assert 'href="/versions"' in overlays_html
+    assert "'/api/review-overlay'" in overlays_html
+    assert "'/api/evaluate-publish-overlay'" in overlays_html
+    assert "'/api/activate-overlay'" in overlays_html
+    assert "'/api/disable-overlay'" in overlays_html
+    assert "'/api/delete-overlay'" in overlays_html
+    assert 'overlayPageTitle' in i18n_javascript
+
+
 def test_refine_rejects_source_changed_while_llm_is_running(tmp_path, monkeypatch):
     project_id, database, version = _draft_for_refinement(tmp_path, monkeypatch)
+    with sqlite3.connect(database) as connection:
+        candidate_id = json.loads(connection.execute("SELECT summary_json FROM learning_summaries WHERE version = ?", (version,)).fetchone()[0])["rules"][0]["id"]
     review_server.save_llm_config({
         "enabled": True, "endpoint": "https://example.test/v1/responses",
         "model": "test-model", "wireApi": "responses", "apiKeyEnv": "TEST_KEY",
@@ -1048,6 +1206,8 @@ def test_refine_rejects_source_changed_while_llm_is_running(tmp_path, monkeypatc
         "id": "rule-1", "stage": "PRE_CHECK", "type": "workflow", "title": "事务边界",
         "rationale": "重复证据", "confidence": "High", "status": "PENDING",
         "instruction": "检查事务边界。", "sourceRecordIds": ["record-1"],
+        "candidateIds": [candidate_id], "trigger": "当审查并发写入时",
+        "verification": "确认事务边界覆盖写入路径",
     }]})}
 
     def change_source_then_respond(*_args, **_kwargs):
@@ -1086,8 +1246,135 @@ def test_refine_rejects_incomplete_rule_metadata(tmp_path, monkeypatch):
         review_server.refine_summary({"projectId": project_id, "skill": "code-review", "version": version})
 
 
+def test_refine_can_discard_all_non_reusable_candidates(tmp_path, monkeypatch):
+    project_id, database, version = _draft_for_refinement(tmp_path, monkeypatch)
+    review_server.save_llm_config({
+        "enabled": True, "baseUrl": "https://example.test/v1",
+        "model": "test-model", "wireApi": "responses", "apiKeyEnv": "TEST_KEY",
+    })
+    response_payload = {"output_text": json.dumps({"rules": []})}
+    monkeypatch.setattr(
+        review_server.urllib.request, "urlopen",
+        lambda *_args, **_kwargs: _FakeResponse(json.dumps(response_payload).encode("utf-8")),
+    )
+
+    refined = review_server.refine_summary({
+        "projectId": project_id, "skill": "code-review", "version": version,
+    })
+
+    assert refined["summary"]["rules"] == []
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM learning_summaries").fetchone()[0] == 2
+
+
+def test_refinement_labels_cover_specialized_skills_and_known_failure():
+    cases = json.loads((REPOSITORY_ROOT / "forge" / "evals" / "summary-refinement-cases.json").read_text(encoding="utf-8"))
+    assert {"KEEP", "DISCARD", "CONFLICT"} <= {case["expectedDecision"] for case in cases["cases"]}
+    assert {case["skill"] for case in cases["cases"]} <= set(SKILL_CRITERIA)
+    assert any(case["id"] == "explain-ui-state" and case["expectedDecision"] == "DISCARD" for case in cases["cases"])
+
+
+def test_refine_discarded_candidate_never_reaches_synthesis(tmp_path, monkeypatch):
+    project_id, database, version = _draft_for_refinement(tmp_path, monkeypatch)
+    review_server.save_llm_config({"enabled": True, "baseUrl": "https://example.test/v1",
+                                   "model": "test-model", "wireApi": "responses", "apiKeyEnv": "TEST_KEY"})
+    calls = []
+
+    def classify(_config, _key, instruction, payload):
+        calls.append(payload)
+        assert "Classify every candidate" in instruction
+        assert payload["records"][0]["recordId"] == "record-1"
+        return json.dumps({"decisions": [{"candidateId": item["id"], "decision": "DISCARD",
+                                         "reason": "One-off finding"} for item in payload["candidates"]]}), {}
+
+    monkeypatch.setattr(review_server, "_call_llm", classify)
+    refined = review_server.refine_summary({"projectId": project_id, "skill": "code-review", "version": version})
+    assert len(calls) == 1
+    assert refined["summary"]["rules"] == []
+    assert refined["summary"]["candidateDecisions"][0]["sourceRecordIds"] == ["record-1"]
+    assert len(review_server.summary_evidence({"project": [project_id], "skill": ["code-review"],
+                                                "version": [str(version + 1)]})["records"]) == 1
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM learning_summary_rule_sources").fetchone()[0] == 0
+
+
+def test_refinement_rejects_missing_and_duplicated_candidate_decisions():
+    candidates = [{"id": "one"}, {"id": "two"}]
+    for decisions in ([{"candidateId": "one", "decision": "KEEP", "reason": "Useful"}],
+                      [{"candidateId": "one", "decision": "KEEP", "reason": "Useful"}] * 2):
+        with pytest.raises(ValueError, match="every candidate exactly once"):
+            validate_decisions({"decisions": decisions}, candidates)
+
+
+def test_refinement_rejects_unapproved_citations_and_computes_confidence():
+    candidates = [{"id": "candidate", "sourceRecordIds": ["record-1"]}]
+    records = [{"recordId": "record-1", "runId": "run-1", "reviewNote": ""}]
+    rule = {"id": "rule-1", "candidateIds": ["candidate"], "sourceRecordIds": ["record-1"],
+            "stage": "PRE_CHECK", "status": "PENDING", "type": "workflow", "title": "Check transaction",
+            "trigger": "When reviewing concurrent writes", "instruction": "Verify the transaction boundary.",
+            "verification": "Confirm writes use the same transaction.", "rationale": "Evidence", "confidence": "HIGH"}
+    with pytest.raises(ValueError, match="unapproved candidate IDs"):
+        validate_rules({"rules": [rule]}, [], candidates, records)
+    with pytest.raises(ValueError, match="source IDs"):
+        validate_rules({"rules": [{**rule, "sourceRecordIds": ["unrelated"]}]},
+                       [{"candidateId": "candidate"}], candidates, records)
+    assert validate_rules({"rules": [rule]}, [{"candidateId": "candidate"}], candidates, records)[0]["confidence"] == "LOW"
+
+
+def test_overlay_preserves_refined_trigger_and_verification():
+    content = review_server._overlay_content("plan", [{"stage": "PRE_CHECK",
+        "trigger": "When a plan spans multiple phases", "instruction": "List the phase dependencies.",
+        "verification": "Each phase has a verifiable completion condition.",
+        "antiPattern": "Do not substitute task facts for reusable checks."}], "en")
+    assert "When a plan spans multiple phases: List the phase dependencies." in content
+    assert "Verify: Each phase has a verifiable completion condition." in content
+    assert "Avoid: Do not substitute task facts" in content
+
+
+def test_refinement_reads_effective_reviewed_evidence_and_rejects_overlong_record(tmp_path):
+    database = tmp_path / "evidence.sqlite"
+    with connect_database(database) as connection:
+        connection.execute("INSERT INTO learning_summaries (id,project_id,skill,version,created_at,source_count,summary_json,lifecycle_status) VALUES ('summary','project','plan',1,'now',1,'{}','DRAFT')")
+        connection.execute("INSERT INTO learning_records (id,project_id,project_name,project_path,skill,run_id,captured_at,output_json,edited_content,review_note) VALUES ('record','project','project','/project','plan','run-1','now','\"old\"','\"edited\"','approved')")
+        connection.execute("INSERT INTO learning_summary_sources (summary_id,record_id) VALUES ('summary','record')")
+        candidate = [{"id": "candidate", "sourceRecordIds": ["record"]}]
+        assert evidence_packet(connection, "summary", "project", "plan", candidate)["records"][0]["effectiveContent"] == "edited"
+        connection.execute("UPDATE learning_records SET edited_content = ? WHERE id = 'record'", ("x" * 17000,))
+        with pytest.raises(ValueError, match="evidence budget"):
+            evidence_packet(connection, "summary", "project", "plan", candidate)
+        with pytest.raises(ValueError, match="truncated"):
+            evidence_packet(connection, "summary", "project", "plan",
+                            [{**candidate[0], "sourceIdsTruncated": True}])
+
+
+def test_refine_rejects_damaged_unicode_text(tmp_path, monkeypatch):
+    project_id, database, version = _draft_for_refinement(tmp_path, monkeypatch)
+    review_server.save_llm_config({
+        "enabled": True, "baseUrl": "https://example.test/v1",
+        "model": "test-model", "wireApi": "responses", "apiKeyEnv": "TEST_KEY",
+    })
+    response_payload = {"output_text": json.dumps({"rules": [{
+        "id": "rule-1", "stage": "PRE_CHECK", "type": "workflow",
+        "title": "damaged \ufffd text", "rationale": "evidence", "confidence": "LOW",
+        "status": "PENDING", "instruction": "check input", "sourceRecordIds": ["record-1"],
+    }]})}
+    monkeypatch.setattr(
+        review_server.urllib.request, "urlopen",
+        lambda *_args, **_kwargs: _FakeResponse(json.dumps(response_payload).encode("utf-8")),
+    )
+
+    with pytest.raises(ValueError, match="damaged Unicode"):
+        review_server.refine_summary({
+            "projectId": project_id, "skill": "code-review", "version": version,
+        })
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM learning_summaries").fetchone()[0] == 1
+
+
 def test_refine_uses_chat_completions_and_rejects_empty_sources(tmp_path, monkeypatch):
-    project_id, _database, version = _draft_for_refinement(tmp_path, monkeypatch)
+    project_id, database, version = _draft_for_refinement(tmp_path, monkeypatch)
+    with sqlite3.connect(database) as connection:
+        candidate_id = json.loads(connection.execute("SELECT summary_json FROM learning_summaries WHERE version = ?", (version,)).fetchone()[0])["rules"][0]["id"]
     review_server.save_llm_config({
         "enabled": True, "endpoint": "https://example.test/v1/chat/completions",
         "model": "test-model", "wireApi": "chat_completions", "apiKeyEnv": "TEST_KEY",
@@ -1096,6 +1383,7 @@ def test_refine_uses_chat_completions_and_rejects_empty_sources(tmp_path, monkey
         "id": "rule-1", "stage": "PRE_CHECK", "type": "workflow", "title": "事务边界",
         "rationale": "重复证据", "confidence": "High", "status": "PENDING",
         "instruction": "检查事务边界。", "sourceRecordIds": [],
+        "candidateIds": [candidate_id], "trigger": "当审查并发写入时", "verification": "检查事务边界",
     }]})}}]}
     monkeypatch.setattr(review_server.urllib.request, "urlopen", lambda *_args, **_kwargs: _FakeResponse(json.dumps(payload).encode()))
     with pytest.raises(ValueError, match="source IDs"):
@@ -1142,6 +1430,207 @@ def test_refine_rejects_malformed_llm_response_shapes(
         review_server.refine_summary({"projectId": project_id, "skill": "code-review", "version": version})
 
 
+def test_llm_http_error_preserves_bounded_provider_diagnostics(monkeypatch):
+    provider_body = json.dumps({"error": {
+        "message": "This account only allows Codex official clients; token=test-key",
+        "type": "forbidden_error", "code": "client_restricted",
+    }}).encode("utf-8")
+    error = urllib.error.HTTPError(
+        "https://example.test/v1/responses", 403, "Forbidden",
+        {"x-request-id": "request-123"}, io.BytesIO(provider_body),
+    )
+    monkeypatch.setattr(
+        review_server.urllib.request, "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(error),
+    )
+    config = {
+        "endpoint": "https://example.test/v1/responses", "model": "test-model",
+        "wireApi": "responses", "timeoutSeconds": 60,
+    }
+
+    with pytest.raises(ValueError) as captured:
+        review_server._call_llm(config, "test-key", "instruction", {"message": "hello"})
+
+    message = str(captured.value)
+    assert "HTTP 403 Forbidden" in message
+    assert "message=This account only allows Codex official clients; token=[REDACTED]" in message
+    assert "type=forbidden_error" in message
+    assert "code=client_restricted" in message
+    assert "requestId=request-123" in message
+    assert "test-key" not in message
+
+
+@pytest.mark.parametrize("error", [TimeoutError(), socket.timeout()])
+def test_llm_timeout_reports_configured_budget(monkeypatch, error):
+    monkeypatch.setattr(
+        review_server.urllib.request, "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(error),
+    )
+    config = {
+        "endpoint": "https://example.test/v1/responses", "model": "test-model",
+        "wireApi": "responses", "timeoutSeconds": 60,
+    }
+
+    with pytest.raises(ValueError, match="timed out after 60 seconds"):
+        review_server._call_llm(config, "test-key", "instruction", {"message": "hello"})
+
+
+def test_llm_invalid_json_response_is_distinct(monkeypatch):
+    monkeypatch.setattr(
+        review_server.urllib.request, "urlopen",
+        lambda *_args, **_kwargs: _FakeResponse(b"not-json"),
+    )
+    config = {
+        "endpoint": "https://example.test/v1/responses", "model": "test-model",
+        "wireApi": "responses", "timeoutSeconds": 60,
+    }
+
+    with pytest.raises(ValueError, match="invalid JSON response"):
+        review_server._call_llm(config, "test-key", "instruction", {"message": "hello"})
+
+
+def test_responses_stream_accumulates_deltas_and_usage(monkeypatch):
+    events = (
+        'event: response.output_text.delta\n'
+        'data: {"type":"response.output_text.delta","delta":"hel"}\n\n'
+        'event: response.output_text.delta\n'
+        'data: {"type":"response.output_text.delta","delta":"lo"}\n\n'
+        'event: response.completed\n'
+        'data: {"type":"response.completed","response":{"usage":{"input_tokens":7,'
+        '"output_tokens":2,"total_tokens":9},"output":[]}}\n\n'
+    ).encode("utf-8")
+    calls = []
+
+    def fake_urlopen(request, timeout):
+        calls.append((request, timeout, json.loads(request.data.decode("utf-8"))))
+        return _FakeStreamingResponse(events)
+
+    monkeypatch.setattr(review_server.urllib.request, "urlopen", fake_urlopen)
+    config = {
+        "endpoint": "https://example.test/v1/responses", "model": "test-model",
+        "wireApi": "responses", "timeoutSeconds": 60,
+    }
+
+    content, usage = review_server._call_llm(
+        config, "test-key", "instruction", {"message": "hello"}
+    )
+
+    assert content == "hello"
+    assert usage == {
+        "status": "reported", "inputTokens": 7, "outputTokens": 2, "totalTokens": 9,
+    }
+    assert calls[0][1] == 60
+    assert "stream" not in calls[0][2]
+    assert calls[0][0].get_header("Accept") is None
+
+
+def test_responses_stream_surfaces_failed_event_without_leaking_key(monkeypatch):
+    events = (
+        'event: response.failed\n'
+        'data: {"type":"response.failed","response":{"error":'
+        '{"message":"upstream rejected test-key","type":"forbidden_error",'
+        '"code":"upstream_error"}}}\n\n'
+    ).encode("utf-8")
+    monkeypatch.setattr(
+        review_server.urllib.request, "urlopen",
+        lambda *_args, **_kwargs: _FakeStreamingResponse(events),
+    )
+    config = {
+        "endpoint": "https://example.test/v1/responses", "model": "test-model",
+        "wireApi": "responses", "timeoutSeconds": 60,
+    }
+
+    with pytest.raises(ValueError) as captured:
+        review_server._call_llm(config, "test-key", "instruction", {"message": "hello"})
+
+    message = str(captured.value)
+    assert "response.failed" in message
+    assert "message=upstream rejected [REDACTED]" in message
+    assert "type=forbidden_error" in message
+    assert "code=upstream_error" in message
+    assert "test-key" not in message
+
+
+def test_responses_stream_surfaces_top_level_error_details(monkeypatch):
+    events = (
+        'event: error\n'
+        'data: {"type":"error","message":"relay unavailable",'
+        '"code":"relay_error"}\n\n'
+    ).encode("utf-8")
+    monkeypatch.setattr(
+        review_server.urllib.request, "urlopen",
+        lambda *_args, **_kwargs: _FakeStreamingResponse(events),
+    )
+    config = {
+        "endpoint": "https://example.test/v1/responses", "model": "test-model",
+        "wireApi": "responses", "timeoutSeconds": 60,
+    }
+
+    with pytest.raises(ValueError) as captured:
+        review_server._call_llm(config, "test-key", "instruction", {"message": "hello"})
+
+    message = str(captured.value)
+    assert "error" in message
+    assert "message=relay unavailable" in message
+    assert "code=relay_error" in message
+
+
+def test_responses_stream_rejects_oversized_completed_output(monkeypatch):
+    completed = {
+        "type": "response.completed",
+        "response": {"output_text": "x" * (review_server.MAX_LLM_RESPONSE_BYTES + 1)},
+    }
+    events = f"data: {json.dumps(completed)}\n\n".encode("utf-8")
+    monkeypatch.setattr(
+        review_server.urllib.request, "urlopen",
+        lambda *_args, **_kwargs: _FakeStreamingResponse(events),
+    )
+    config = {
+        "endpoint": "https://example.test/v1/responses", "model": "test-model",
+        "wireApi": "responses", "timeoutSeconds": 60,
+    }
+
+    with pytest.raises(ValueError, match="256 KB"):
+        review_server._call_llm(config, "test-key", "instruction", {"message": "hello"})
+
+
+def test_responses_stream_enforces_total_duration_after_blocking_read(monkeypatch):
+    events = (
+        'data: {"type":"response.output_text.delta","delta":"late"}\n\n'
+    ).encode("utf-8")
+    clock = iter((0.0, 0.0, review_server.MAX_LLM_STREAM_DURATION_SECONDS + 1.0))
+    monkeypatch.setattr(review_server.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(
+        review_server.urllib.request, "urlopen",
+        lambda *_args, **_kwargs: _FakeStreamingResponse(events),
+    )
+    config = {
+        "endpoint": "https://example.test/v1/responses", "model": "test-model",
+        "wireApi": "responses", "timeoutSeconds": 60,
+    }
+
+    with pytest.raises(ValueError, match="exceeded 180 seconds"):
+        review_server._call_llm(config, "test-key", "instruction", {"message": "hello"})
+
+
+def test_responses_stream_requires_completed_event(monkeypatch):
+    events = (
+        'event: response.output_text.delta\n'
+        'data: {"type":"response.output_text.delta","delta":"partial"}\n\n'
+    ).encode("utf-8")
+    monkeypatch.setattr(
+        review_server.urllib.request, "urlopen",
+        lambda *_args, **_kwargs: _FakeStreamingResponse(events),
+    )
+    config = {
+        "endpoint": "https://example.test/v1/responses", "model": "test-model",
+        "wireApi": "responses", "timeoutSeconds": 60,
+    }
+
+    with pytest.raises(ValueError, match="without a response.completed event"):
+        review_server._call_llm(config, "test-key", "instruction", {"message": "hello"})
+
+
 def test_save_llm_config_writes_complete_json_atomically(tmp_path, monkeypatch):
     config_path = tmp_path / "config.json"
     monkeypatch.setattr(review_server, "LLM_CONFIG_PATH", config_path)
@@ -1151,8 +1640,42 @@ def test_save_llm_config_writes_complete_json_atomically(tmp_path, monkeypatch):
         "model": "test-model", "wireApi": "responses", "apiKeyEnv": "TEST_KEY",
     })
     assert saved["configured"] is True
-    assert json.loads(config_path.read_text(encoding="utf-8"))["wireApi"] == "responses"
+    assert saved["baseUrl"] == "https://example.test/v1"
+    assert saved["requestUrl"] == "https://example.test/v1/responses"
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["wireApi"] == "responses"
+    assert persisted["baseUrl"] == "https://example.test/v1"
+    assert "endpoint" not in persisted
     assert not config_path.with_suffix(".json.tmp").exists()
+
+
+@pytest.mark.parametrize(("configured_url", "wire_api", "expected"), [
+    ("https://example.test/v1", "responses", "https://example.test/v1/responses"),
+    ("https://example.test/v1/", "chat_completions", "https://example.test/v1/chat/completions"),
+    ("https://example.test/v1/responses", "responses", "https://example.test/v1/responses"),
+    ("https://example.test/v1/chat/completions", "responses", "https://example.test/v1/responses"),
+])
+def test_llm_request_url_appends_wire_api_without_duplicate_suffix(
+    configured_url, wire_api, expected,
+):
+    assert review_server._llm_request_url({
+        "baseUrl": configured_url, "wireApi": wire_api,
+    }) == expected
+
+
+def test_llm_config_migrates_legacy_full_endpoint_in_memory(tmp_path, monkeypatch):
+    config_path = tmp_path / "llm-refiner.json"
+    config_path.write_text(json.dumps({
+        "enabled": True, "endpoint": "https://example.test/v1/chat/completions",
+        "model": "test-model", "wireApi": "chat_completions", "apiKeyEnv": "TEST_KEY",
+    }), encoding="utf-8")
+    monkeypatch.setattr(review_server, "LLM_CONFIG_PATH", config_path)
+
+    loaded = review_server.llm_config()
+
+    assert loaded["baseUrl"] == "https://example.test/v1"
+    assert "endpoint" not in loaded
+    assert review_server._llm_request_url(loaded) == "https://example.test/v1/chat/completions"
 
 
 def test_llm_endpoints_reject_non_object_and_malformed_config(tmp_path, monkeypatch):

@@ -115,7 +115,11 @@ pending refinement. Dedicated deterministic profiles currently cover
 `code-review`, `debug`, `implement`, `page-test`, `test-implementation`,
 `refactor`, `explain`, `plan`, and `explore`. They extract only recognized
 structured fields, explicit `learningSignals`, or human-reviewed plain-text
-edits. All generated rules start as `PENDING`.
+edits. Within these specialized extractors, a candidate derived from ordinary
+Skill output needs evidence from at least two independent records unless an
+explicit `learningSignal` or a human review note confirms that it is reusable.
+This keeps one-off task answers, current UI descriptions, and project facts out
+of their training rules. All generated rules start as `PENDING`.
 
 The separate `/versions` page allows an operator to edit each rule, confirm or
 exclude it, and permanently delete non-archived versions. A Summary is training
@@ -126,13 +130,37 @@ While an Overlay references a Summary, that Summary cannot be edited or deleted;
 delete the non-active Overlay first when its source needs to be replaced.
 Summary generation is deterministic by default and does not invoke a model
 automatically. The `/versions` page exposes an explicit LLM refinement action
-and local configuration. The endpoint, model, enabled state, wire API, request
+and local configuration. The API base URL, model, enabled state, wire API, request
 timeout, and API-key environment-variable name are stored in
 `llm-refiner.json`; the secret stays in the host environment. Refinement uses a
 `DRAFT` as its immutable
 source and creates a new version. It forces all returned rules to `PENDING`,
-and rejects invalid, oversized, unknown, or concurrently changed source output
-without changing the source version.
+allows an empty rule set when no reusable adjustment remains, and rejects
+invalid, oversized, unknown, damaged-Unicode, or concurrently changed source
+output without changing the source version.
+Refinement sends bounded, reviewed effective source content and review notes
+to the configured LLM only after an explicit confirmation. The model first
+classifies every candidate as KEEP, DISCARD, or CONFLICT; only KEEP candidates
+enter a second synthesis call. The resulting draft holds at most six executable
+rules with triggers, verification guidance, evidence IDs, and operator-visible
+classification reasons. The model cannot choose confidence or cite rejected
+candidates. Large records and evidence packets fail explicitly instead of
+silently dropping sources. No refined rule is automatically confirmed or loaded.
+Responses API refinement and evaluation
+share the same relay-compatible request shape and do not request streaming or
+send a temperature override. If a compatible relay returns an event stream
+anyway, streamed text is accepted only after a valid
+`response.completed` event; failed, incomplete, malformed, interrupted, or
+oversized streams never create or update a Summary or evaluation artifact.
+The configured base URL excludes the operation path. The server appends
+`/responses` for the Responses API or `/chat/completions` for Chat Completions;
+legacy full endpoints are normalized so the operation path is never duplicated.
+The review and versions pages share a browser-local Chinese/English interface
+preference. This preference affects labels and explicit LLM refinement output,
+not the language of collected evidence. Each refinement request sends the
+selected `zh-CN` or `en` language to the server, which constrains human-readable
+rule titles, instructions, and rationales and records the choice in the new
+Summary version metadata.
 
 The phase table above is the authoritative Overlay lifecycle. The dashboard
 must not collapse generation, review, evaluation, publication, and activation
