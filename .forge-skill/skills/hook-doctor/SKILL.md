@@ -51,7 +51,9 @@ learning record exists.
 After identifying the host, load only its specialized guidance:
 
 - Codex: read `codex-hook-doctor/SKILL.md` inside this Skill and use its bundled diagnostic.
-- Claude Code: inspect the manager result and native configuration only. Its trust model is currently unverified.
+- Claude Code: read `claude-code-hook-doctor/SKILL.md` inside this Skill for
+  native settings, transcript, shell, payload, and runtime evidence. Its trust
+  model is currently unverified.
 - Cursor: inspect the manager result and native configuration only. Its trust model is currently unverified.
 
 Do not apply Codex trust hashes, `trustStatus`, Desktop UI, or bypass flags to

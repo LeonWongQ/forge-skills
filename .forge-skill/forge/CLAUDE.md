@@ -283,7 +283,9 @@ When a Forge Skill is executed directly by the host rather than through Forge
 Runtime, first check the current project's `.forge-skill/learning/config.json`.
 If `enabledSkills` contains the active Skill name, make one best-effort call to
 the installed `learning-collector/scripts/begin_direct_invocation.py` with
-`--skill <active-skill>` and `--project <project-root>` before Skill execution.
+`--skill <active-skill>`, `--project <project-root>`, and `--host
+<current-host>` before Skill execution. The current host is the product
+executing the Skill, not Forge's selected Hook host.
 Retain the returned `invocationId` and `hookHost` for this execution. A missing,
 failed, or invalid begin receipt must not block the Skill; in that case continue
 without retained correlation data.

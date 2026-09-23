@@ -23,7 +23,9 @@ For a direct-host review, before either the fast or full path executes, check
 whether `code-review` is enabled in the project's learning configuration. When
 enabled, first make one best-effort call to
 `.forge-skill/skills/learning-collector/scripts/begin_direct_invocation.py` and
-retain its valid `invocationId` and optional `hookHost` for the final-result
+pass `--host <current-host>` for the product executing the review, not the
+selected Hook host. Retain its valid
+`invocationId` and optional `hookHost` for the final-result
 collection step. Then make one best-effort call to
 `.forge-skill/skills/learning-collector/scripts/resolve_direct_overlay.py` using the configured
 Forge Python executable and short direct-collection timeout. Apply returned

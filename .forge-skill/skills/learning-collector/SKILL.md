@@ -188,12 +188,15 @@ the explicit dashboard action; neither operation activates an Overlay.
 ## Direct host execution
 
 An enabled Skill's direct-host lifecycle starts with one call to
-`scripts/begin_direct_invocation.py`, then makes one pre-execution Overlay lookup
+`scripts/begin_direct_invocation.py` with `--host <current-host>`, then makes one pre-execution Overlay lookup
 through `scripts/resolve_direct_overlay.py`, and finally makes one post-result
 fallback attempt through `scripts/record_direct_result.py`. A successful begin
 receipt supplies the invocation ID and selected Hook host to the fallback. The
 native Hook uses the same ID, so it enriches the same unreviewed record instead
-of creating a duplicate. The resolver is read-only; the collector checks the same
+of creating a duplicate. When the current host differs from Forge's selected
+Hook host, begin returns `hookExpected=false` and creates no pending marker;
+the fallback remains valid and must not be attributed to the selected host.
+The resolver is read-only; the collector checks the same
 project allowlist and writes to the project Skill database. Disabling a Skill is
 therefore both a collection switch and an Overlay runtime kill switch. Applied
 Overlay identity is retained in collection metadata without copying the Overlay

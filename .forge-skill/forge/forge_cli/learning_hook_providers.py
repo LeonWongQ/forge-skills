@@ -32,8 +32,19 @@ class HookStatus:
         return self.state == "CONFIGURED"
 
 
-def _command(parts: list[str]) -> str:
-    return subprocess.list2cmdline(parts) if os.name == "nt" else shlex.join(parts)
+def _command(parts: list[str], host: str) -> str:
+    if os.name != "nt" or host == "claude-code":
+        return shlex.join(parts)
+    return subprocess.list2cmdline(parts)
+
+
+def _path_argument(path: Path, host: str) -> str:
+    value = str(path.absolute())
+    if os.name == "nt" and host == "claude-code":
+        # Claude Code runs command Hooks through a POSIX-style shell on
+        # Windows, where unquoted backslashes are consumed as escapes.
+        return value.replace("\\", "/")
+    return value
 
 
 def build_hook_commands(
@@ -57,14 +68,14 @@ def build_hook_commands(
     commands = {}
     for event in events:
         parts = [
-            str(python_executable.absolute()),
-            str(hook_script.absolute()),
+            _path_argument(python_executable, host),
+            _path_argument(hook_script, host),
             "--host", host,
             "--event", event,
             "--forge-hook-marker", HOOK_MARKER,
         ]
         if forge_root is not None:
-            parts.extend(("--forge-root", str(forge_root.absolute())))
+            parts.extend(("--forge-root", _path_argument(forge_root, host)))
         if launcher is not None:
             python_path = base64.b64encode(str(python_executable.absolute()).encode("utf-8")).decode("ascii")
             script_path = base64.b64encode(str(hook_script.absolute()).encode("utf-8")).decode("ascii")
@@ -73,7 +84,7 @@ def build_hook_commands(
                 "-ExecutionPolicy", "Bypass", "-File", str(launcher.absolute()),
                 python_path, script_path, *parts[2:],
             ]
-        commands[event] = _command(parts)
+        commands[event] = _command(parts, host)
     return commands
 
 

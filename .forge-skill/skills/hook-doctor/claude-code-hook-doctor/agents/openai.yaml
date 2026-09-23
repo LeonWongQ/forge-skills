@@ -1,0 +1,4 @@
+interface:
+  display_name: "Claude Code Hook Doctor"
+  short_description: "Inspect Claude Code Hook settings and native evidence"
+  default_prompt: "Use $claude-code-hook-doctor to inspect Claude Code-specific Hook evidence through the main Hook Doctor workflow."

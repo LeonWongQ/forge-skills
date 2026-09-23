@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -145,6 +146,28 @@ def test_codex_command_starts_a_python_path_with_spaces(tmp_path, shell):
 
     assert result.returncode == 0, result.stderr
     assert "args=--host,codex,--event,stop,--forge-hook-marker,forge-learning-capture-v1" in result.stdout
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Claude Code Windows shell command")
+def test_claude_code_command_preserves_windows_paths_in_posix_shell(tmp_path):
+    python = tmp_path / "python & $runtime" / "python.exe"
+    python.parent.mkdir()
+    python.write_bytes(b"")
+    script = tmp_path / "hook & $scripts" / "host_capture_hook.py"
+    script.parent.mkdir()
+    script.write_text("# hook", encoding="utf-8")
+    forge_root = tmp_path / "forge & $data"
+
+    command = build_hook_commands(
+        python, script, "claude-code", forge_root=forge_root
+    )["stop"]
+    parsed = shlex.split(command, posix=True)
+
+    assert "\\" not in command
+    assert parsed[0] == python.absolute().as_posix()
+    assert parsed[1] == script.absolute().as_posix()
+    assert parsed[-2:] == ["--forge-root", forge_root.absolute().as_posix()]
+    assert command == shlex.join(parsed)
 
 
 def test_codex_migrates_legacy_lowercase_config_key(tmp_path):

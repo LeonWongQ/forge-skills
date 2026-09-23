@@ -26,6 +26,11 @@ from .runtime_paths import _project_id
 
 INVOCATION_TTL_HOURS = 6
 _INVOCATION_LOCK = threading.Lock()
+_HOST_ENVIRONMENT_MARKERS = {
+    "codex": ("CODEX_SESSION_ID", "CODEX_THREAD_ID"),
+    "claude-code": ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE"),
+    "cursor": ("CURSOR_CONVERSATION_ID", "CURSOR_GENERATION_ID"),
+}
 
 
 def _now() -> datetime:
@@ -34,6 +39,14 @@ def _now() -> datetime:
 
 def _timestamp(value: datetime) -> str:
     return value.isoformat().replace("+00:00", "Z")
+
+
+def current_host_from_environment() -> str | None:
+    detected = [
+        host for host, markers in _HOST_ENVIRONMENT_MARKERS.items()
+        if any(os.getenv(marker) for marker in markers)
+    ]
+    return detected[0] if len(detected) == 1 else None
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
@@ -99,7 +112,7 @@ def _ambient_host_identity(host: str) -> dict[str, str]:
         session_id = os.getenv("CODEX_SESSION_ID") or os.getenv("CODEX_THREAD_ID")
         return {"sessionId": session_id.strip()} if session_id and session_id.strip() else {}
     if host == "claude-code":
-        session_id = os.getenv("CLAUDE_SESSION_ID")
+        session_id = os.getenv("CLAUDE_CODE_SESSION_ID") or os.getenv("CLAUDE_SESSION_ID")
         return {"sessionId": session_id.strip()} if session_id and session_id.strip() else {}
     if host == "cursor":
         conversation_id = os.getenv("CURSOR_CONVERSATION_ID")
@@ -177,10 +190,13 @@ def begin_invocation(
     project: Path,
     skill: str,
     *,
+    current_host: str,
     hook_home: Path | None = None,
     codex_home: Path | None = None,
 ) -> dict[str, Any]:
     """Create one correlation marker only when native Hook capture is selected."""
+    if current_host not in {*_HOST_ENVIRONMENT_MARKERS, "unknown"}:
+        raise ValueError(f"unsupported current host: {current_host}")
     project = project.resolve()
     normalized = skill.removeprefix("skill.").replace("_", "-")
     enabled = _load_enabled_skills(forge_root, project)
@@ -189,15 +205,22 @@ def begin_invocation(
     project_id = _project_id(forge_root, project)
     host = global_hook_selection(forge_root, home=hook_home, codex_home=codex_home)
     invocation_id = f"inv-{uuid.uuid4()}"
+    hook_matches_current = isinstance(host, str) and current_host == host
     result = {
         "started": True,
         "invocationId": invocation_id,
         "projectId": project_id,
         "skill": normalized,
-        "hookHost": host,
-        "hookExpected": isinstance(host, str),
+        "hookHost": host if hook_matches_current else None,
+        "hookExpected": hook_matches_current,
     }
     if not isinstance(host, str):
+        return result
+    if not hook_matches_current:
+        result["reason"] = (
+            "CURRENT_HOST_UNKNOWN" if current_host == "unknown"
+            else "HOOK_HOST_MISMATCH"
+        )
         return result
     directory = _invocation_directory(forge_root, project_id)
     directory.mkdir(parents=True, exist_ok=True)

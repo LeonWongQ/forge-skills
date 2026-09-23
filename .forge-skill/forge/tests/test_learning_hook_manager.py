@@ -24,8 +24,21 @@ from forge_cli.learning_hook_manager import (
     load_hook_state,
     remove_global_hook,
 )
-from forge_cli.learning_invocations import begin_invocation, handle_host_event
+from forge_cli.learning_invocations import (
+    begin_invocation as _begin_invocation,
+    current_host_from_environment,
+    handle_host_event,
+)
 from forge_cli.runtime_paths import _project_id
+
+
+def begin_invocation(forge_root, project_root, skill, **kwargs):
+    current_host = kwargs.pop(
+        "current_host", load_hook_state(forge_root).get("selectedHost") or "unknown"
+    )
+    return _begin_invocation(
+        forge_root, project_root, skill, current_host=current_host, **kwargs
+    )
 
 
 def bundle(tmp_path: Path) -> Path:
@@ -129,6 +142,64 @@ def test_legacy_single_host_selection_migrates_to_global_semantics(tmp_path):
     assert state["selectedHost"] == "claude-code"
 
 
+@pytest.mark.parametrize(
+    ("variable", "host"),
+    [
+        ("CODEX_SESSION_ID", "codex"),
+        ("CLAUDE_CODE_SESSION_ID", "claude-code"),
+        ("CURSOR_CONVERSATION_ID", "cursor"),
+    ],
+)
+def test_current_host_detection_uses_unambiguous_native_environment(
+    monkeypatch, variable, host,
+):
+    for name in (
+        "CODEX_SESSION_ID", "CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID",
+        "CLAUDECODE", "CURSOR_CONVERSATION_ID", "CURSOR_GENERATION_ID",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(variable, "native-session")
+
+    assert current_host_from_environment() == host
+
+
+def test_current_host_detection_rejects_conflicting_host_environments(monkeypatch):
+    monkeypatch.setenv("CODEX_SESSION_ID", "codex-session")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "claude-session")
+
+    assert current_host_from_environment() is None
+
+
+def test_host_mismatch_does_not_create_pending_marker(tmp_path):
+    forge_root = bundle(tmp_path)
+    project_root = project(tmp_path)
+    home = tmp_path / "home"
+    configure_global_hook(forge_root, "claude-code", home=home)
+
+    invocation = _begin_invocation(
+        forge_root, project_root, "code-review", current_host="codex", hook_home=home
+    )
+
+    invocation_dir = (
+        forge_root.parent / "forge-data" / "projects" / invocation["projectId"]
+        / "learning" / "invocations"
+    )
+    assert invocation["hookHost"] is None
+    assert invocation["hookExpected"] is False
+    assert invocation["reason"] == "HOOK_HOST_MISMATCH"
+    assert not invocation_dir.exists()
+
+
+def test_begin_rejects_unknown_current_host_name(tmp_path):
+    forge_root = bundle(tmp_path)
+    project_root = project(tmp_path)
+
+    with pytest.raises(ValueError, match="unsupported current host"):
+        _begin_invocation(
+            forge_root, project_root, "code-review", current_host="typo-host"
+        )
+
+
 def test_one_global_host_applies_to_enabled_skills_in_multiple_projects(tmp_path):
     forge_root = bundle(tmp_path)
     first = project(tmp_path, "first")
@@ -206,6 +277,25 @@ def test_host_trace_records_matching_and_collection_without_response_content(tmp
     assert "private-session" not in trace_text
     assert "private final response" not in trace_text
     assert str(project_root) not in trace_text
+
+
+def test_claude_begin_uses_native_session_identity(tmp_path, monkeypatch):
+    forge_root = bundle(tmp_path)
+    project_root = project(tmp_path)
+    home = tmp_path / "home"
+    configure_global_hook(forge_root, "claude-code", home=home)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "claude-session")
+
+    invocation = begin_invocation(
+        forge_root, project_root, "code-review", hook_home=home
+    )
+
+    marker_path = (
+        forge_root.parent / "forge-data" / "projects" / invocation["projectId"]
+        / "learning" / "invocations" / f'{invocation["invocationId"]}.json'
+    )
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    assert marker["hostIdentity"] == {"sessionId": "claude-session"}
 
 
 def test_host_trace_explains_missing_pending_invocation(tmp_path):
