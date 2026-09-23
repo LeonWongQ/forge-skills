@@ -1,6 +1,6 @@
 # Scripts
 
-<!-- forge-facts: skill-eval-case-count=40 skill-eval-skill-count=32 -->
+<!-- forge-facts: skill-eval-case-count=48 skill-eval-skill-count=32 -->
 
 ## Purpose
 

@@ -18,6 +18,40 @@ from forge_cli import runtime_lifecycle
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_consume_reads_the_claimed_revision_not_preclaim_contents(tmp_path, monkeypatch):
+    directory = tmp_path / ".forge-runtime"
+    directory.mkdir()
+    path = directory / "resume.json"
+    document = _runtime()
+    path.write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    original_replace = os.replace
+
+    def update_before_claim(source, target):
+        if Path(source) == path:
+            updated = json.loads(json.dumps(document))
+            updated["runtime_state"]["task_statement"] = "updated pending task"
+            Path(source).write_text(json.dumps(updated), encoding="utf-8")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(os, "replace", update_before_claim)
+    result = consume_paused_runtime(ROOT, directory, "resume.json")
+    assert result["task_statement"] == "updated pending task"
+    assert not path.exists()
+
+
+def test_consume_restores_invalid_claim_without_losing_bytes(tmp_path, monkeypatch):
+    directory = tmp_path / ".forge-runtime"
+    directory.mkdir()
+    path = directory / "resume.json"
+    path.write_bytes(b"invalid JSON")
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ValueError, match="valid JSON object"):
+        consume_paused_runtime(ROOT, directory, "resume.json")
+    assert path.read_bytes() == b"invalid JSON"
+    assert not list(directory.glob("*.claim"))
+
+
 def _runtime():
     manifest = build_context_from_route(ROOT, _execute_route(ROOT, "review spring service"))
     return initialize_runtime(ROOT, manifest, task_statement="resume task")

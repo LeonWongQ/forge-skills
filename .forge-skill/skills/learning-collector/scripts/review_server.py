@@ -32,6 +32,11 @@ from summary_engine import build_summary, encoded_size
 from refinement_quality import evidence_packet, validate_decisions, validate_rules
 from forge_cli.data_paths import forge_data_root
 from forge_cli.learning_collector import _registry_file_lock, connect_database
+from forge_cli.learning_hook_manager import (
+    configure_global_hook,
+    global_hook_status,
+    remove_global_hook,
+)
 from overlay_evaluator import evaluate_overlay, evaluation_readiness
 
 SKILL_ROOT = Path(__file__).absolute().parents[1]
@@ -73,10 +78,17 @@ def _service_cookie() -> str:
     return f"{SERVICE_COOKIE}={SERVICE_TOKEN}; Path=/; HttpOnly; SameSite=Strict"
 
 
-def _mutation_request_error(headers, port: int) -> tuple[int, str] | None:
-    expected_origin = f"http://127.0.0.1:{port}"
+def _service_host_error(headers, port: int) -> tuple[int, str] | None:
     if str(headers.get("Host", "")).casefold() != f"127.0.0.1:{port}":
         return 403, "invalid service host"
+    return None
+
+
+def _mutation_request_error(headers, port: int) -> tuple[int, str] | None:
+    expected_origin = f"http://127.0.0.1:{port}"
+    host_error = _service_host_error(headers, port)
+    if host_error is not None:
+        return host_error
     origin = str(headers.get("Origin", ""))
     if origin and origin != expected_origin:
         return 403, "cross-origin mutation is not allowed"
@@ -358,6 +370,7 @@ def _read_responses_stream(response, api_key: str) -> tuple[str, dict]:
             completed = payload.get("response")
             if not isinstance(completed, dict):
                 raise ValueError("LLM stream omitted the completed response")
+            _validate_response_completion(completed, api_key, completed_event=True)
             content = "".join(text_parts) if text_parts else _responses_content(completed)
             if len(content.encode("utf-8")) > MAX_LLM_RESPONSE_BYTES:
                 raise ValueError("LLM response exceeds the 256 KB limit")
@@ -407,6 +420,13 @@ def _is_event_stream(response) -> bool:
     headers = getattr(response, "headers", None)
     content_type = headers.get("Content-Type", "") if headers is not None else ""
     return str(content_type).partition(";")[0].strip().casefold() == "text/event-stream"
+
+
+def _validate_response_completion(value: dict, api_key: str, *, completed_event: bool = False) -> None:
+    status = value.get("status")
+    if (value.get("error") is not None or value.get("incomplete_details") is not None
+            or (status != "completed" and not (completed_event and status is None))):
+        raise _stream_error("response.not_completed", {"response": value}, api_key)
 
 
 def _call_llm(config: dict, api_key: str, instruction: str, payload: object) -> tuple[str, dict]:
@@ -459,6 +479,7 @@ def _call_llm(config: dict, api_key: str, instruction: str, payload: object) -> 
         raise ValueError("LLM response is not valid UTF-8") from error
     if config["wireApi"] == "responses":
         content = _responses_content(response_value)
+        _validate_response_completion(response_value, api_key)
     else:
         choices = response_value.get("choices")
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
@@ -466,6 +487,8 @@ def _call_llm(config: dict, api_key: str, instruction: str, payload: object) -> 
         message = choices[0].get("message")
         if not isinstance(message, dict):
             raise ValueError("LLM returned invalid Chat Completions message")
+        if response_value.get("error") is not None or choices[0].get("finish_reason") != "stop" or message.get("refusal"):
+            raise ValueError("LLM Chat Completions response did not finish successfully")
         content = message.get("content")
     if not isinstance(content, str) or not content.strip():
         raise ValueError("LLM returned empty content")
@@ -748,6 +771,24 @@ def set_project_registration_status(payload: dict) -> dict:
             }
 
 
+def hook_status() -> dict:
+    return global_hook_status(FORGE_ROOT)
+
+
+def update_global_hook(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError("Hook configuration must be a JSON object")
+    action = payload.get("action")
+    if action == "REMOVE":
+        return remove_global_hook(FORGE_ROOT)
+    if action == "CONFIGURE":
+        host = payload.get("host")
+        if host not in {"codex", "claude-code", "cursor"}:
+            raise ValueError("host must be codex, claude-code, or cursor")
+        return configure_global_hook(FORGE_ROOT, host)
+    raise ValueError("action must be CONFIGURE or REMOVE")
+
+
 def decode_json(value):
     if value is None:
         return None
@@ -789,8 +830,11 @@ def _record_query_options(query: dict[str, list[str]]) -> tuple[str, str, str, s
         clauses.append("review_status = ?")
         values.append(status_filter)
     if search:
-        clauses.append("(output_json LIKE ? OR edited_content LIKE ? OR review_note LIKE ? OR run_id LIKE ?)")
-        values.extend([f"%{search}%"] * 4)
+        clauses.append(
+            "(output_json LIKE ? OR host_output_json LIKE ? OR edited_content LIKE ? "
+            "OR review_note LIKE ? OR run_id LIKE ?)"
+        )
+        values.extend([f"%{search}%"] * 5)
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
     return project_filter, skill_filter, status_filter, search, where, values
 
@@ -803,6 +847,13 @@ def _query_record_snapshot(
     records = []
     total = 0 if include_total else None
     fetch_limit = limit + offset
+    targets = [
+        (project, database)
+        for project in project_items if _project_matches_scan(project, project_filter)
+        for database in ([_database_for_skill(project, skill_filter)] if skill_filter else _project_databases(project))
+        if database.is_file()
+    ]
+    single_database = len(targets) == 1
     for project in project_items:
         if not _project_matches_scan(project, project_filter):
             continue
@@ -811,17 +862,18 @@ def _query_record_snapshot(
             if not database.is_file():
                 continue
             try:
-                connection = sqlite3.connect(database, timeout=5)
+                connection = connect_database(database, timeout=5)
                 try:
                     connection.row_factory = sqlite3.Row
+                    connection.execute("BEGIN")
                     if include_total:
                         total += int(connection.execute(
                             "SELECT COUNT(*) FROM learning_records" + where, values,
                         ).fetchone()[0])
                     rows = connection.execute(
                         "SELECT * FROM learning_records" + where
-                        + " ORDER BY captured_at DESC LIMIT ? OFFSET ?",
-                        (*values, fetch_limit, 0),
+                        + " ORDER BY captured_at DESC, id DESC LIMIT ? OFFSET ?",
+                        (*values, limit if single_database else fetch_limit, offset if single_database else 0),
                     ).fetchall()
                 finally:
                     connection.close()
@@ -833,11 +885,14 @@ def _query_record_snapshot(
                 continue
             for row in rows:
                 item = dict(row)
-                for field in ("output_json", "diagnostics_json", "metadata_json", "evaluation_json"):
+                for field in (
+                    "output_json", "host_output_json", "diagnostics_json",
+                    "metadata_json", "evaluation_json",
+                ):
                     item[field.removesuffix("_json")] = decode_json(item.pop(field))
                 records.append(item)
-    records.sort(key=lambda item: item["captured_at"], reverse=True)
-    return records[offset:offset + limit], total
+    records.sort(key=lambda item: (item["captured_at"], item["id"], item["project_id"], item["skill"]), reverse=True)
+    return records[:limit] if single_database else records[offset:offset + limit], total
 
 
 def query_records(
@@ -1204,14 +1259,18 @@ def query_overlays(query: dict[str, list[str]]) -> list[dict]:
                     rows = connection.execute(
                         "SELECT * FROM skill_overlays" + where + " ORDER BY skill, version DESC", values
                     ).fetchall()
+                    sources_by_overlay = {}
+                    for source in connection.execute(
+                        "SELECT s.overlay_id, s.summary_id FROM skill_overlay_sources s "
+                        "JOIN (SELECT id FROM skill_overlays" + where + ") o "
+                        "ON o.id = s.overlay_id ORDER BY s.summary_id", values
+                    ):
+                        sources_by_overlay.setdefault(source[0], []).append(source[1])
                     for row in rows:
                         item = dict(row)
                         item["manifest"] = decode_json(item.pop("manifest_json"))
                         item["evaluation"] = decode_json(item.pop("evaluation_json"))
-                        item["sourceSummaryIds"] = [source[0] for source in connection.execute(
-                            "SELECT summary_id FROM skill_overlay_sources WHERE overlay_id = ? ORDER BY summary_id",
-                            (item["id"],),
-                        ).fetchall()]
+                        item["sourceSummaryIds"] = sources_by_overlay.get(item["id"], [])
                         if item["skill"] not in readiness_by_skill:
                             readiness_by_skill[item["skill"]] = evaluation_readiness(FORGE_ROOT, item["skill"])
                         item["evaluationReadiness"] = readiness_by_skill[item["skill"]]
@@ -1343,7 +1402,14 @@ def _usable_active_baseline(row: sqlite3.Row, skill: str) -> bool:
         current_skill_digest = "sha256:" + hashlib.sha256(skill_path.read_bytes()).hexdigest()
     except OSError:
         return False
-    return behavior.get("skillDigest") == current_skill_digest
+    try:
+        current_corpus_digest = "sha256:" + hashlib.sha256(
+            (FORGE_ROOT / "evals" / "skill-behavior-cases.json").read_bytes()
+        ).hexdigest()
+    except OSError:
+        return False
+    return (behavior.get("skillDigest") == current_skill_digest
+            and behavior.get("corpusDigest") == current_corpus_digest)
 
 
 def _active_baseline_snapshot(
@@ -1600,6 +1666,7 @@ def delete_overlay(payload: dict) -> dict:
     overlay_id = payload["overlayId"]
     try:
         with connection:
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT status FROM skill_overlays WHERE id = ? AND project_id = ?",
                 (overlay_id, payload["projectId"]),
@@ -1650,24 +1717,20 @@ def create_summary(payload: dict) -> dict:
     connection = connect_database(database, timeout=5)
     try:
         with connection:
-            connection.execute("BEGIN IMMEDIATE")
-            rows = connection.execute(
-                """SELECT id, run_id, captured_at, output_json, edited_content, review_note,
+            cutoff = datetime.now(timezone.utc).timestamp() - window_months * 30 * 86400
+            cutoff_at = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
+            source_query = """SELECT id, run_id, captured_at, output_json, edited_content, review_note,
                           is_classic, classic_reason
                    FROM learning_records WHERE project_id = ? AND skill = ?
                    AND review_status = 'ACTIVE' AND reviewed = 1
                    AND (output_json IS NOT NULL OR (edited_content IS NOT NULL AND trim(edited_content) <> ''))
-                   ORDER BY captured_at ASC""",
-                (project_id, skill),
-            ).fetchall()
+                   AND (is_classic = 1 OR julianday(captured_at) >= julianday(?))
+                   ORDER BY captured_at ASC, id ASC"""
+            source_values = (project_id, skill, cutoff_at)
+            rows = connection.execute(source_query, source_values).fetchall()
             if not rows:
                 raise ValueError("no reviewed active records to summarize")
-            latest = connection.execute(
-                "SELECT COALESCE(MAX(version), 0) FROM learning_summaries WHERE project_id = ? AND skill = ?",
-                (project_id, skill),
-            ).fetchone()[0]
-            version = int(latest) + 1
-            cutoff = datetime.now(timezone.utc).timestamp() - window_months * 30 * 86400
+            version = 0
             source_records = []
             window_records = 0
             classic_records = 0
@@ -1710,6 +1773,20 @@ def create_summary(payload: dict) -> dict:
                 snapshot["rules"].pop()
                 snapshot["statistics"]["generatedRules"] = len(snapshot["rules"])
                 snapshot["statistics"]["discardedClusters"] += 1
+            if encoded_size(snapshot) > 20_000:
+                raise ValueError("summary metadata exceeds the 20 KB quality limit")
+            # Extraction is read-only. Acquire the write lock only to validate
+            # the evidence snapshot and atomically allocate/persist a version.
+            connection.execute("BEGIN IMMEDIATE")
+            current_rows = connection.execute(source_query, source_values).fetchall()
+            if [tuple(row) for row in current_rows] != [tuple(row) for row in rows]:
+                raise ValueError("source evidence changed while Summary generation was running; create it again")
+            latest = connection.execute(
+                "SELECT COALESCE(MAX(version), 0) FROM learning_summaries WHERE project_id = ? AND skill = ?",
+                (project_id, skill),
+            ).fetchone()[0]
+            version = int(latest) + 1
+            snapshot["version"] = version
             if encoded_size(snapshot) > 20_000:
                 raise ValueError("summary metadata exceeds the 20 KB quality limit")
             created_at = now()
@@ -1815,6 +1892,7 @@ def delete_summary(payload: dict) -> dict:
     connection = connect_database(database, timeout=5)
     try:
         with connection:
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT lifecycle_status FROM learning_summaries WHERE project_id = ? AND skill = ? AND version = ?",
                 (project_id, skill, version),
@@ -1913,6 +1991,7 @@ def update_record(payload: dict) -> dict | None:
         connection = connect_database(database, timeout=5)
         try:
             with connection:
+                connection.execute("BEGIN IMMEDIATE")
                 record = connection.execute(
                     "SELECT id, project_id, skill, metadata_json FROM learning_records WHERE id = ? AND project_id = ?",
                     (record_id, project_id),
@@ -1967,6 +2046,11 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        host_error = _service_host_error(self.headers, self.server.server_port)
+        if host_error is not None:
+            status, message = host_error
+            self.send_json({"error": message}, status)
+            return
         parsed = urlparse(self.path)
         try:
             if parsed.path == "/":
@@ -2020,6 +2104,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(query_overlays(parse_qs(parsed.query)))
             elif parsed.path == "/api/llm-config":
                 self.send_json(llm_config_status())
+            elif parsed.path == "/api/hook-status":
+                self.send_json(hook_status())
             else:
                 self.send_json({"error": "not found"}, 404)
         except ValueError as error:
@@ -2029,9 +2115,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "database is busy; operation was not committed", "retryable": True}, 503)
             else:
                 self.send_json({"error": str(error)}, 500)
+        except OSError as error:
+            self.send_json({"error": f"local configuration access failed: {error}"}, 500)
 
     def do_POST(self):
-        if self.path not in {"/api/review", "/api/summarize", "/api/create-overlay", "/api/review-overlay", "/api/evaluate-publish-overlay", "/api/activate-overlay", "/api/disable-overlay", "/api/delete-overlay", "/api/delete-summary", "/api/review-summary", "/api/llm-config", "/api/refine", "/api/project-status"}:
+        if self.path not in {"/api/review", "/api/summarize", "/api/create-overlay", "/api/review-overlay", "/api/evaluate-publish-overlay", "/api/activate-overlay", "/api/disable-overlay", "/api/delete-overlay", "/api/delete-summary", "/api/review-summary", "/api/llm-config", "/api/refine", "/api/project-status", "/api/hook-config"}:
             self.send_json({"error": "not found"}, 404)
             return
         authorization_error = _mutation_request_error(self.headers, self.server.server_port)
@@ -2046,6 +2134,9 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length))
             if self.path == "/api/project-status":
                 self.send_json(set_project_registration_status(payload))
+                return
+            if self.path == "/api/hook-config":
+                self.send_json(update_global_hook(payload))
                 return
             if self.path == "/api/llm-config":
                 self.send_json(save_llm_config(payload))
@@ -2096,6 +2187,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "database is busy; operation was not committed", "retryable": True}, 503)
             else:
                 self.send_json({"error": str(error)}, 500)
+        except OSError as error:
+            self.send_json({"error": f"local configuration write failed: {error}"}, 500)
 
     def log_message(self, format, *args):
         return

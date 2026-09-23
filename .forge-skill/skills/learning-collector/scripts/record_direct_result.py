@@ -36,6 +36,13 @@ def main() -> None:
     parser.add_argument("--skill", required=True)
     parser.add_argument("--project", type=Path, default=Path.cwd())
     parser.add_argument("--forge-root", type=Path, default=None)
+    parser.add_argument("--invocation-id", default=None)
+    parser.add_argument(
+        "--capture-source",
+        choices=("skill-contract", "host-hook"),
+        default="skill-contract",
+    )
+    parser.add_argument("--hook-host", choices=("codex", "claude-code", "cursor"), default=None)
     args = parser.parse_args()
     payload = read_payload()
 
@@ -50,9 +57,18 @@ def main() -> None:
         raise SystemExit(f"direct result has invalid Unicode: {error}") from None
 
     normalized = args.skill.removeprefix("skill.").replace("_", "-")
+    invocation_id = args.invocation_id or f"direct-{uuid.uuid4().hex}"
+    if not invocation_id.strip() or len(invocation_id) > 128:
+        raise SystemExit("invocation ID must be a non-empty string of at most 128 characters")
+    capture_source = "HOST_HOOK" if args.capture_source == "host-hook" else "SKILL_CONTRACT"
+    hook_status = (
+        "CAPTURED" if capture_source == "HOST_HOOK"
+        else "PENDING" if args.hook_host
+        else "NOT_CONFIGURED"
+    )
     output = {key: value for key, value in payload.items() if key not in TRANSPORT_FIELDS}
     envelope = {
-        "runtime_id": f"codex-direct.{uuid.uuid4().hex}",
+        "runtime_id": f"direct.{invocation_id}",
         "resolved_context": {"selection": {"skill": f"skill.{normalized.replace('-', '_')}"}},
         "stage_progress": {"active_request": {"stage_id": "direct.delivery"}},
     }
@@ -64,6 +80,12 @@ def main() -> None:
             **(payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}),
             "source": "direct_host_skill",
             "skill": normalized,
+        },
+        "collection": {
+            "invocationId": invocation_id,
+            "source": capture_source,
+            "hookHost": args.hook_host,
+            "hookStatus": hook_status,
         },
     }
     database = collect_imported_result(forge_root, envelope, result, project=args.project)

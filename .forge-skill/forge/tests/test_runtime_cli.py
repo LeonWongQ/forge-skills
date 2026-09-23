@@ -33,6 +33,24 @@ def _runtime_for_ask(runtime_id):
     return initialize_runtime(ROOT, manifest, task_statement=f"task {runtime_id}", runtime_id=runtime_id)
 
 
+@pytest.mark.parametrize("registry", [[], None, {"projects": {}}, {"projects": [None]},
+                                     {"projects": [{}]}, {"projects": [{"projectId": "bad", "path": "x"}]}])
+def test_orphan_cleanup_rejects_invalid_registry(tmp_path, registry):
+    data_root = forge_data_root(ROOT)
+    project_id = "project-11111111-1111-1111-1111-111111111111"
+    runtime = data_root / "projects" / project_id / "runtime"
+    runtime.mkdir(parents=True)
+    marker = runtime / "keep.json"
+    marker.write_text("{}", encoding="utf-8")
+    (data_root / "project-registry.json").write_text(json.dumps(registry), encoding="utf-8")
+    with pytest.raises(ValueError):
+        find_orphan_runtime_projects(ROOT)
+    result = CliRunner().invoke(cli, ["--root", str(ROOT), "runtime-clean-orphan",
+                                    "--project-id", project_id, "--yes"])
+    assert result.exit_code != 0
+    assert marker.read_text(encoding="utf-8") == "{}"
+
+
 def test_ask_short_suspend_command_creates_runtime(tmp_path, monkeypatch):
     runner = CliRunner()
     project = tmp_path / "consumer"
@@ -181,6 +199,9 @@ def test_runtime_orphan_commands_list_and_require_explicit_delete(tmp_path, monk
     orphan = forge_data_root(ROOT) / "projects" / "project-11111111-1111-1111-1111-111111111111" / "runtime" / "paused"
     orphan.mkdir(parents=True)
     (orphan / "runtime.json").write_text("{}", encoding="utf-8")
+    learning = orphan.parent.parent / "learning" / "code-review" / "learning.sqlite"
+    learning.parent.mkdir(parents=True)
+    learning.write_bytes(b"learning evidence")
 
     listed = runner.invoke(cli, ["--root", str(ROOT), "--format", "json", "runtime-list-orphans"])
     assert listed.exit_code == 0, listed.output
@@ -193,6 +214,10 @@ def test_runtime_orphan_commands_list_and_require_explicit_delete(tmp_path, monk
     removed = runner.invoke(cli, ["--root", str(ROOT), "--format", "json", "runtime-clean-orphan", "--project-id", project_id, "--yes"])
     assert removed.exit_code == 0, removed.output
     assert not orphan.exists()
+    assert learning.read_bytes() == b"learning evidence"
+    listed_again = runner.invoke(cli, ["--root", str(ROOT), "--format", "json", "runtime-list-orphans"])
+    assert listed_again.exit_code == 0
+    assert json.loads(listed_again.output)["count"] == 0
 
 
 def test_ask_lists_paused_runtime_without_mutating_it(tmp_path, monkeypatch):

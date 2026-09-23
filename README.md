@@ -1,6 +1,6 @@
 # Forge Skills
 
-<!-- forge-facts: skills=32 version=1.2.1 route-regression-count=81 skill-eval-case-count=40 skill-eval-skill-count=32 -->
+<!-- forge-facts: skills=32 version=1.2.1 route-regression-count=81 skill-eval-case-count=48 skill-eval-skill-count=32 -->
 
 Forge Skills is a modular engineering Skill collection for Codex, Claude, and Cursor. It combines focused Skill entrypoints with deterministic routing, reusable engineering guidance, validation tooling, and opt-in LLM behavior evaluation.
 

@@ -8,6 +8,7 @@ Data is partitioned by project ID and Skill. Runtime state must not be
 committed or copied into a project repository.
 
 `runtime.json` is the only tracked machine-local configuration file here. It
-contains the host Python executable and direct-collection timeout; it must not
-contain credentials. Project-owned configuration remains under the project's
-`.forge-skill/learning/` directory.
+contains the host Python executable, direct-collection timeout, and optional
+absolute Hook installation root; it must not contain credentials.
+Project-owned configuration remains under the project's `.forge-skill/learning/`
+directory.

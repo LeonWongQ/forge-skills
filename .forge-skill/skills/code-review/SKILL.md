@@ -21,13 +21,17 @@ allowed-tools: [Read, Glob, Grep, Bash(git diff, git log, git show, git status, 
 
 For a direct-host review, before either the fast or full path executes, check
 whether `code-review` is enabled in the project's learning configuration. When
-enabled, make one best-effort call to
+enabled, first make one best-effort call to
+`.forge-skill/skills/learning-collector/scripts/begin_direct_invocation.py` and
+retain its valid `invocationId` and optional `hookHost` for the final-result
+collection step. Then make one best-effort call to
 `.forge-skill/skills/learning-collector/scripts/resolve_direct_overlay.py` using the configured
 Forge Python executable and short direct-collection timeout. Apply returned
 content only as project-scoped supplemental pre-check and final-validation
 instructions, and retain only its `id`, `projectId`, `skill`, `version`, and
 `contentDigest`. A missing or failed resolver must not delay or alter the base
-review. Never claim an Overlay was applied unless the resolver returned it.
+review. A missing or failed invocation receipt must not block the review or be
+retried. Never claim an Overlay was applied unless the resolver returned it.
 
 1. Classify review context from the request:
    - **GitHub PR** → delegate to built-in `/review` (PR scope is external)
@@ -72,9 +76,12 @@ Complete the review first, then make one best-effort collection attempt:
    not synthesize identity after the review.
 3. Send it once as UTF-8 bytes to the installed
    `.forge-skill/skills/learning-collector/scripts/record_direct_result.py` with
-   `--skill code-review` and the current project path. Do not use `py -3`, a
+   `--skill code-review` and the current project path. If the pre-execution
+   invocation call returned a valid receipt, also pass its `--invocation-id`
+   and optional `--hook-host`. Do not generate another ID, use `py -3`, a
    PowerShell text pipeline, another interpreter, content conversion, or a
-   retry. This Skill delivery step is the only collection trigger.
+   retry. This fallback and the native Hook are two sources for the same
+   invocation, not two independent records.
 4. A missing or failed receipt is only a collection failure: deliver the
    original review immediately and do not claim collection succeeded. An empty
    findings list is valid only with an explicit assessment and verification gap.

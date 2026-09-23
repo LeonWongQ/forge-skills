@@ -33,7 +33,7 @@ def _restore_claim_without_overwrite(claim: Path, path: Path) -> None:
         ) from error
 
 
-def _validated_candidate(root: Path, runtime_directory: Path, candidate: str) -> tuple[Path, dict[str, Any]]:
+def _candidate_path(root: Path, runtime_directory: Path, candidate: str) -> Path:
     directory = runtime_directory.resolve()
     try:
         validate_project_runtime_directory(directory, expected_directory=forge_runtime_directory(root, Path.cwd()))
@@ -46,6 +46,10 @@ def _validated_candidate(root: Path, runtime_directory: Path, candidate: str) ->
     path = (directory / candidate_path.name).resolve()
     if path.parent != directory:
         raise ValueError("runtime path escapes the project runtime directory")
+    return path
+
+
+def _read_validated_candidate(root: Path, path: Path) -> dict[str, Any]:
     document, error = load_json_file_safe(path)
     if error or not isinstance(document, dict):
         raise ValueError("runtime candidate is not a valid JSON object")
@@ -54,12 +58,12 @@ def _validated_candidate(root: Path, runtime_directory: Path, candidate: str) ->
         raise ValueError("runtime candidate failed envelope validation")
     if document["status"] not in RESUMABLE_STATUSES:
         raise ValueError(f"runtime is not resumable: {document['status']}")
-    return path, document
+    return document
 
 
 def consume_paused_runtime(root: Path, runtime_directory: Path, candidate: str) -> dict[str, Any]:
     """Atomically hand off one current-project Runtime and remove its persisted copy."""
-    path, document = _validated_candidate(root, runtime_directory, candidate)
+    path = _candidate_path(root, runtime_directory, candidate)
     claim = path.with_name(f".{path.name}.{uuid.uuid4().hex}.claim")
     try:
         os.replace(path, claim)
@@ -67,6 +71,7 @@ def consume_paused_runtime(root: Path, runtime_directory: Path, candidate: str) 
         raise ValueError("runtime was already consumed or no longer exists") from error
 
     try:
+        document = _read_validated_candidate(root, claim)
         stage_id, stage_index = _current_stage(document)
         payload = {
             "command": "runtime-consume-paused",

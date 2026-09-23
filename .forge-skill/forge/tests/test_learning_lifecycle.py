@@ -5,6 +5,7 @@ import hashlib
 import json
 import sqlite3
 import sys
+from contextlib import closing
 from pathlib import Path
 
 
@@ -72,7 +73,7 @@ def test_learning_lifecycle_closes_from_collection_to_feedback_disable(tmp_path,
     monkeypatch.setattr(review_server, "REGISTRY_PATH", registry_path)
     monkeypatch.setattr(review_server, "LEGACY_REGISTRY_PATH", bundle / "missing-registry.json")
 
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         initial_record_id = connection.execute("SELECT id FROM learning_records").fetchone()[0]
     reviewed = review_server.update_record({
         "projectId": project_id, "recordId": initial_record_id, "action": "ACTIVE",
@@ -141,7 +142,7 @@ def test_learning_lifecycle_closes_from_collection_to_feedback_disable(tmp_path,
             forge_root, project, f"run-feedback-{index}",
             {"conclusion": f"review result {index}"}, applied_overlay,
         ) == database
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         feedback_ids = [row[0] for row in connection.execute(
             "SELECT id FROM learning_records WHERE metadata_json LIKE '%appliedOverlay%' "
             "ORDER BY captured_at, id"
@@ -161,7 +162,7 @@ def test_learning_lifecycle_closes_from_collection_to_feedback_disable(tmp_path,
     assert disabled_event["reviewedCount"] == 11
     assert disabled_event["negativeCount"] == 4
     assert load_active_overlay(forge_root, project, "code-review") is None
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         assert connection.execute(
             "SELECT status FROM skill_overlays WHERE id = ?", (overlay["id"],)
         ).fetchone()[0] == "DISABLED"

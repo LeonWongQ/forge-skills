@@ -7,9 +7,193 @@ import socket
 import sqlite3
 import sys
 import urllib.error
+from contextlib import closing
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
+
+
+@pytest.mark.parametrize("path", ["/", "/api/service", "/api/records", "/api/projects"])
+def test_get_rejects_rebinding_host_before_serving_data(path):
+    handler = object.__new__(review_server.Handler)
+    handler.path = path
+    handler.headers = {"Host": "attacker.example:8765"}
+    handler.server = SimpleNamespace(server_port=8765)
+    responses = []
+    handler.send_json = lambda value, status=200: responses.append((value, status))
+    handler.do_GET()
+    assert responses == [({"error": "invalid service host"}, 403)]
+
+
+def test_get_service_probe_accepts_loopback_host():
+    handler = object.__new__(review_server.Handler)
+    handler.path = "/api/service"
+    handler.headers = {"Host": "127.0.0.1:8765"}
+    handler.server = SimpleNamespace(server_port=8765)
+    responses = []
+    handler.send_json = lambda value, status=200: responses.append((value, status))
+    handler.do_GET()
+    assert responses[0][1] == 200
+    assert responses[0][0]["token"] == review_server.SERVICE_TOKEN
+
+
+@pytest.mark.parametrize("operation", ["overlay", "summary", "record"])
+def test_mutation_guards_hold_write_lock_before_read(tmp_path, monkeypatch, operation):
+    database = tmp_path / "guard.sqlite"
+    connection = connect_database(database)
+    with connection:
+        connection.execute(
+            "INSERT INTO learning_records (id, project_id, project_name, project_path, skill, captured_at, output_json) "
+            "VALUES ('record', 'project-lock', 'project', ?, 'code-review', '2026-09-17T00:00:00Z', '{}')",
+            (str(tmp_path),),
+        )
+        connection.execute(
+            "INSERT INTO learning_summaries (id, project_id, skill, version, created_at, source_count, summary_json) "
+            "VALUES ('summary', 'project-lock', 'code-review', 1, 'now', 0, '{}')"
+        )
+        connection.execute(
+            "INSERT INTO skill_overlays (id, project_id, skill, version, status, content, manifest_json, content_digest, created_at) "
+            "VALUES ('overlay', 'project-lock', 'code-review', 1, 'DRAFT', 'content', '{}', 'digest', 'now')"
+        )
+    connection.close()
+    monkeypatch.setattr(review_server, "projects", lambda: [{
+        "projectId": "project-lock", "name": "project", "path": str(tmp_path), "database": str(database),
+    }])
+    original_connect = review_server.connect_database
+    blocked = []
+
+    def guarded_connect(*args, **kwargs):
+        conn = original_connect(*args, **kwargs)
+
+        def trace(sql):
+            if not sql.lstrip().upper().startswith("SELECT") or blocked:
+                return
+            other = sqlite3.connect(database, timeout=0)
+            try:
+                other.execute("UPDATE learning_records SET review_note = 'concurrent' WHERE id = 'record'")
+                blocked.append(False)
+            except sqlite3.OperationalError as error:
+                blocked.append("locked" in str(error).lower())
+            finally:
+                other.close()
+
+        conn.set_trace_callback(trace)
+        return conn
+
+    monkeypatch.setattr(review_server, "connect_database", guarded_connect)
+    payload = {"projectId": "project-lock", "skill": "code-review"}
+    if operation == "overlay":
+        review_server.delete_overlay({**payload, "overlayId": "overlay"})
+    elif operation == "summary":
+        review_server.delete_summary({**payload, "version": 1})
+    else:
+        review_server.update_record({**payload, "recordId": "record", "action": "EXCLUDED"})
+    assert blocked == [True]
+
+
+def test_summary_extraction_allows_writes_but_rejects_changed_evidence(tmp_path, monkeypatch):
+    database = tmp_path / "summary.sqlite"
+    connection = connect_database(database)
+    with connection:
+        connection.execute(
+            "INSERT INTO learning_records (id, project_id, project_name, project_path, skill, captured_at, output_json, reviewed) "
+            "VALUES ('record', 'project-snapshot', 'project', ?, 'code-review', ?, ?, 1)",
+            (str(tmp_path), review_server.now(), json.dumps({"findings": [{"title": "Check transactions", "suggested_direction": "Verify write locks"}]})),
+        )
+    connection.close()
+    monkeypatch.setattr(review_server, "projects", lambda: [{
+        "projectId": "project-snapshot", "name": "project", "path": str(tmp_path), "database": str(database),
+    }])
+    monkeypatch.setattr(review_server, "_enabled_skills", lambda _: {"code-review"})
+    original_build = review_server.build_summary
+
+    def concurrent_build(records, **kwargs):
+        with closing(sqlite3.connect(database, timeout=0)) as other, other:
+            other.execute("UPDATE learning_records SET review_note = 'changed' WHERE id = 'record'")
+        return original_build(records, **kwargs)
+
+    monkeypatch.setattr(review_server, "build_summary", concurrent_build)
+    with pytest.raises(ValueError, match="source evidence changed"):
+        review_server.create_summary({"projectId": "project-snapshot", "skill": "code-review"})
+    with closing(sqlite3.connect(database)) as check, check:
+        assert check.execute("SELECT COUNT(*) FROM learning_summaries").fetchone()[0] == 0
+
+
+def test_single_database_page_fetches_only_requested_rows(tmp_path, monkeypatch):
+    database = tmp_path / "page.sqlite"
+    connection = connect_database(database)
+    with connection:
+        connection.executemany(
+            "INSERT INTO learning_records (id, project_id, project_name, project_path, skill, captured_at, output_json) "
+            "VALUES (?, 'project-page', 'project', ?, 'code-review', ?, '{}')",
+            [(f"record-{index:03}", str(tmp_path), f"2026-09-17T00:{index:02}:00Z") for index in range(60)],
+        )
+    connection.close()
+    monkeypatch.setattr(review_server, "projects", lambda: [{
+        "projectId": "project-page", "name": "project", "path": str(tmp_path), "database": str(database),
+    }])
+    original_connect = sqlite3.connect
+    queries = []
+
+    def traced_connect(*args, **kwargs):
+        conn = original_connect(*args, **kwargs)
+        conn.set_trace_callback(queries.append)
+        return conn
+
+    monkeypatch.setattr(review_server.sqlite3, "connect", traced_connect)
+    page = review_server.query_record_page({"page": ["3"]})
+    assert page["total"] == 60
+    assert len(page["items"]) == 20
+    assert page["items"][0]["id"] == "record-019"
+    assert any("LIMIT 20 OFFSET 40" in query for query in queries)
+
+
+def test_record_page_uses_stable_ties_and_one_database_read_snapshot(tmp_path, monkeypatch):
+    database = tmp_path / "page.sqlite"
+    connection = connect_database(database)
+    with connection:
+        connection.executemany(
+            "INSERT INTO learning_records (id, project_id, project_name, project_path, skill, captured_at, output_json) "
+            "VALUES (?, 'project-page', 'project', ?, 'code-review', '2026-09-17T00:00:00Z', '{}')",
+            [(f"record-{index:03}", str(tmp_path)) for index in range(25)],
+        )
+    connection.close()
+    monkeypatch.setattr(review_server, "projects", lambda: [{
+        "projectId": "project-page", "name": "project", "path": str(tmp_path), "database": str(database),
+    }])
+    original_connect = sqlite3.connect
+    blocked_writes = []
+
+    def traced_connect(*args, **kwargs):
+        reader = original_connect(*args, **kwargs)
+
+        def trace(statement):
+            if not statement.startswith("SELECT * FROM learning_records"):
+                return
+            writer = original_connect(database, timeout=0)
+            try:
+                writer.execute("INSERT INTO learning_records "
+                               "(id, project_id, project_name, project_path, skill, captured_at) "
+                               "VALUES ('new-record', 'project-page', 'project', ?, 'code-review', '2026-09-18T00:00:00Z')",
+                               (str(tmp_path),))
+                writer.commit()
+                blocked_writes.append(False)
+            except sqlite3.OperationalError as error:
+                blocked_writes.append("locked" in str(error).lower())
+            finally:
+                writer.close()
+
+        reader.set_trace_callback(trace)
+        return reader
+
+    monkeypatch.setattr(review_server.sqlite3, "connect", traced_connect)
+    first = review_server.query_record_page({"page": ["1"]})
+    second = review_server.query_record_page({"page": ["2"]})
+    assert first["total"] == second["total"] == 25
+    assert [item["id"] for item in first["items"]] == [f"record-{index:03}" for index in range(24, 4, -1)]
+    assert [item["id"] for item in second["items"]] == [f"record-{index:03}" for index in range(4, -1, -1)]
+    assert blocked_writes == [True, True]
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -298,7 +482,7 @@ def test_overlay_schema_tracks_sources_and_allows_one_active_overlay(tmp_path):
         connection.close()
 
 
-def test_copied_database_reassigns_and_disables_active_overlays(tmp_path):
+def test_copied_database_resets_active_overlay_to_draft(tmp_path):
     database = tmp_path / "copied.sqlite"
     project = tmp_path / "copied-project"
     project.mkdir()
@@ -324,12 +508,63 @@ def test_copied_database_reassigns_and_disables_active_overlays(tmp_path):
     connection = connect_database(database)
     try:
         overlay = connection.execute(
-            "SELECT project_id, status, enabled_at, disabled_at FROM skill_overlays WHERE id = 'overlay-1'"
+            "SELECT project_id, status, enabled_at, disabled_at, evaluation_json, published_at, manifest_json "
+            "FROM skill_overlays WHERE id = 'overlay-1'"
         ).fetchone()
         assert overlay[0] == "project-new"
-        assert overlay[1] == "DISABLED"
+        assert overlay[1] == "DRAFT"
         assert overlay[2] is None
-        assert overlay[3]
+        assert overlay[3] is None
+        assert overlay[4] is None and overlay[5] is None
+        assert json.loads(overlay[6])["projectId"] == "project-new"
+    finally:
+        connection.close()
+
+
+def test_copied_overlay_sources_are_rebased_and_require_fresh_review(tmp_path):
+    database = tmp_path / "copied.sqlite"
+    project = tmp_path / "copied-project"
+    project.mkdir()
+    connection = connect_database(database)
+    summary = {"format": "forge-skill-training-summary-v5", "projectId": "project-old",
+               "status": "REVIEWED", "rules": [{"id": "rule-1", "status": "CONFIRMED"}]}
+    summary_json = json.dumps(summary)
+    old_digest = "sha256:" + hashlib.sha256(summary_json.encode()).hexdigest()
+    manifest = {"projectId": "project-old", "skill": "code-review", "executionSource": "content",
+                "rules": [{"instruction": "Check the evidence"}]}
+    content = "Check the evidence"
+    digest = "sha256:" + hashlib.sha256(content.encode()).hexdigest()
+    with connection:
+        connection.execute(
+            "INSERT INTO learning_summaries (id, project_id, skill, version, created_at, source_count, summary_json, lifecycle_status) "
+            "VALUES ('summary-1', 'project-old', 'code-review', 1, 'now', 0, ?, 'REVIEWED')",
+            (summary_json,),
+        )
+        connection.execute(
+            "INSERT INTO skill_overlays (id, project_id, skill, version, status, content, manifest_json, "
+            "content_digest, created_at, reviewed_at, enabled_at, evaluation_json, published_at) "
+            "VALUES ('overlay-1', 'project-old', 'code-review', 1, 'ACTIVE', ?, ?, ?, 'now', 'now', 'now', '{}', 'now')",
+            (content, json.dumps(manifest), digest),
+        )
+        connection.execute(
+            "INSERT INTO skill_overlay_sources (overlay_id, summary_id, summary_digest) VALUES ('overlay-1', 'summary-1', ?)",
+            (old_digest,),
+        )
+    connection.close()
+
+    _adopt_copied_database(database, "project-old", {"projectId": "project-new", "name": "copied"}, project)
+
+    connection = connect_database(database)
+    try:
+        row = connection.execute("SELECT * FROM skill_overlays WHERE id = 'overlay-1'").fetchone()
+        checks = review_server._structural_overlay_evaluation(connection, row, "code-review")
+        assert checks["passed"] is True
+        assert row["status"] == "DRAFT"
+        assert row["reviewed_at"] is None and row["evaluation_json"] is None and row["published_at"] is None
+        new_summary = connection.execute("SELECT summary_json FROM learning_summaries WHERE id = 'summary-1'").fetchone()[0]
+        new_digest = connection.execute("SELECT summary_digest FROM skill_overlay_sources").fetchone()[0]
+        assert new_digest != old_digest
+        assert new_digest == "sha256:" + hashlib.sha256(new_summary.encode()).hexdigest()
     finally:
         connection.close()
 
@@ -377,7 +612,7 @@ def test_create_overlay_merges_reviewed_summary_rules_into_draft(tmp_path, monke
     assert created["manifest"]["outputLanguage"] == "zh-CN"
     assert "# 项目 Overlay：code-review" in created["content"]
     assert created["content"].count("检查 API 错误码是否稳定") == 1
-    with sqlite3.connect(database) as check:
+    with closing(sqlite3.connect(database)) as check, check:
         assert check.execute("SELECT status FROM skill_overlays").fetchone()[0] == "DRAFT"
         assert check.execute("SELECT COUNT(*) FROM skill_overlay_sources").fetchone()[0] == 2
     with pytest.raises(ValueError, match="referenced by an Overlay"):
@@ -404,7 +639,7 @@ def test_create_overlay_merges_reviewed_summary_rules_into_draft(tmp_path, monke
         "content": created["content"] + "\n- 人工补充校验。\n",
     })
     assert reviewed_overlay["status"] == "REVIEWED"
-    with sqlite3.connect(database) as check:
+    with closing(sqlite3.connect(database)) as check, check:
         manifest = json.loads(check.execute("SELECT manifest_json FROM skill_overlays").fetchone()[0])
         assert manifest["executionSource"] == "content"
         assert manifest["contentEdited"] is True
@@ -416,7 +651,7 @@ def test_create_overlay_merges_reviewed_summary_rules_into_draft(tmp_path, monke
     })
     assert rejected["status"] == "REJECTED"
     assert rejected["evaluation"]["behavior"]["error"] == "LLM disabled for test"
-    with sqlite3.connect(database) as check:
+    with closing(sqlite3.connect(database)) as check, check:
         assert check.execute("SELECT published_at FROM skill_overlays").fetchone()[0] is None
     monkeypatch.setattr(review_server, "_configured_llm", lambda: ({
         "model": "judge-model", "wireApi": "responses", "timeoutSeconds": 30,
@@ -442,7 +677,7 @@ def test_create_overlay_merges_reviewed_summary_rules_into_draft(tmp_path, monke
     assert published["status"] == "PUBLISHED"
     assert published["evaluation"]["passed"] is True
     assert published["evaluation"]["behavior"]["caseCount"] == 3
-    with sqlite3.connect(database) as check:
+    with closing(sqlite3.connect(database)) as check, check:
         evaluation, published_at = check.execute(
             "SELECT evaluation_json, published_at FROM skill_overlays"
         ).fetchone()
@@ -452,7 +687,7 @@ def test_create_overlay_merges_reviewed_summary_rules_into_draft(tmp_path, monke
         review_server.evaluate_and_publish_overlay({
             "projectId": project_id, "skill": "code-review", "overlayId": created["id"],
         })
-    with sqlite3.connect(database) as check:
+    with closing(sqlite3.connect(database)) as check, check:
         check.execute(
             "INSERT INTO skill_overlays "
             "(id, project_id, skill, version, status, content, manifest_json, content_digest, created_at) "
@@ -464,7 +699,7 @@ def test_create_overlay_merges_reviewed_summary_rules_into_draft(tmp_path, monke
         "projectId": project_id, "skill": "code-review", "overlayId": created["id"],
     })
     assert activated["status"] == "ACTIVE"
-    with sqlite3.connect(database) as check:
+    with closing(sqlite3.connect(database)) as check, check:
         check.execute("DELETE FROM skill_overlays WHERE id = 'overlay-new-baseline'")
     assert review_server.disable_overlay({
         "projectId": project_id, "skill": "code-review", "overlayId": created["id"],
@@ -546,7 +781,7 @@ def test_structural_evaluation_failure_is_persisted_as_rejected(tmp_path, monkey
         "projectId": project_id, "skill": "code-review", "overlayId": created["id"],
         "content": created["content"],
     })
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         connection.execute("UPDATE learning_summaries SET lifecycle_status = 'DRAFT' WHERE id = 'summary-1'")
     monkeypatch.setattr(
         review_server, "_configured_llm",
@@ -559,7 +794,7 @@ def test_structural_evaluation_failure_is_persisted_as_rejected(tmp_path, monkey
 
     assert result["status"] == "REJECTED"
     assert result["evaluation"]["structural"]["passed"] is False
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         stored = json.loads(connection.execute(
             "SELECT evaluation_json FROM skill_overlays WHERE id = ?", (created["id"],)
         ).fetchone()[0])
@@ -687,11 +922,11 @@ def test_overlay_auto_disables_after_more_than_ten_reviews_and_over_thirty_perce
         assert review_server.update_record({
             "projectId": project_id, "recordId": f"record-{index}", "action": action,
         })
-    with sqlite3.connect(database) as check:
+    with closing(sqlite3.connect(database)) as check, check:
         assert check.execute("SELECT status FROM skill_overlays").fetchone()[0] == "ACTIVE"
 
     assert review_server.update_record({"projectId": project_id, "recordId": "record-10", "action": "DELETED"})
-    with sqlite3.connect(database) as check:
+    with closing(sqlite3.connect(database)) as check, check:
         assert check.execute("SELECT status FROM skill_overlays").fetchone()[0] == "ACTIVE"
         assert check.execute("SELECT COUNT(*) FROM learning_records").fetchone()[0] == 11
 
@@ -705,7 +940,7 @@ def test_overlay_auto_disables_after_more_than_ten_reviews_and_over_thirty_perce
     assert disabled["negativeCount"] == 4
     assert disabled["negativeRate"] == 4 / 11
     assert disabled["disabledAt"]
-    with sqlite3.connect(database) as check:
+    with closing(sqlite3.connect(database)) as check, check:
         assert check.execute("SELECT status FROM skill_overlays").fetchone()[0] == "DISABLED"
         assert not any(row[0] in {"overlay_review_feedback", "overlay_auto_disable_events"}
                        for row in check.execute("SELECT name FROM sqlite_master WHERE type = 'table'"))
@@ -933,7 +1168,7 @@ def test_create_and_review_summary_filters_ineligible_records(tmp_path, monkeypa
     })
     assert reviewed["status"] == "REVIEWED"
 
-    with sqlite3.connect(database) as check:
+    with closing(sqlite3.connect(database)) as check, check:
         assert check.execute("SELECT lifecycle_status FROM learning_summaries WHERE version = 1").fetchone()[0] == "REVIEWED"
         assert check.execute("SELECT COUNT(*) FROM learning_summary_sources").fetchone()[0] == 1
 
@@ -950,7 +1185,7 @@ def test_create_and_review_summary_filters_ineligible_records(tmp_path, monkeypa
     assert second["summary"]["window"]["classicRecords"] == 1
     deleted = review_server.delete_summary({"projectId": project_id, "skill": "code-review", "version": 2})
     assert deleted["deleted"] is True
-    with sqlite3.connect(database) as check:
+    with closing(sqlite3.connect(database)) as check, check:
         assert check.execute("SELECT COUNT(*) FROM learning_summaries WHERE version = 2").fetchone()[0] == 0
         assert check.execute(
             "SELECT COUNT(*) FROM learning_summary_sources s "
@@ -1005,9 +1240,9 @@ def test_review_queries_and_updates_across_skill_databases(tmp_path, monkeypatch
     assert review_server.update_record({
         "projectId": project_id, "recordId": "record-debug", "action": "DELETED",
     }) == {"updated": True, "disabledOverlay": None}
-    with sqlite3.connect(databases["code-review"]) as connection:
+    with closing(sqlite3.connect(databases["code-review"])) as connection, connection:
         assert connection.execute("SELECT COUNT(*) FROM learning_records").fetchone()[0] == 1
-    with sqlite3.connect(databases["debug"]) as connection:
+    with closing(sqlite3.connect(databases["debug"])) as connection, connection:
         assert connection.execute("SELECT COUNT(*) FROM learning_records").fetchone()[0] == 0
 
 
@@ -1032,6 +1267,37 @@ class _FakeResponse:
         return chunk
 
 
+@pytest.mark.parametrize("extra", [
+    {}, {"status": "incomplete"}, {"status": "failed"}, {"status": "queued"},
+    {"status": "completed", "error": {"message": "failed"}},
+    {"status": "completed", "incomplete_details": {"reason": "max_output_tokens"}},
+])
+def test_refine_rejects_unfinished_response_without_new_version(tmp_path, monkeypatch, extra):
+    project_id, database, version = _draft_for_refinement(tmp_path, monkeypatch)
+    review_server.save_llm_config({
+        "enabled": True, "endpoint": "https://example.test/v1/responses",
+        "model": "test-model", "wireApi": "responses", "apiKeyEnv": "TEST_KEY",
+    })
+    payload = {"output_text": json.dumps({"rules": []}), **extra}
+    monkeypatch.setattr(review_server.urllib.request, "urlopen",
+                        lambda *_args, **_kwargs: _FakeResponse(json.dumps(payload).encode()))
+    with pytest.raises(ValueError):
+        review_server.refine_summary({"projectId": project_id, "skill": "code-review", "version": version})
+    with closing(sqlite3.connect(database)) as connection, connection:
+        assert connection.execute("SELECT COUNT(*) FROM learning_summaries").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("reason", [None, "length", "content_filter", "tool_calls"])
+def test_chat_rejects_unfinished_response(monkeypatch, reason):
+    payload = {"choices": [{"finish_reason": reason, "message": {"content": "{}"}}]}
+    monkeypatch.setattr(review_server.urllib.request, "urlopen",
+                        lambda *_args, **_kwargs: _FakeResponse(json.dumps(payload).encode()))
+    with pytest.raises(ValueError):
+        review_server._call_llm({"endpoint": "https://example.test/v1/chat/completions",
+                                "model": "test-model", "wireApi": "chat_completions", "timeoutSeconds": 60},
+                               "test-key", "Return JSON", {})
+
+
 class _FakeStreamingResponse:
     def __init__(self, payload: bytes):
         self.stream = io.BytesIO(payload)
@@ -1045,6 +1311,27 @@ class _FakeStreamingResponse:
 
     def readline(self, size=-1):
         return self.stream.readline(size)
+
+
+@pytest.mark.parametrize("extra", [
+    {"status": "incomplete"}, {"status": "failed"},
+    {"status": "completed", "error": {"message": "failed"}},
+])
+def test_completed_stream_event_rejects_failed_response(extra):
+    payload = {"type": "response.completed", "response": {"output_text": "{}", **extra}}
+    stream = _FakeStreamingResponse(("data: " + json.dumps(payload) + "\n\n").encode())
+    with pytest.raises(ValueError):
+        review_server._read_responses_stream(stream, "test-key")
+
+
+def test_chat_rejects_refusal_even_with_stop(monkeypatch):
+    payload = {"choices": [{"finish_reason": "stop", "message": {"content": "{}", "refusal": "Cannot comply"}}]}
+    monkeypatch.setattr(review_server.urllib.request, "urlopen",
+                        lambda *_args, **_kwargs: _FakeResponse(json.dumps(payload).encode()))
+    with pytest.raises(ValueError, match="did not finish successfully"):
+        review_server._call_llm({"endpoint": "https://example.test/v1/chat/completions",
+                                "model": "test-model", "wireApi": "chat_completions", "timeoutSeconds": 60},
+                               "test-key", "Return JSON", {})
 
 
 def _draft_for_refinement(tmp_path, monkeypatch):
@@ -1087,7 +1374,7 @@ def _draft_for_refinement(tmp_path, monkeypatch):
 
 def test_refine_uses_responses_api_and_persists_rule_sources(tmp_path, monkeypatch):
     project_id, database, version = _draft_for_refinement(tmp_path, monkeypatch)
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         source_json = connection.execute(
             "SELECT summary_json FROM learning_summaries WHERE version = ?", (version,)
         ).fetchone()[0]
@@ -1097,7 +1384,7 @@ def test_refine_uses_responses_api_and_persists_rule_sources(tmp_path, monkeypat
         "model": "test-model", "wireApi": "responses", "apiKeyEnv": "TEST_KEY",
     })
     calls = []
-    response_payload = {"output_text": json.dumps({"rules": [{
+    response_payload = {"status": "completed", "output_text": json.dumps({"rules": [{
         "id": "rule-1", "stage": "PRE_CHECK", "type": "workflow",
         "title": "检查事务边界", "instruction": "检查并发写入是否具备事务边界。",
         "rationale": "重复证据", "status": "PENDING", "supportCount": 1,
@@ -1129,7 +1416,7 @@ def test_refine_uses_responses_api_and_persists_rule_sources(tmp_path, monkeypat
     assert refined["summary"]["refinement"]["outputLanguage"] == "en"
     assert refined["summary"]["rules"][0]["confidence"] == "LOW"
     assert refined["summary"]["candidateDecisions"][0]["decision"] == "KEEP"
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         assert connection.execute(
             "SELECT summary_json FROM learning_summaries WHERE version = ?", (version,)
         ).fetchone()[0] == source_json
@@ -1192,17 +1479,75 @@ def test_learning_pages_share_language_asset_and_refinement_contract():
     assert "'/api/disable-overlay'" in overlays_html
     assert "'/api/delete-overlay'" in overlays_html
     assert 'overlayPageTitle' in i18n_javascript
+    assert 'id="hook-config"' in review_html
+    assert "fetch('/api/hook-status')" in review_html
+    assert "'/api/hook-config'" in review_html
+    assert 'name="hook-host"' in review_html
+    assert 'hookConfiguration' in i18n_javascript
+    assert 'id="latest-record-evidence"' in review_html
+    assert "record.hook_captured_at?'hookCaptured'" in review_html
+    assert "status.lastEvent?.outcome" in review_html
+    assert 'hookNoInvocation' in i18n_javascript
+    assert 'Select a project to inspect and configure its Hook.' not in i18n_javascript
+    assert 'Remove project Hook' not in i18n_javascript
+
+
+def test_hook_status_is_global(monkeypatch):
+    observed = {}
+
+    def status(forge_root):
+        observed["forgeRoot"] = forge_root
+        return {"selectedHost": "codex", "hosts": {}}
+
+    monkeypatch.setattr(review_server, "global_hook_status", status)
+
+    result = review_server.hook_status()
+
+    assert result["selectedHost"] == "codex"
+    assert observed == {"forgeRoot": review_server.FORGE_ROOT}
+
+
+def test_global_hook_configuration_validates_host_and_supports_removal(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        review_server,
+        "configure_global_hook",
+        lambda forge_root, host: calls.append(("configure", forge_root, host))
+        or {"selectedHost": host, "state": "CONFIGURED"},
+    )
+    monkeypatch.setattr(
+        review_server,
+        "remove_global_hook",
+        lambda forge_root: calls.append(("remove", forge_root))
+        or {"selectedHost": None, "state": "NOT_CONFIGURED"},
+    )
+
+    configured = review_server.update_global_hook({
+        "action": "CONFIGURE", "host": "claude-code",
+    })
+    removed = review_server.update_global_hook({"action": "REMOVE"})
+
+    assert configured["selectedHost"] == "claude-code"
+    assert removed["selectedHost"] is None
+    assert calls == [
+        ("configure", review_server.FORGE_ROOT, "claude-code"),
+        ("remove", review_server.FORGE_ROOT),
+    ]
+    with pytest.raises(ValueError, match="host must be"):
+        review_server.update_global_hook({
+            "action": "CONFIGURE", "host": "unknown",
+        })
 
 
 def test_refine_rejects_source_changed_while_llm_is_running(tmp_path, monkeypatch):
     project_id, database, version = _draft_for_refinement(tmp_path, monkeypatch)
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         candidate_id = json.loads(connection.execute("SELECT summary_json FROM learning_summaries WHERE version = ?", (version,)).fetchone()[0])["rules"][0]["id"]
     review_server.save_llm_config({
         "enabled": True, "endpoint": "https://example.test/v1/responses",
         "model": "test-model", "wireApi": "responses", "apiKeyEnv": "TEST_KEY",
     })
-    response_payload = {"output_text": json.dumps({"rules": [{
+    response_payload = {"status": "completed", "output_text": json.dumps({"rules": [{
         "id": "rule-1", "stage": "PRE_CHECK", "type": "workflow", "title": "事务边界",
         "rationale": "重复证据", "confidence": "High", "status": "PENDING",
         "instruction": "检查事务边界。", "sourceRecordIds": ["record-1"],
@@ -1211,7 +1556,7 @@ def test_refine_rejects_source_changed_while_llm_is_running(tmp_path, monkeypatc
     }]})}
 
     def change_source_then_respond(*_args, **_kwargs):
-        with sqlite3.connect(database) as connection:
+        with closing(sqlite3.connect(database)) as connection, connection:
             connection.execute(
                 "UPDATE learning_summaries SET lifecycle_status = 'ARCHIVED' WHERE version = ?", (version,)
             )
@@ -1220,7 +1565,7 @@ def test_refine_rejects_source_changed_while_llm_is_running(tmp_path, monkeypatc
     monkeypatch.setattr(review_server.urllib.request, "urlopen", change_source_then_respond)
     with pytest.raises(ValueError, match="source summary changed"):
         review_server.refine_summary({"projectId": project_id, "skill": "code-review", "version": version})
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         assert connection.execute("SELECT COUNT(*) FROM learning_summaries").fetchone()[0] == 1
         assert connection.execute(
             "SELECT lifecycle_status FROM learning_summaries WHERE version = ?", (version,)
@@ -1233,7 +1578,7 @@ def test_refine_rejects_incomplete_rule_metadata(tmp_path, monkeypatch):
         "enabled": True, "endpoint": "https://example.test/v1/responses",
         "model": "test-model", "wireApi": "responses", "apiKeyEnv": "TEST_KEY",
     })
-    response_payload = {"output_text": json.dumps({"rules": [{
+    response_payload = {"status": "completed", "output_text": json.dumps({"rules": [{
         "id": "rule-1", "stage": "PRE_CHECK", "status": "PENDING",
         "instruction": "检查事务边界。", "sourceRecordIds": ["record-1"],
     }]})}
@@ -1252,7 +1597,7 @@ def test_refine_can_discard_all_non_reusable_candidates(tmp_path, monkeypatch):
         "enabled": True, "baseUrl": "https://example.test/v1",
         "model": "test-model", "wireApi": "responses", "apiKeyEnv": "TEST_KEY",
     })
-    response_payload = {"output_text": json.dumps({"rules": []})}
+    response_payload = {"status": "completed", "output_text": json.dumps({"rules": []})}
     monkeypatch.setattr(
         review_server.urllib.request, "urlopen",
         lambda *_args, **_kwargs: _FakeResponse(json.dumps(response_payload).encode("utf-8")),
@@ -1263,7 +1608,7 @@ def test_refine_can_discard_all_non_reusable_candidates(tmp_path, monkeypatch):
     })
 
     assert refined["summary"]["rules"] == []
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         assert connection.execute("SELECT COUNT(*) FROM learning_summaries").fetchone()[0] == 2
 
 
@@ -1294,7 +1639,7 @@ def test_refine_discarded_candidate_never_reaches_synthesis(tmp_path, monkeypatc
     assert refined["summary"]["candidateDecisions"][0]["sourceRecordIds"] == ["record-1"]
     assert len(review_server.summary_evidence({"project": [project_id], "skill": ["code-review"],
                                                 "version": [str(version + 1)]})["records"]) == 1
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         assert connection.execute("SELECT COUNT(*) FROM learning_summary_rule_sources").fetchone()[0] == 0
 
 
@@ -1333,7 +1678,7 @@ def test_overlay_preserves_refined_trigger_and_verification():
 
 def test_refinement_reads_effective_reviewed_evidence_and_rejects_overlong_record(tmp_path):
     database = tmp_path / "evidence.sqlite"
-    with connect_database(database) as connection:
+    with closing(connect_database(database)) as connection, connection:
         connection.execute("INSERT INTO learning_summaries (id,project_id,skill,version,created_at,source_count,summary_json,lifecycle_status) VALUES ('summary','project','plan',1,'now',1,'{}','DRAFT')")
         connection.execute("INSERT INTO learning_records (id,project_id,project_name,project_path,skill,run_id,captured_at,output_json,edited_content,review_note) VALUES ('record','project','project','/project','plan','run-1','now','\"old\"','\"edited\"','approved')")
         connection.execute("INSERT INTO learning_summary_sources (summary_id,record_id) VALUES ('summary','record')")
@@ -1353,7 +1698,7 @@ def test_refine_rejects_damaged_unicode_text(tmp_path, monkeypatch):
         "enabled": True, "baseUrl": "https://example.test/v1",
         "model": "test-model", "wireApi": "responses", "apiKeyEnv": "TEST_KEY",
     })
-    response_payload = {"output_text": json.dumps({"rules": [{
+    response_payload = {"status": "completed", "output_text": json.dumps({"rules": [{
         "id": "rule-1", "stage": "PRE_CHECK", "type": "workflow",
         "title": "damaged \ufffd text", "rationale": "evidence", "confidence": "LOW",
         "status": "PENDING", "instruction": "check input", "sourceRecordIds": ["record-1"],
@@ -1367,19 +1712,19 @@ def test_refine_rejects_damaged_unicode_text(tmp_path, monkeypatch):
         review_server.refine_summary({
             "projectId": project_id, "skill": "code-review", "version": version,
         })
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         assert connection.execute("SELECT COUNT(*) FROM learning_summaries").fetchone()[0] == 1
 
 
 def test_refine_uses_chat_completions_and_rejects_empty_sources(tmp_path, monkeypatch):
     project_id, database, version = _draft_for_refinement(tmp_path, monkeypatch)
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         candidate_id = json.loads(connection.execute("SELECT summary_json FROM learning_summaries WHERE version = ?", (version,)).fetchone()[0])["rules"][0]["id"]
     review_server.save_llm_config({
         "enabled": True, "endpoint": "https://example.test/v1/chat/completions",
         "model": "test-model", "wireApi": "chat_completions", "apiKeyEnv": "TEST_KEY",
     })
-    payload = {"choices": [{"message": {"content": json.dumps({"rules": [{
+    payload = {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({"rules": [{
         "id": "rule-1", "stage": "PRE_CHECK", "type": "workflow", "title": "事务边界",
         "rationale": "重复证据", "confidence": "High", "status": "PENDING",
         "instruction": "检查事务边界。", "sourceRecordIds": [],
@@ -1808,6 +2153,41 @@ def test_record_page_opens_each_database_once_for_rows_and_count(tmp_path, monke
     assert connection_count == len(project_items)
     for item in project_items:
         Path(item["database"]).rename(Path(item["database"]).with_suffix(".closed"))
+
+
+def test_record_page_migrates_old_database_before_searching_host_output(tmp_path, monkeypatch):
+    project = tmp_path / "old-project"
+    project.mkdir()
+    database = tmp_path / "old-learning.sqlite"
+    connection = sqlite3.connect(database)
+    connection.execute(
+        """CREATE TABLE learning_records (
+           id TEXT PRIMARY KEY, project_id TEXT, project_name TEXT, project_path TEXT,
+           skill TEXT, run_id TEXT, stage TEXT, run_status TEXT, captured_at TEXT,
+           output_json TEXT, diagnostics_json TEXT, metadata_json TEXT, evaluation_json TEXT,
+           review_status TEXT, reviewed INTEGER, edited_content TEXT, review_note TEXT,
+           reviewed_at TEXT, deleted_at TEXT)"""
+    )
+    connection.execute(
+        """INSERT INTO learning_records
+           (id, project_id, project_name, project_path, skill, captured_at, output_json,
+            review_status, reviewed, review_note)
+           VALUES ('old', 'project-old', 'old', ?, 'code-review',
+                   '2026-09-15T00:00:00Z', '{"conclusion":"legacy"}', 'ACTIVE', 0, '')""",
+        (str(project),),
+    )
+    connection.commit()
+    connection.close()
+    projects = [{
+        "projectId": "project-old", "name": "old", "path": str(project),
+        "database": str(database), "status": "ACTIVE",
+    }]
+    monkeypatch.setattr(review_server, "projects", lambda: projects)
+
+    page = review_server.query_record_page({"page": ["1"], "q": ["legacy"]})
+
+    assert page["total"] == 1
+    assert page["items"][0]["host_output"] is None
 
 
 def test_project_health_transition_is_persisted_only_when_changed(tmp_path, monkeypatch):

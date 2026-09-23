@@ -5,6 +5,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
 
 from forge_cli.claude_code_adapter import build_claude_code_host_request
@@ -136,11 +137,11 @@ def test_unpublished_or_failed_overlay_is_not_loaded(tmp_path, monkeypatch):
     database = _overlay_database(tmp_path, project_id)
     _registry(tmp_path, project, project_id, database)
 
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         connection.execute("UPDATE skill_overlays SET published_at = NULL WHERE id = 'overlay-test'")
     assert load_active_overlay(ROOT, project, "code-review") is None
 
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         connection.execute(
             "UPDATE skill_overlays SET published_at = '2026-09-14T00:01:00Z', "
             "evaluation_json = ? WHERE id = 'overlay-test'",
@@ -162,7 +163,7 @@ def test_overlay_evaluated_against_stale_skill_is_not_loaded(tmp_path, monkeypat
     database = _overlay_database(tmp_path, project_id)
     _registry(tmp_path, project, project_id, database)
 
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         evaluation = json.loads(connection.execute(
             "SELECT evaluation_json FROM skill_overlays WHERE id = 'overlay-test'"
         ).fetchone()[0])
@@ -173,6 +174,28 @@ def test_overlay_evaluated_against_stale_skill_is_not_loaded(tmp_path, monkeypat
         )
 
     assert load_active_overlay(ROOT, project, "code-review") is None
+
+
+def test_overlay_evaluated_against_stale_corpus_is_not_loaded(tmp_path, monkeypatch):
+    monkeypatch.setenv("FORGE_DATA_ROOT", str(tmp_path / "forge-data"))
+    project = _project(tmp_path)
+    project_id = "project-11111111-1111-1111-1111-111111111111"
+    database = _overlay_database(tmp_path, project_id)
+    _registry(tmp_path, project, project_id, database)
+    assert load_active_overlay(ROOT, project, "code-review") is not None
+
+    with closing(sqlite3.connect(database)) as connection, connection:
+        evaluation = json.loads(connection.execute(
+            "SELECT evaluation_json FROM skill_overlays WHERE id = 'overlay-test'"
+        ).fetchone()[0])
+        evaluation["behavior"]["corpusDigest"] = "sha256:" + "0" * 64
+        connection.execute("UPDATE skill_overlays SET evaluation_json = ? WHERE id = 'overlay-test'",
+                           (json.dumps(evaluation),))
+    assert load_active_overlay(ROOT, project, "code-review") is None
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.row_factory = sqlite3.Row
+        active = connection.execute("SELECT * FROM skill_overlays WHERE id = 'overlay-test'").fetchone()
+        assert review_server._usable_active_baseline(active, "code-review") is False
 
 
 def test_overlay_evaluation_uses_global_skill_when_active_baseline_is_stale(tmp_path, monkeypatch):
@@ -267,7 +290,7 @@ def test_collection_keeps_overlay_provenance_without_copying_content(tmp_path, m
         }},
     }
     collect_imported_result(ROOT, envelope, {"status": "succeeded", "output": {"ok": True}, "metadata": {}}, project=project)
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         metadata = json.loads(connection.execute("SELECT metadata_json FROM learning_records").fetchone()[0])
     assert metadata["appliedOverlay"]["id"] == "overlay-test"
     assert "content" not in metadata["appliedOverlay"]

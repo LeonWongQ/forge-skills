@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hook Doctor"
+  short_description: "Diagnose Forge Hooks across supported coding hosts"
+  default_prompt: "Use $hook-doctor to inspect and verify my Forge learning Hook."

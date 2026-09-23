@@ -280,11 +280,22 @@ missing, invalid, or fails, continue with the original Skill unchanged. Never
 claim that an Overlay was applied unless it was successfully returned.
 
 When a Forge Skill is executed directly by the host rather than through Forge
-Runtime, perform one best-effort post-delivery collection attempt. First check
-the current project's `.forge-skill/learning/config.json`; if `enabledSkills`
-contains the active Skill name, send one compact JSON object to the installed
+Runtime, first check the current project's `.forge-skill/learning/config.json`.
+If `enabledSkills` contains the active Skill name, make one best-effort call to
+the installed `learning-collector/scripts/begin_direct_invocation.py` with
+`--skill <active-skill>` and `--project <project-root>` before Skill execution.
+Retain the returned `invocationId` and `hookHost` for this execution. A missing,
+failed, or invalid begin receipt must not block the Skill; in that case continue
+without retained correlation data.
+
+After the final result is complete, perform one best-effort fallback collection
+attempt. Send one compact JSON object to
 `learning-collector/scripts/record_direct_result.py` on stdin with `--skill
-<active-skill>` and `--project <project-root>`.
+<active-skill>` and `--project <project-root>`. When begin returned a valid
+receipt, also pass `--invocation-id <retained-invocationId>` and, when present,
+`--hook-host <retained-hookHost>`. Never create a second invocation ID after a
+successful begin call. The native Hook and Skill fallback use this shared ID so
+they can produce at most one record.
 
 Include one complete user-visible final result: its overall conclusion,
 independent findings or decisions, supporting evidence references, verification
@@ -308,8 +319,10 @@ best-effort: after either success or the single failed attempt, immediately
 deliver the original Skill result. Do not collect when the Skill is absent from
 the project allowlist.
 
-This attempt must happen after the final result is complete and exactly once.
-A missing or failed receipt must never delay delivery or be reported as success.
+The begin call and fallback call may each happen at most once. Use the same
+configured interpreter, UTF-8 byte transport where stdin is used, and short
+timeout for both. A missing or failed receipt must never delay delivery, trigger
+a retry or interpreter switch, or be reported as success.
 
 In this repository, “Skill learning” and “Skill training” are equivalent terms
 for improving a Skill's external instructions, workflow rules, output contract,

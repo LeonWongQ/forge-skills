@@ -1,11 +1,14 @@
 """Opt-in SQLite collector for configured Forge Skills."""
 from __future__ import annotations
 
+import hashlib
+import errno
 import json
 import os
 import shutil
 import sqlite3
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -16,30 +19,51 @@ from .data_paths import forge_data_root, skill_data_root
 
 COLLECTOR_SKILL = "learning-collector"
 DATABASE_NAME = "learning.sqlite"
-DATABASE_SCHEMA_VERSION = 7
+DATABASE_SCHEMA_VERSION = 9
+CAPTURE_SOURCES = {"RUNTIME", "SKILL_CONTRACT", "HOST_HOOK"}
+HOOK_STATUSES = {"NOT_EXPECTED", "NOT_CONFIGURED", "PENDING", "CAPTURED", "MISSED"}
 _REGISTRY_LOCK = threading.Lock()
 
 
 @contextmanager
-def _registry_file_lock(path: Path):
+def _registry_file_lock(path: Path, *, timeout: float | None = None):
+    if timeout is not None and timeout < 0:
+        raise ValueError("lock timeout must be non-negative")
     lock_path = path.with_suffix(path.suffix + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     handle = lock_path.open("a+b")
+    locked = False
     try:
-        if os.name == "nt":
-            import msvcrt
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        deadline = time.monotonic() + timeout if timeout is not None else None
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    handle.seek(0)
+                    mode = msvcrt.LK_LOCK if deadline is None else msvcrt.LK_NBLCK
+                    msvcrt.locking(handle.fileno(), mode, 1)
+                else:
+                    import fcntl
+                    mode = fcntl.LOCK_EX if deadline is None else fcntl.LOCK_EX | fcntl.LOCK_NB
+                    fcntl.flock(handle.fileno(), mode)
+                locked = True
+                break
+            except OSError as error:
+                if deadline is None or error.errno not in {
+                    errno.EACCES, errno.EAGAIN, errno.EDEADLK,
+                }:
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(f"timed out acquiring file lock: {lock_path}") from error
+                time.sleep(min(0.01, remaining))
         yield
     finally:
         try:
-            if os.name == "nt":
+            if locked and os.name == "nt":
                 handle.seek(0)
                 msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
+            elif locked:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         finally:
             handle.close()
@@ -127,6 +151,16 @@ def connect_database(path: Path, *, timeout: float = 2) -> sqlite3.Connection:
         if needs_initialization and str(journal_mode).lower() != "truncate":
             connection.execute("PRAGMA journal_mode=TRUNCATE")
         current_schema = connection.execute("PRAGMA user_version").fetchone()[0]
+        records_exist = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'learning_records'"
+        ).fetchone() is not None
+        record_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(learning_records)")
+        }
+        records_need_migration = records_exist and not {
+            "invocation_id", "capture_source", "hook_host", "hook_status",
+            "fallback_captured", "hook_captured_at", "host_output_json",
+        }.issubset(record_columns)
         summaries_exist = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'learning_summaries'"
         ).fetchone() is not None
@@ -140,7 +174,9 @@ def connect_database(path: Path, *, timeout: float = 2) -> sqlite3.Connection:
         overlays_need_migration = not overlays_exist
         overlay_columns = {row[1] for row in connection.execute("PRAGMA table_info(skill_overlays)")}
         overlay_columns_need_migration = overlays_exist and not {"evaluation_json", "published_at"}.issubset(overlay_columns)
-        if current_schema < DATABASE_SCHEMA_VERSION or summaries_need_migration or overlays_need_migration or overlay_columns_need_migration:
+        if (current_schema < DATABASE_SCHEMA_VERSION or records_need_migration
+                or summaries_need_migration or overlays_need_migration
+                or overlay_columns_need_migration):
             with connection:
                 connection.execute(
                 """
@@ -159,6 +195,15 @@ def connect_database(path: Path, *, timeout: float = 2) -> sqlite3.Connection:
                     metadata_json TEXT,
                     evaluation_json TEXT,
                     collection_key TEXT,
+                    invocation_id TEXT,
+                    capture_source TEXT NOT NULL DEFAULT 'RUNTIME'
+                        CHECK (capture_source IN ('RUNTIME', 'SKILL_CONTRACT', 'HOST_HOOK')),
+                    hook_host TEXT,
+                    hook_status TEXT NOT NULL DEFAULT 'NOT_EXPECTED'
+                        CHECK (hook_status IN ('NOT_EXPECTED', 'NOT_CONFIGURED', 'PENDING', 'CAPTURED', 'MISSED')),
+                    fallback_captured INTEGER NOT NULL DEFAULT 0 CHECK (fallback_captured IN (0, 1)),
+                    hook_captured_at TEXT,
+                    host_output_json TEXT,
                     review_status TEXT NOT NULL DEFAULT 'ACTIVE'
                         CHECK (review_status IN ('ACTIVE', 'EXCLUDED', 'DELETED')),
                     reviewed INTEGER NOT NULL DEFAULT 0 CHECK (reviewed IN (0, 1)),
@@ -177,6 +222,26 @@ def connect_database(path: Path, *, timeout: float = 2) -> sqlite3.Connection:
                 }
                 if "collection_key" not in columns:
                     connection.execute("ALTER TABLE learning_records ADD COLUMN collection_key TEXT")
+                if "invocation_id" not in columns:
+                    connection.execute("ALTER TABLE learning_records ADD COLUMN invocation_id TEXT")
+                if "capture_source" not in columns:
+                    connection.execute(
+                        "ALTER TABLE learning_records ADD COLUMN capture_source TEXT NOT NULL DEFAULT 'RUNTIME'"
+                    )
+                if "hook_host" not in columns:
+                    connection.execute("ALTER TABLE learning_records ADD COLUMN hook_host TEXT")
+                if "hook_status" not in columns:
+                    connection.execute(
+                        "ALTER TABLE learning_records ADD COLUMN hook_status TEXT NOT NULL DEFAULT 'NOT_EXPECTED'"
+                    )
+                if "fallback_captured" not in columns:
+                    connection.execute(
+                        "ALTER TABLE learning_records ADD COLUMN fallback_captured INTEGER NOT NULL DEFAULT 0"
+                    )
+                if "hook_captured_at" not in columns:
+                    connection.execute("ALTER TABLE learning_records ADD COLUMN hook_captured_at TEXT")
+                if "host_output_json" not in columns:
+                    connection.execute("ALTER TABLE learning_records ADD COLUMN host_output_json TEXT")
                 if "is_classic" not in columns:
                     connection.execute("ALTER TABLE learning_records ADD COLUMN is_classic INTEGER NOT NULL DEFAULT 0")
                 if "classic_reason" not in columns:
@@ -198,6 +263,19 @@ def connect_database(path: Path, *, timeout: float = 2) -> sqlite3.Connection:
                 connection.execute(
                     "CREATE UNIQUE INDEX IF NOT EXISTS idx_learning_collection_key "
                     "ON learning_records(collection_key) WHERE collection_key IS NOT NULL"
+                )
+                # Version 7 collection keys already guarantee these rows are
+                # unique. Older rows stay unkeyed rather than risking an
+                # incorrect historical merge during migration.
+                connection.execute(
+                    "UPDATE learning_records SET invocation_id = run_id "
+                    "WHERE invocation_id IS NULL AND collection_key IS NOT NULL "
+                    "AND run_id IS NOT NULL AND trim(run_id) <> ''"
+                )
+                connection.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_learning_invocation "
+                    "ON learning_records(project_id, skill, invocation_id) "
+                    "WHERE invocation_id IS NOT NULL"
                 )
                 connection.execute(
                     """
@@ -363,6 +441,37 @@ def has_meaningful_content(value: Any) -> bool:
     return True
 
 
+def _capture_context(envelope: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the identity shared by contract and host-hook collection."""
+    raw = result.get("collection")
+    collection = raw if isinstance(raw, dict) else {}
+    run_id = envelope.get("runtime_id")
+    invocation_id = collection.get("invocationId", run_id)
+    if invocation_id is not None:
+        if not isinstance(invocation_id, str) or not invocation_id.strip() or len(invocation_id) > 128:
+            raise ValueError("collection invocationId must be a non-empty string of at most 128 characters")
+        invocation_id = invocation_id.strip()
+    source = collection.get("source", "RUNTIME")
+    if source not in CAPTURE_SOURCES:
+        raise ValueError(f"unsupported collection source: {source}")
+    hook_host = collection.get("hookHost")
+    if hook_host is not None and (not isinstance(hook_host, str) or not hook_host.strip()):
+        raise ValueError("collection hookHost must be a non-empty string when provided")
+    hook_status = collection.get("hookStatus")
+    if hook_status is None:
+        hook_status = "CAPTURED" if source == "HOST_HOOK" else "NOT_EXPECTED"
+    if hook_status not in HOOK_STATUSES:
+        raise ValueError(f"unsupported collection hookStatus: {hook_status}")
+    if source == "HOST_HOOK" and hook_status != "CAPTURED":
+        raise ValueError("HOST_HOOK collection must use CAPTURED hookStatus")
+    return {
+        "invocation_id": invocation_id,
+        "source": source,
+        "hook_host": hook_host.strip() if isinstance(hook_host, str) else None,
+        "hook_status": hook_status,
+    }
+
+
 def validate_no_lone_surrogates(value: Any, path: str = "$") -> None:
     """Reject invalid Unicode while allowing well-formed escaped pairs."""
     if isinstance(value, str):
@@ -410,6 +519,7 @@ def _adopt_copied_database(database: Path, previous_id: str, identity: dict[str,
             rows = connection.execute(
                 "SELECT id, summary_json FROM learning_summaries WHERE project_id = ?", (previous_id,)
             ).fetchall()
+            summary_digests = {}
             for row in rows:
                 try:
                     summary = json.loads(row["summary_json"])
@@ -425,6 +535,7 @@ def _adopt_copied_database(database: Path, previous_id: str, identity: dict[str,
                     "UPDATE learning_summaries SET project_id = ?, summary_json = ? WHERE id = ?",
                     (identity["projectId"], encoded, row["id"]),
                 )
+                summary_digests[row["id"]] = "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
             # A copied project inherits reviewed candidates, but activating a
             # training version always requires a new explicit human action.
             connection.execute(
@@ -433,18 +544,28 @@ def _adopt_copied_database(database: Path, previous_id: str, identity: dict[str,
                 "WHERE project_id = ?",
                 (identity["projectId"],),
             )
-            # A copied project must not inherit an active runtime correction.
-            # Keep the snapshot and its source links for auditability, but make
-            # it explicitly require review and activation in the new project.
-            connection.execute(
-                """UPDATE skill_overlays
-                   SET project_id = ?,
-                       status = CASE WHEN status = 'ACTIVE' THEN 'DISABLED' ELSE status END,
-                       enabled_at = CASE WHEN status = 'ACTIVE' THEN NULL ELSE enabled_at END,
-                       disabled_at = CASE WHEN status = 'ACTIVE' THEN ? ELSE disabled_at END
-                   WHERE project_id = ?""",
-                (identity["projectId"], _now(), previous_id),
+            connection.executemany(
+                "UPDATE skill_overlay_sources SET summary_digest = ? WHERE summary_id = ?",
+                ((digest, summary_id) for summary_id, digest in summary_digests.items()),
             )
+            # Copies retain their candidate content, never an approval or an
+            # evaluation made for the original project's scope.
+            for row in connection.execute(
+                "SELECT id, manifest_json FROM skill_overlays WHERE project_id = ?", (previous_id,)
+            ).fetchall():
+                try:
+                    manifest = json.loads(row["manifest_json"])
+                    if not isinstance(manifest, dict):
+                        raise ValueError("overlay manifest must be an object")
+                    manifest["projectId"] = identity["projectId"]
+                except (TypeError, ValueError, json.JSONDecodeError) as error:
+                    raise ValueError(f"cannot clone overlay {row['id']}: invalid manifest") from error
+                connection.execute(
+                    """UPDATE skill_overlays SET project_id = ?, manifest_json = ?, status = 'DRAFT',
+                       reviewed_at = NULL, enabled_at = NULL, disabled_at = NULL,
+                       evaluation_json = NULL, published_at = NULL WHERE id = ?""",
+                    (identity["projectId"], json.dumps(manifest, ensure_ascii=False, separators=(",", ":")), row["id"]),
+                )
     finally:
         connection.close()
 
@@ -607,8 +728,11 @@ def collect_imported_result(
     skill = str(selection.get("skill") or "").removeprefix("skill.").replace("_", "-")
     output = result.get("output", result.get("document", result.get("content")))
     diagnostics = result.get("diagnostics")
+    capture = _capture_context(envelope, result)
     has_output = has_meaningful_content(output)
     has_diagnostics = has_meaningful_content(diagnostics)
+    if capture["source"] == "HOST_HOOK" and not has_output:
+        return None
     if not has_output and not has_diagnostics:
         return None
     enabled = _load_enabled_skills(forge_root, project)
@@ -634,7 +758,8 @@ def collect_imported_result(
     active = envelope.get("stage_progress", {}).get("active_request", {}) or {}
     pid = identity["projectId"]
     run_id = envelope.get("runtime_id")
-    collection_key = f"{pid}:{skill}:{run_id}" if isinstance(run_id, str) and run_id else None
+    invocation_id = capture["invocation_id"]
+    collection_key = f"{pid}:{skill}:{invocation_id}" if invocation_id else None
     metadata = result.get("metadata")
     overlay = envelope.get("runtime_state", {}).get("project_overlay")
     if isinstance(overlay, dict):
@@ -651,23 +776,79 @@ def collect_imported_result(
     connection = connect_database(database)
     try:
         with connection:
-            connection.execute(
-            """
-            INSERT INTO learning_records (
-                id, project_id, project_name, project_path, skill, run_id, stage,
-                run_status, captured_at, output_json, diagnostics_json,
-                metadata_json, evaluation_json, collection_key
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(collection_key) WHERE collection_key IS NOT NULL DO NOTHING
-            """,
-                (
-                    record_id, pid, project.name, str(project), skill,
-                    run_id, active.get("stage_id"), result.get("status"),
-                    timestamp, _json(output) if has_output else None,
-                    _json(diagnostics) if has_diagnostics else None,
-                    _json(metadata), None, collection_key,
-                ),
-            )
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT id, capture_source, reviewed FROM learning_records "
+                "WHERE project_id = ? AND skill = ? AND invocation_id = ?",
+                (pid, skill, invocation_id),
+            ).fetchone() if invocation_id else None
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO learning_records (
+                        id, project_id, project_name, project_path, skill, run_id, stage,
+                        run_status, captured_at, output_json, diagnostics_json,
+                        metadata_json, evaluation_json, collection_key, invocation_id,
+                        capture_source, hook_host, hook_status, fallback_captured,
+                        hook_captured_at, host_output_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record_id, pid, project.name, str(project), skill,
+                        run_id, active.get("stage_id"), result.get("status"),
+                        timestamp, _json(output) if has_output else None,
+                        _json(diagnostics) if has_diagnostics else None,
+                        _json(metadata), None, collection_key, invocation_id,
+                        capture["source"], capture["hook_host"], capture["hook_status"],
+                        1 if capture["source"] == "SKILL_CONTRACT" else 0,
+                        timestamp if capture["source"] == "HOST_HOOK" else None,
+                        _json(output) if capture["source"] == "HOST_HOOK" else None,
+                    ),
+                )
+            elif (capture["source"] == "HOST_HOOK"
+                    and existing["capture_source"] != "HOST_HOOK"
+                    and existing["reviewed"] == 0):
+                # Preserve the Skill's structured result as the canonical
+                # training input. The host-rendered response is complementary
+                # evidence and must not erase structure or Overlay provenance.
+                connection.execute(
+                    """
+                    UPDATE learning_records
+                    SET host_output_json = ?,
+                        hook_host = ?,
+                        hook_status = 'CAPTURED', hook_captured_at = ?,
+                        fallback_captured = CASE
+                            WHEN capture_source = 'SKILL_CONTRACT' THEN 1
+                            ELSE fallback_captured
+                        END
+                    WHERE id = ?
+                    """,
+                    (
+                        _json(output),
+                        capture["hook_host"], timestamp, existing["id"],
+                    ),
+                )
+            elif (capture["source"] == "SKILL_CONTRACT"
+                    and existing["capture_source"] == "HOST_HOOK"
+                    and existing["reviewed"] == 0):
+                # Arrival order must not change the canonical training input.
+                # Replace the provisional host rendering with the Skill's
+                # structured result while retaining the Hook evidence fields.
+                connection.execute(
+                    """
+                    UPDATE learning_records
+                    SET run_id = ?, stage = ?, run_status = ?,
+                        output_json = ?, diagnostics_json = ?, metadata_json = ?,
+                        capture_source = 'SKILL_CONTRACT', fallback_captured = 1
+                    WHERE id = ?
+                    """,
+                    (
+                        run_id, active.get("stage_id"), result.get("status"),
+                        _json(output) if has_output else None,
+                        _json(diagnostics) if has_diagnostics else None,
+                        _json(metadata), existing["id"],
+                    ),
+                )
     finally:
         connection.close()
     return database

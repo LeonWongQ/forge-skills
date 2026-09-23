@@ -2,6 +2,8 @@
 """Forge CLI — output renderers for text and JSON formats."""
 
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -46,9 +48,20 @@ def build_check_results_payload(command: str, root: Path, checks: List[Dict[str,
 
 def write_report_file(path: str, payload: Dict[str, Any]) -> None:
     report_path = Path(path)
+    content = json.dumps(payload, ensure_ascii=False, indent=2)
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(report_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=report_path.parent,
+                                         prefix=f".{report_path.name}.", suffix=".tmp", delete=False) as f:
+            temporary = Path(f.name)
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, report_path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def write_report_file_exclusive(path: str | Path, payload: Dict[str, Any]) -> None:

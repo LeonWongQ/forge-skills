@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Hook Doctor"
+  short_description: "Inspect Codex-specific Hook trust and runtime evidence"
+  default_prompt: "Use $hook-doctor to inspect Codex-specific Hook evidence."

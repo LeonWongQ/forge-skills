@@ -1,5 +1,6 @@
 {
   "schemaVersion": "1.0",
   "pythonExecutable": "E:\\Program Files\\python\\python.exe",
-  "directCollectionTimeoutSeconds": 2
+  "directCollectionTimeoutSeconds": 2,
+  "hookInstallationRoot": "E:\\CodexHome"
 }

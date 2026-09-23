@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -57,9 +58,19 @@ def enabled_project(tmp_path: Path, skills=None) -> Path:
     return project
 
 
-def run_direct(script: Path, forge_root: Path, project: Path, payload: bytes) -> subprocess.CompletedProcess:
+def run_direct(
+    script: Path,
+    forge_root: Path,
+    project: Path,
+    payload: bytes,
+    *extra_args: str,
+) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, "-S", str(script), "--skill", "code-review", "--project", str(project), "--forge-root", str(forge_root)],
+        [
+            sys.executable, "-S", str(script), "--skill", "code-review",
+            "--project", str(project), "--forge-root", str(forge_root),
+            *extra_args,
+        ],
         input=payload,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -87,7 +98,7 @@ def test_direct_collection_needs_no_click_and_preserves_unicode(tmp_path):
 
     assert completed.returncode == 0, completed.stderr.decode("utf-8", errors="replace")
     database = project_database(forge_root, project)
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         stored = connection.execute("SELECT output_json FROM learning_records").fetchone()[0]
     assert stored.isascii()
     assert json.loads(stored) == {"conclusion": "中文审查 😀 𠀀"}
@@ -113,6 +124,171 @@ def test_direct_collection_rejects_lone_surrogate_without_creating_database(tmp_
     assert completed.returncode != 0
     assert b"lone low surrogate" in completed.stderr
     assert not (forge_root.parent / "forge-data").exists()
+
+
+def test_host_hook_preserves_skill_fallback_and_stores_rendered_output(tmp_path):
+    forge_root, script = isolated_collector(tmp_path)
+    project = enabled_project(tmp_path)
+    invocation = "inv-shared-001"
+
+    fallback = run_direct(
+        script, forge_root, project,
+        json.dumps({"conclusion": "fallback"}).encode("utf-8"),
+        "--invocation-id", invocation, "--hook-host", "claude-code",
+    )
+    hooked = run_direct(
+        script, forge_root, project,
+        json.dumps({"conclusion": "rendered final response"}).encode("utf-8"),
+        "--invocation-id", invocation, "--capture-source", "host-hook",
+        "--hook-host", "claude-code",
+    )
+
+    assert fallback.returncode == 0, fallback.stderr.decode("utf-8", errors="replace")
+    assert hooked.returncode == 0, hooked.stderr.decode("utf-8", errors="replace")
+    with closing(sqlite3.connect(project_database(forge_root, project))) as connection, connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute("SELECT * FROM learning_records").fetchall()
+    assert len(rows) == 1
+    assert json.loads(rows[0]["output_json"]) == {"conclusion": "fallback"}
+    assert json.loads(rows[0]["host_output_json"]) == {"conclusion": "rendered final response"}
+    assert rows[0]["invocation_id"] == invocation
+    assert rows[0]["capture_source"] == "SKILL_CONTRACT"
+    assert rows[0]["hook_host"] == "claude-code"
+    assert rows[0]["hook_status"] == "CAPTURED"
+    assert rows[0]["fallback_captured"] == 1
+    assert rows[0]["hook_captured_at"] is not None
+
+
+def test_skill_fallback_replaces_unreviewed_host_first_canonical_output(tmp_path):
+    forge_root, script = isolated_collector(tmp_path)
+    project = enabled_project(tmp_path)
+    invocation = "inv-host-first"
+
+    hooked = run_direct(
+        script, forge_root, project,
+        json.dumps({
+            "conclusion": "rendered final response",
+            "metadata": {"origin": "hook"},
+        }).encode("utf-8"),
+        "--invocation-id", invocation, "--capture-source", "host-hook",
+        "--hook-host", "claude-code",
+    )
+    fallback = run_direct(
+        script, forge_root, project,
+        json.dumps({
+            "conclusion": "structured fallback",
+            "diagnostics": ["skill diagnostic"],
+            "metadata": {"origin": "skill"},
+        }).encode("utf-8"),
+        "--invocation-id", invocation, "--hook-host", "claude-code",
+    )
+
+    assert hooked.returncode == 0, hooked.stderr.decode("utf-8", errors="replace")
+    assert fallback.returncode == 0, fallback.stderr.decode("utf-8", errors="replace")
+    with closing(sqlite3.connect(project_database(forge_root, project))) as connection, connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute("SELECT * FROM learning_records").fetchall()
+    assert len(rows) == 1
+    row = rows[0]
+    assert json.loads(row["output_json"]) == {"conclusion": "structured fallback"}
+    assert json.loads(row["host_output_json"]) == {"conclusion": "rendered final response"}
+    assert json.loads(row["diagnostics_json"]) == ["skill diagnostic"]
+    assert json.loads(row["metadata_json"])["origin"] == "skill"
+    assert row["capture_source"] == "SKILL_CONTRACT"
+    assert row["fallback_captured"] == 1
+    assert row["hook_status"] == "CAPTURED"
+    assert row["hook_captured_at"] is not None
+
+
+def test_skill_fallback_never_rewrites_a_reviewed_host_first_record(tmp_path):
+    forge_root, script = isolated_collector(tmp_path)
+    project = enabled_project(tmp_path)
+    invocation = "inv-reviewed-host-first"
+    assert run_direct(
+        script, forge_root, project,
+        json.dumps({"conclusion": "reviewed host output"}).encode("utf-8"),
+        "--invocation-id", invocation, "--capture-source", "host-hook",
+        "--hook-host", "codex",
+    ).returncode == 0
+    database = project_database(forge_root, project)
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("UPDATE learning_records SET reviewed = 1")
+        connection.commit()
+
+    assert run_direct(
+        script, forge_root, project,
+        json.dumps({"conclusion": "late structured fallback"}).encode("utf-8"),
+        "--invocation-id", invocation, "--hook-host", "codex",
+    ).returncode == 0
+
+    with closing(sqlite3.connect(database)) as connection, connection:
+        row = connection.execute(
+            "SELECT output_json, host_output_json, capture_source, fallback_captured "
+            "FROM learning_records"
+        ).fetchone()
+        count = connection.execute("SELECT COUNT(*) FROM learning_records").fetchone()[0]
+    assert count == 1
+    assert json.loads(row[0]) == {"conclusion": "reviewed host output"}
+    assert json.loads(row[1]) == {"conclusion": "reviewed host output"}
+    assert row[2:] == ("HOST_HOOK", 0)
+
+
+def test_empty_host_hook_does_not_overwrite_skill_fallback(tmp_path):
+    forge_root, script = isolated_collector(tmp_path)
+    project = enabled_project(tmp_path)
+    invocation = "inv-empty-hook"
+    assert run_direct(
+        script, forge_root, project,
+        json.dumps({"conclusion": "keep me"}).encode("utf-8"),
+        "--invocation-id", invocation, "--hook-host", "cursor",
+    ).returncode == 0
+
+    empty_hook = run_direct(
+        script, forge_root, project,
+        json.dumps({"status": "succeeded"}).encode("utf-8"),
+        "--invocation-id", invocation, "--capture-source", "host-hook",
+        "--hook-host", "cursor",
+    )
+
+    assert empty_hook.returncode == 0
+    assert json.loads(empty_hook.stdout) == {"collected": False, "database": None}
+    with closing(sqlite3.connect(project_database(forge_root, project))) as connection, connection:
+        row = connection.execute(
+            "SELECT output_json, capture_source, hook_status FROM learning_records"
+        ).fetchone()
+    assert json.loads(row[0]) == {"conclusion": "keep me"}
+    assert row[1:] == ("SKILL_CONTRACT", "PENDING")
+
+
+def test_host_hook_never_rewrites_a_reviewed_fallback(tmp_path):
+    forge_root, script = isolated_collector(tmp_path)
+    project = enabled_project(tmp_path)
+    invocation = "inv-reviewed"
+    assert run_direct(
+        script, forge_root, project,
+        json.dumps({"conclusion": "reviewed fallback"}).encode("utf-8"),
+        "--invocation-id", invocation, "--hook-host", "codex",
+    ).returncode == 0
+    database = project_database(forge_root, project)
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("UPDATE learning_records SET reviewed = 1")
+        connection.commit()
+
+    assert run_direct(
+        script, forge_root, project,
+        json.dumps({"conclusion": "late hook"}).encode("utf-8"),
+        "--invocation-id", invocation, "--capture-source", "host-hook",
+        "--hook-host", "codex",
+    ).returncode == 0
+
+    with closing(sqlite3.connect(database)) as connection, connection:
+        row = connection.execute(
+            "SELECT output_json, capture_source, hook_status FROM learning_records"
+        ).fetchone()
+        count = connection.execute("SELECT COUNT(*) FROM learning_records").fetchone()[0]
+    assert count == 1
+    assert json.loads(row[0]) == {"conclusion": "reviewed fallback"}
+    assert row[1:] == ("SKILL_CONTRACT", "PENDING")
 
 
 @pytest.mark.parametrize(
@@ -157,7 +333,7 @@ def test_one_toolchain_stores_each_enabled_skill_once(tmp_path):
     data_root = forge_root.parent / "forge-data" / "projects" / identity["projectId"] / "learning"
     rows = []
     for skill in ("code-review", "debug", "explain"):
-        with sqlite3.connect(data_root / skill / "learning.sqlite") as connection:
+        with closing(sqlite3.connect(data_root / skill / "learning.sqlite")) as connection, connection:
             rows.extend(connection.execute("SELECT skill, output_json FROM learning_records").fetchall())
     assert [row[0] for row in sorted(rows)] == ["code-review", "debug", "explain"]
     assert json.loads(rows[0][1]) == {"result": "code-review"}
@@ -211,7 +387,7 @@ def test_diagnostics_only_record_does_not_store_empty_output_json(tmp_path):
     assert collect_imported_result(forge_root, envelope, result, project=project) is not None
 
     database = project_database(forge_root, project)
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         output_json, diagnostics_json = connection.execute(
             "SELECT output_json, diagnostics_json FROM learning_records"
         ).fetchone()
@@ -256,9 +432,16 @@ def test_existing_database_migration_preserves_records(tmp_path):
 
     assert count == 1
     assert "collection_key" in columns
+    assert "invocation_id" in columns
+    assert "capture_source" in columns
+    assert "hook_host" in columns
+    assert "hook_status" in columns
+    assert "fallback_captured" in columns
+    assert "hook_captured_at" in columns
+    assert "host_output_json" in columns
     assert "is_classic" in columns
     assert "classic_reason" in columns
-    assert version == 7
+    assert version == 9
 
 
 def test_database_creates_dashboard_filter_indexes(tmp_path):
@@ -276,6 +459,7 @@ def test_database_creates_dashboard_filter_indexes(tmp_path):
     assert "idx_learning_filter_capture" in indexes
     assert "idx_learning_dashboard" in indexes
     assert "idx_learning_run" in indexes
+    assert "idx_learning_invocation" in indexes
 
 
 def test_legacy_project_database_is_split_into_skill_data_roots(tmp_path):
@@ -302,7 +486,7 @@ def test_legacy_project_database_is_split_into_skill_data_roots(tmp_path):
 
     data_root = forge_root.parent / "forge-data" / "projects" / identity["projectId"] / "learning"
     for skill in ("code-review", "debug"):
-        with sqlite3.connect(data_root / skill / "learning.sqlite") as migrated:
+        with closing(sqlite3.connect(data_root / skill / "learning.sqlite")) as migrated, migrated:
             assert migrated.execute("SELECT DISTINCT skill FROM learning_records").fetchall() == [(skill,)]
     assert legacy.is_file()
 
@@ -317,7 +501,7 @@ def test_copied_project_gets_new_id_and_cloned_skill_databases(tmp_path):
         forge_root.parent / "forge-data" / "projects" / original_identity["projectId"]
         / "learning" / "code-review" / "learning.sqlite"
     )
-    with sqlite3.connect(original_database) as connection:
+    with closing(sqlite3.connect(original_database)) as connection, connection:
         connection.execute(
             """INSERT INTO learning_summaries
                (id, project_id, skill, version, created_at, source_count, summary_json, lifecycle_status)
@@ -340,14 +524,14 @@ def test_copied_project_gets_new_id_and_cloned_skill_databases(tmp_path):
     data_root = forge_root.parent / "forge-data" / "projects"
     original_code_review = data_root / original_identity["projectId"] / "learning" / "code-review" / "learning.sqlite"
     copied_learning = data_root / copied_identity["projectId"] / "learning"
-    with sqlite3.connect(original_code_review) as connection:
+    with closing(sqlite3.connect(original_code_review)) as connection, connection:
         assert connection.execute("SELECT DISTINCT project_id FROM learning_records").fetchall() == [(original_identity["projectId"],)]
         assert connection.execute("SELECT COUNT(*) FROM learning_records").fetchone()[0] == 1
         assert connection.execute("SELECT lifecycle_status FROM learning_summaries").fetchone()[0] == "REVIEWED"
     for skill in ("code-review", "debug"):
-        with sqlite3.connect(copied_learning / skill / "learning.sqlite") as connection:
+        with closing(sqlite3.connect(copied_learning / skill / "learning.sqlite")) as connection, connection:
             assert connection.execute("SELECT DISTINCT project_id FROM learning_records").fetchall() == [(copied_identity["projectId"],)]
-    with sqlite3.connect(copied_learning / "code-review" / "learning.sqlite") as connection:
+    with closing(sqlite3.connect(copied_learning / "code-review" / "learning.sqlite")) as connection, connection:
         assert connection.execute("SELECT COUNT(*) FROM learning_records").fetchone()[0] == 2
         assert connection.execute("SELECT lifecycle_status FROM learning_summaries").fetchone()[0] == "REVIEWED"
 
@@ -367,7 +551,7 @@ def test_moved_project_updates_all_skill_record_paths(tmp_path):
 
     learning_root = forge_root.parent / "forge-data" / "projects" / identity["projectId"] / "learning"
     for skill in ("code-review", "debug"):
-        with sqlite3.connect(learning_root / skill / "learning.sqlite") as connection:
+        with closing(sqlite3.connect(learning_root / skill / "learning.sqlite")) as connection, connection:
             assert connection.execute("SELECT DISTINCT project_path FROM learning_records").fetchall() == [(str(moved),)]
 
 
@@ -475,3 +659,15 @@ def test_runtime_identity_creation_waits_for_cross_process_registry_lock(tmp_pat
     assert process.returncode == 0, (stdout + stderr).decode("utf-8", errors="replace")
     assert identity_created_while_locked is False
     assert identity_path.is_file()
+
+
+def test_registry_file_lock_supports_bounded_wait(tmp_path):
+    target = tmp_path / "registry.json"
+    started = time.monotonic()
+
+    with _registry_file_lock(target):
+        with pytest.raises(TimeoutError):
+            with _registry_file_lock(target, timeout=0.05):
+                pytest.fail("contended lock should not be acquired")
+
+    assert time.monotonic() - started < 0.5

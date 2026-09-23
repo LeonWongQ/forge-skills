@@ -108,7 +108,9 @@ def load_active_overlay(forge_root: Path, project: Path | None, skill: str) -> d
             or behavior.get("candidateOverlayDigest") != digest):
         return None
     skill_digest = _file_digest(forge_root.parent / "skills" / normalized_skill / "SKILL.md")
-    if skill_digest is None or behavior.get("skillDigest") != skill_digest:
+    corpus_digest = _file_digest(forge_root / "evals" / "skill-behavior-cases.json")
+    if (skill_digest is None or behavior.get("skillDigest") != skill_digest
+            or corpus_digest is None or behavior.get("corpusDigest") != corpus_digest):
         return None
     return {
         "id": row["id"],

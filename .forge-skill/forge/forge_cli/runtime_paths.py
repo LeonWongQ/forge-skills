@@ -264,9 +264,19 @@ def find_orphan_runtime_projects(forge_root: Path) -> list[dict[str, object]]:
     registry_path = data_root / "project-registry.json"
     try:
         registry = json.loads(registry_path.read_text(encoding="utf-8")) if registry_path.is_file() else {}
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError):
         raise ValueError(f"cannot read Forge project registry: {registry_path}")
-    entries = registry.get("projects", []) if isinstance(registry, dict) else []
+    if not isinstance(registry, dict):
+        raise ValueError("Forge project registry must be an object")
+    entries = registry.get("projects", [])
+    if not isinstance(entries, list) or any(
+        not isinstance(item, dict)
+        or not isinstance(item.get("projectId", item.get("id")), str)
+        or not PROJECT_ID_PATTERN.fullmatch(item.get("projectId", item.get("id")))
+        or not isinstance(item.get("path"), str) or not item["path"].strip()
+        for item in entries
+    ):
+        raise ValueError("Forge project registry projects must contain valid project identities and paths")
     registered = {item.get("projectId", item.get("id")) for item in entries if isinstance(item, dict)}
     if not projects_root.is_dir():
         return []
@@ -276,8 +286,13 @@ def find_orphan_runtime_projects(forge_root: Path) -> list[dict[str, object]]:
             continue
         if not PROJECT_ID_PATTERN.fullmatch(directory.name):
             continue
-        files = [item for item in directory.rglob("*") if item.is_file()]
-        result.append({"projectId": directory.name, "path": str(directory), "files": len(files), "bytes": sum(item.stat().st_size for item in files)})
+        if directory.resolve() != projects_root.resolve() / directory.name:
+            continue
+        runtime = directory / "runtime"
+        if not runtime.is_dir() or runtime.resolve() != directory.resolve() / "runtime":
+            continue
+        files = [item for item in runtime.rglob("*") if item.is_file()]
+        result.append({"projectId": directory.name, "path": str(runtime), "files": len(files), "bytes": sum(item.stat().st_size for item in files)})
     return result
 
 
@@ -285,9 +300,18 @@ def remove_orphan_runtime_project(forge_root: Path, project_id: str) -> dict[str
     """Physically remove one explicitly selected, unregistered Runtime project."""
     if not PROJECT_ID_PATTERN.fullmatch(project_id):
         raise ValueError("invalid orphan project id")
-    orphan = next((item for item in find_orphan_runtime_projects(forge_root) if item["projectId"] == project_id), None)
-    if orphan is None:
-        raise ValueError("project is registered or orphan Runtime data was not found")
-    target = forge_data_root(forge_root) / "projects" / project_id
-    shutil.rmtree(target)
-    return orphan
+    from .learning_collector import _REGISTRY_LOCK, _registry_file_lock
+
+    registry_path = forge_data_root(forge_root) / "project-registry.json"
+    # Registration uses the same locks, preventing a project from being
+    # registered between the orphan check and destructive cleanup.
+    with _REGISTRY_LOCK, _registry_file_lock(registry_path):
+        orphan = next((item for item in find_orphan_runtime_projects(forge_root) if item["projectId"] == project_id), None)
+        if orphan is None:
+            raise ValueError("project is registered or orphan Runtime data was not found")
+        target = forge_data_root(forge_root) / "projects" / project_id / "runtime"
+        projects_root = (forge_data_root(forge_root) / "projects").resolve()
+        if target.resolve() != projects_root / project_id / "runtime":
+            raise ValueError("orphan Runtime path escapes the project data store")
+        shutil.rmtree(target)
+        return orphan
