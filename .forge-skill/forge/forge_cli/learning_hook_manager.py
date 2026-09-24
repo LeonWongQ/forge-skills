@@ -191,6 +191,37 @@ def _runtime_state(event: dict[str, Any] | None, installed_at: Any = None) -> st
     )
 
 
+def _event_scope(
+    event: dict[str, Any] | None,
+    *,
+    configured: bool,
+    installed_at: Any,
+) -> str:
+    """Classify a receipt without presenting historical evidence as current."""
+    if event is None:
+        return "NONE"
+    if not configured or not isinstance(installed_at, str):
+        return "HISTORICAL"
+    try:
+        observed = datetime.fromisoformat(str(event.get("timestamp")).replace("Z", "+00:00"))
+        installed = datetime.fromisoformat(installed_at.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return "UNKNOWN"
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=timezone.utc)
+    if installed.tzinfo is None:
+        installed = installed.replace(tzinfo=timezone.utc)
+    return "CURRENT_INSTALLATION" if observed >= installed else "HISTORICAL"
+
+
+def _native_capability_status(host: str, configured: bool) -> tuple[str, str]:
+    """Report only trust/enable facts this generic manager can establish."""
+    if not configured:
+        return "NOT_APPLICABLE", "NOT_APPLICABLE"
+    trust = "MANUAL_CHECK_REQUIRED" if host == "codex" else "UNVERIFIED"
+    return "UNVERIFIED", trust
+
+
 def configure_global_hook(
     forge_root: Path,
     host: str,
@@ -369,6 +400,11 @@ def global_hook_status(
         statuses = {}
         for host in SUPPORTED_HOSTS:
             event = _load_last_event(forge_root, host)
+            host_record = state.get("hosts", {}).get(host)
+            installed_at = (
+                host_record.get("installedAt")
+                if isinstance(host_record, dict) else None
+            )
             try:
                 provider, _ = _current_provider(
                     forge_root, host, home=home, codex_home=codex_home
@@ -385,15 +421,22 @@ def global_hook_status(
                 detail = str(error)
                 config_state = "REPAIR_REQUIRED"
                 configured = False
+            event_scope = _event_scope(
+                event, configured=configured, installed_at=installed_at
+            )
+            enabled_status, trust_status = _native_capability_status(host, configured)
             statuses[host] = {
                 "state": config_state,
                 "configState": config_state,
-                "runtimeState": _runtime_state(
-                    event,
-                    state.get("hosts", {}).get(host, {}).get("installedAt")
-                    if isinstance(state.get("hosts", {}).get(host), dict) else None,
+                "runtimeState": (
+                    _runtime_state(event, installed_at)
+                    if event_scope == "CURRENT_INSTALLATION"
+                    else "NEVER_OBSERVED"
                 ),
+                "eventScope": event_scope,
                 "configured": configured,
+                "enabledStatus": enabled_status,
+                "trustStatus": trust_status,
                 "configPath": config_path,
                 "events": events,
                 "detail": detail,

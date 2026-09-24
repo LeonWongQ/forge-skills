@@ -25,6 +25,8 @@ from .runtime_paths import _project_id
 
 
 INVOCATION_TTL_HOURS = 6
+CURSOR_TRANSCRIPT_TAIL_BYTES = 2_000_000
+MAX_SHARED_CAPTURE_DATABASES = 11
 _INVOCATION_LOCK = threading.Lock()
 _HOST_ENVIRONMENT_MARKERS = {
     "codex": ("CODEX_SESSION_ID", "CODEX_THREAD_ID"),
@@ -267,16 +269,29 @@ def _mark_missed(forge_root: Path, marker: dict[str, Any]) -> None:
 
 def _purge_expired_markers(forge_root: Path, directory: Path) -> None:
     now = _now()
-    for path in directory.glob("inv-*.json"):
-        marker = _load_marker(path)
+    markers = [(path, _load_marker(path)) for path in directory.glob("inv-*.json")]
+    removed: set[Path] = set()
+    for path, marker in markers:
+        if path in removed:
+            continue
         expires = _parse_timestamp(marker.get("expiresAt")) if marker else None
         if marker is None or expires is None or expires <= now:
+            shared_capture_id = marker.get("sharedCaptureId") if marker else None
+            if isinstance(shared_capture_id, str) and shared_capture_id.strip():
+                group = [
+                    (candidate_path, candidate)
+                    for candidate_path, candidate in markers
+                    if isinstance(candidate, dict)
+                    and candidate.get("sharedCaptureId") == shared_capture_id
+                ]
+                _clean_failed_shared_capture(forge_root, group)
+                _remove_invocation_markers(group)
+                removed.update(candidate_path for candidate_path, _candidate in group)
+                continue
             if marker is not None:
                 _mark_missed(forge_root, marker)
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
+            path.unlink(missing_ok=True)
+            removed.add(path)
 
 
 def _project_root(candidate: Path) -> Path | None:
@@ -289,10 +304,264 @@ def _project_root(candidate: Path) -> Path | None:
     return None
 
 
+def _payload_path(value: str) -> Path:
+    """Normalize Cursor's slash-prefixed Windows drive paths."""
+    normalized = value.strip()
+    if (
+        os.name == "nt"
+        and len(normalized) >= 4
+        and normalized[0] in "/\\"
+        and normalized[1].isalpha()
+        and normalized[2] == ":"
+        and normalized[3] in "/\\"
+    ):
+        normalized = normalized[1:]
+    return Path(normalized)
+
+
+def _cursor_projects_root() -> Path:
+    return (Path.home() / ".cursor" / "projects").resolve(strict=False)
+
+
+def _cursor_transcript_response(payload: dict[str, Any]) -> str | None:
+    """Recover the final Cursor response from its bounded local transcript tail."""
+    value = payload.get("transcript_path")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    path = _payload_path(value).resolve(strict=False)
+    root = _cursor_projects_root()
+    if path.suffix.casefold() != ".jsonl" or not path.is_relative_to(root):
+        return None
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            offset = max(0, size - CURSOR_TRANSCRIPT_TAIL_BYTES)
+            handle.seek(offset)
+            raw = handle.read(CURSOR_TRANSCRIPT_TAIL_BYTES)
+    except OSError:
+        return None
+    if offset:
+        _, separator, raw = raw.partition(b"\n")
+        if not separator:
+            return None
+    try:
+        lines = raw.decode("utf-8-sig", errors="strict").splitlines()
+    except UnicodeDecodeError:
+        return None
+    completed_turn = False
+    for line in reversed(lines):
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        if not completed_turn:
+            if entry.get("role") in {"user", "assistant"}:
+                return None
+            if entry.get("type") != "turn_ended":
+                continue
+            if entry.get("status") != "success":
+                return None
+            completed_turn = True
+            continue
+        if entry.get("role") == "user":
+            return None
+        if entry.get("role") != "assistant":
+            continue
+        message = entry.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, str):
+            return content if has_meaningful_content(content) else None
+        if not isinstance(content, list):
+            continue
+        parts = [
+            part.get("text")
+            for part in content
+            if isinstance(part, dict)
+            and part.get("type") == "text"
+            and has_meaningful_content(part.get("text"))
+        ]
+        if parts:
+            return "\n".join(parts)
+    return None
+
+
+def _normalize_host_response(value: Any) -> str | None:
+    """Normalize transport line endings while preserving user-visible content."""
+    if not isinstance(value, str):
+        return None
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n")
+    return normalized if has_meaningful_content(normalized) else None
+
+
+def _response_profile(text: str) -> dict[str, Any]:
+    """Describe response shape without applying Skill-specific assumptions."""
+    stripped = text.lstrip()
+    response_format = "TEXT"
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        if "```" in text or any(line.lstrip().startswith("#") for line in text.splitlines()):
+            response_format = "MARKDOWN"
+    else:
+        if isinstance(parsed, (dict, list)):
+            response_format = "JSON"
+    return {
+        "format": response_format,
+        "characters": len(text),
+        "nonWhitespaceCharacters": sum(not character.isspace() for character in text),
+        "lines": text.count("\n") + 1,
+        "startsWithHeading": stripped.startswith("#"),
+        "codeFenceCount": text.count("```") // 2,
+    }
+
+
+def _capture_attribution(
+    host: str,
+    identity: dict[str, str],
+    selected: list[tuple[Path, dict[str, Any]]],
+) -> str:
+    if len(selected) > 1:
+        return "SHARED_HOST_TURN"
+    if _identity_is_turn_unique(host, identity):
+        return "TURN_UNIQUE"
+    if identity:
+        return "SESSION_SCOPED"
+    return "SOLE_PENDING"
+
+
+def _hook_capture_persisted(database: Path | None, invocation_id: str, host: str) -> bool:
+    """Verify the write instead of treating a database path as a successful update."""
+    if database is None:
+        return False
+    connection = connect_database(database)
+    try:
+        row = connection.execute(
+            "SELECT hook_status, hook_host FROM learning_records WHERE invocation_id = ?",
+            (invocation_id,),
+        ).fetchone()
+    finally:
+        connection.close()
+    return (
+        row is not None
+        and row["hook_status"] == "CAPTURED"
+        and row["hook_host"] == host
+    )
+
+
+def _complete_shared_capture(
+    captured: list[tuple[Path, str]], shared_capture_id: str,
+) -> None:
+    """Publish a shared group only after every member write has finished."""
+    database_paths = list(dict.fromkeys(database.resolve() for database, _invocation_id in captured))
+    if not database_paths or len(database_paths) > MAX_SHARED_CAPTURE_DATABASES:
+        raise RuntimeError("shared Hook capture has an invalid database count")
+    aliases = {database_paths[0]: "main"}
+    connection = connect_database(database_paths[0])
+    try:
+        for index, database in enumerate(database_paths[1:], start=1):
+            alias = f"skill_{index}"
+            connection.execute(f"ATTACH DATABASE ? AS {alias}", (str(database),))
+            aliases[database] = alias
+        for alias in aliases.values():
+            mode = connection.execute(f"PRAGMA {alias}.journal_mode=TRUNCATE").fetchone()[0]
+            if str(mode).casefold() != "truncate":
+                raise sqlite3.OperationalError(
+                    f"shared Hook capture requires rollback journaling for {alias}"
+                )
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            for database, invocation_id in captured:
+                alias = aliases[database.resolve()]
+                cursor = connection.execute(
+                    f"UPDATE {alias}.learning_records SET shared_capture_complete = 1 "
+                    "WHERE invocation_id = ? AND shared_capture_id = ? "
+                    "AND hook_status = 'CAPTURED'",
+                    (invocation_id, shared_capture_id),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError("shared Hook capture member could not be completed")
+        except Exception:
+            connection.rollback()
+            raise
+        else:
+            connection.commit()
+    finally:
+        connection.close()
+
+
+def _clean_failed_shared_capture(
+    forge_root: Path,
+    selected: list[tuple[Path, dict[str, Any]]],
+) -> None:
+    """Atomically remove partial Hook evidence for a failed shared group."""
+    members = []
+    for _path, marker in selected:
+        database = _project_database(
+            forge_root, str(marker["projectId"]), str(marker["skill"]),
+        )
+        if database.is_file():
+            members.append((database.resolve(), str(marker["invocationId"])))
+    if not members:
+        return
+    database_paths = list(dict.fromkeys(database for database, _invocation_id in members))
+    if len(database_paths) > MAX_SHARED_CAPTURE_DATABASES:
+        raise RuntimeError("failed shared Hook cleanup has an invalid database count")
+    aliases = {database_paths[0]: "main"}
+    connection = connect_database(database_paths[0])
+    try:
+        for index, database in enumerate(database_paths[1:], start=1):
+            alias = f"skill_{index}"
+            connection.execute(f"ATTACH DATABASE ? AS {alias}", (str(database),))
+            aliases[database] = alias
+        for alias in aliases.values():
+            mode = connection.execute(f"PRAGMA {alias}.journal_mode=TRUNCATE").fetchone()[0]
+            if str(mode).casefold() != "truncate":
+                raise sqlite3.OperationalError(
+                    f"failed shared Hook cleanup requires rollback journaling for {alias}"
+                )
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            for database, invocation_id in members:
+                alias = aliases[database]
+                connection.execute(
+                    f"DELETE FROM {alias}.learning_records "
+                    "WHERE invocation_id = ? AND reviewed = 0 "
+                    "AND capture_source = 'HOST_HOOK'",
+                    (invocation_id,),
+                )
+                connection.execute(
+                    f"UPDATE {alias}.learning_records "
+                    "SET hook_status = 'MISSED', shared_capture_id = NULL, "
+                    "shared_capture_complete = 0, host_output_json = NULL, "
+                    "hook_captured_at = NULL, metadata_json = CASE "
+                    "WHEN json_valid(metadata_json) THEN json_remove(metadata_json, '$.hookCapture') "
+                    "ELSE metadata_json END "
+                    "WHERE invocation_id = ? AND reviewed = 0 "
+                    "AND capture_source = 'SKILL_CONTRACT'",
+                    (invocation_id,),
+                )
+        except Exception:
+            connection.rollback()
+            raise
+        else:
+            connection.commit()
+    finally:
+        connection.close()
+
+
+def _remove_invocation_markers(
+    selected: list[tuple[Path, dict[str, Any]]],
+) -> None:
+    for path, _marker in selected:
+        path.unlink(missing_ok=True)
+
+
 def _project_from_payload(payload: dict[str, Any]) -> Path | None:
     cwd = payload.get("cwd")
     if isinstance(cwd, str) and cwd.strip():
-        project = _project_root(Path(cwd))
+        project = _project_root(_payload_path(cwd))
         if project is not None:
             return project
     roots = payload.get("workspace_roots")
@@ -301,7 +570,7 @@ def _project_from_payload(payload: dict[str, Any]) -> Path | None:
             project
             for item in roots
             if isinstance(item, str) and item.strip()
-            for project in [_project_root(Path(item))]
+            for project in [_project_root(_payload_path(item))]
             if project is not None
         }
         if len(candidates) == 1:
@@ -377,15 +646,68 @@ def handle_host_event(
                 "reason": "AMBIGUOUS_INVOCATION",
                 "count": len(pending),
             }
+        selected_skills = {str(marker["skill"]) for _path, marker in selected}
+        if len(selected_skills) != len(selected):
+            invocation_ids = []
+            for _path, marker in selected:
+                _mark_missed(forge_root, marker)
+                invocation_ids.append(marker["invocationId"])
+            _remove_invocation_markers(selected)
+            note(
+                "invocation_skipped", reason="DUPLICATE_SKILL_INVOCATIONS",
+                matchedInvocationCount=len(selected),
+                matchedSkillCount=len(selected_skills),
+            )
+            return {
+                "handled": False,
+                "reason": "DUPLICATE_SKILL_INVOCATIONS",
+                "invocationIds": invocation_ids,
+            }
+        if len(selected_skills) > MAX_SHARED_CAPTURE_DATABASES:
+            invocation_ids = []
+            for path, marker in selected:
+                _mark_missed(forge_root, marker)
+                path.unlink(missing_ok=True)
+                invocation_ids.append(marker["invocationId"])
+            note(
+                "invocation_skipped", reason="SHARED_GROUP_TOO_LARGE",
+                matchedSkillCount=len(selected_skills),
+                maximum=MAX_SHARED_CAPTURE_DATABASES,
+            )
+            return {
+                "handled": False,
+                "reason": "SHARED_GROUP_TOO_LARGE",
+                "count": len(selected_skills),
+                "maximum": MAX_SHARED_CAPTURE_DATABASES,
+                "invocationIds": invocation_ids,
+            }
+        shared_capture_id = None
+        if len(selected) > 1:
+            existing_shared_ids = {
+                marker.get("sharedCaptureId")
+                for _path, marker in selected
+                if isinstance(marker.get("sharedCaptureId"), str)
+                and marker["sharedCaptureId"].strip()
+            }
+            shared_capture_id = (
+                next(iter(existing_shared_ids))
+                if len(existing_shared_ids) == 1
+                else f"shared-{uuid.uuid4()}"
+            )
+            for path, marker in selected:
+                if marker.get("sharedCaptureId") != shared_capture_id:
+                    marker["sharedCaptureId"] = shared_capture_id
+                    _write_marker(path, marker)
         if event == "after-agent-response" and host == "cursor":
-            text = payload.get("text")
-            if not has_meaningful_content(text):
+            text = _normalize_host_response(payload.get("text"))
+            if text is None:
                 note("response_check", hasContent=False, reason="EMPTY_RESPONSE")
                 return {"handled": False, "reason": "EMPTY_RESPONSE"}
             invocation_ids = []
             for path, marker in selected:
                 marker["bufferedResponse"] = text
                 marker["bufferedAt"] = _timestamp(_now())
+                marker["bufferedSource"] = "cursor-after-agent-response"
                 _write_marker(path, marker)
                 invocation_ids.append(marker["invocationId"])
             note("response_buffered", count=len(invocation_ids))
@@ -400,17 +722,35 @@ def handle_host_event(
             return {"handled": False, "reason": "UNSUPPORTED_EVENT"}
         captured = []
         empty = []
+        skipped = []
+        completed_members: list[tuple[Path, str]] = []
+        finalized_paths: list[Path] = []
+        attribution = _capture_attribution(host, identity, selected)
+        matched_skills = sorted({str(marker["skill"]) for _, marker in selected})
         for path, marker in selected:
-            text = (
+            response_source = "stop-payload"
+            raw_response = (
                 marker.get("bufferedResponse")
                 if host == "cursor"
                 else payload.get("last_assistant_message")
             )
+            if host == "cursor" and not has_meaningful_content(raw_response):
+                raw_response = _cursor_transcript_response(payload)
+                response_source = "cursor-transcript"
+                note(
+                    "response_recovered", invocationId=marker["invocationId"],
+                    source="cursor_transcript",
+                    hasContent=has_meaningful_content(raw_response),
+                )
+            elif host == "cursor":
+                response_source = str(marker.get("bufferedSource") or "cursor-buffer")
+            text = _normalize_host_response(raw_response)
             note("response_check", invocationId=marker["invocationId"],
-                 skill=marker["skill"], hasContent=has_meaningful_content(text))
-            if not has_meaningful_content(text):
-                _mark_missed(forge_root, marker)
-                path.unlink(missing_ok=True)
+                 skill=marker["skill"], hasContent=text is not None)
+            if text is None:
+                if shared_capture_id is None:
+                    _mark_missed(forge_root, marker)
+                    path.unlink(missing_ok=True)
                 empty.append(marker["invocationId"])
                 note("invocation_skipped", invocationId=marker["invocationId"], reason="EMPTY_RESPONSE")
                 continue
@@ -428,6 +768,21 @@ def handle_host_event(
                     "source": "native_host_hook",
                     "host": host,
                     "hostIdentity": identity,
+                    "hookCapture": {
+                        "schemaVersion": "1.0",
+                        "skill": marker["skill"],
+                        "host": host,
+                        "event": event,
+                        "responseSource": response_source,
+                        "attribution": attribution,
+                        "matchedInvocationCount": len(selected),
+                        "matchedSkills": matched_skills,
+                        "response": _response_profile(text),
+                        **(
+                            {"sharedCaptureId": shared_capture_id}
+                            if shared_capture_id is not None else {}
+                        ),
+                    },
                 },
                 "collection": {
                     "invocationId": marker["invocationId"],
@@ -437,16 +792,51 @@ def handle_host_event(
                 },
             }
             note("collection_started", invocationId=marker["invocationId"], skill=marker["skill"])
-            database = collect_imported_result(forge_root, envelope, result, project=project)
-            path.unlink(missing_ok=True)
-            note("collection_finished", invocationId=marker["invocationId"], stored=database is not None)
-            if database is not None:
+            try:
+                database = collect_imported_result(forge_root, envelope, result, project=project)
+                stored = _hook_capture_persisted(database, marker["invocationId"], host)
+            except Exception:
+                if shared_capture_id is not None:
+                    _clean_failed_shared_capture(forge_root, selected)
+                    _remove_invocation_markers(selected)
+                    note("shared_capture_failed", reason="COLLECTION_ERROR")
+                raise
+            note("collection_finished", invocationId=marker["invocationId"], stored=stored)
+            if stored:
                 captured.append(marker["invocationId"])
+                if database is not None:
+                    completed_members.append((database, marker["invocationId"]))
+            else:
+                skipped.append(marker["invocationId"])
+            finalized_paths.append(path)
+        if shared_capture_id is not None and len(completed_members) != len(selected):
+            _clean_failed_shared_capture(forge_root, selected)
+            _remove_invocation_markers(selected)
+            note(
+                "shared_capture_incomplete", completedCount=len(completed_members),
+                expectedCount=len(selected),
+            )
+            return {
+                "handled": False,
+                "reason": "SHARED_CAPTURE_INCOMPLETE",
+                "invocationIds": [marker["invocationId"] for _path, marker in selected],
+            }
+        if shared_capture_id is not None:
+            try:
+                _complete_shared_capture(completed_members, shared_capture_id)
+            except Exception:
+                _clean_failed_shared_capture(forge_root, selected)
+                _remove_invocation_markers(selected)
+                note("shared_capture_failed", reason="COMPLETION_ERROR")
+                raise
+            note("shared_capture_completed", count=len(completed_members))
+        for path in finalized_paths:
+            path.unlink(missing_ok=True)
         if not captured:
             return {
                 "handled": False,
                 "reason": "EMPTY_RESPONSE" if empty else "COLLECTION_SKIPPED",
-                "invocationIds": empty,
+                "invocationIds": empty or skipped,
             }
         return {
             "handled": True,

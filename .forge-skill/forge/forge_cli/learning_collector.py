@@ -19,7 +19,7 @@ from .data_paths import forge_data_root, skill_data_root
 
 COLLECTOR_SKILL = "learning-collector"
 DATABASE_NAME = "learning.sqlite"
-DATABASE_SCHEMA_VERSION = 9
+DATABASE_SCHEMA_VERSION = 10
 CAPTURE_SOURCES = {"RUNTIME", "SKILL_CONTRACT", "HOST_HOOK"}
 HOOK_STATUSES = {"NOT_EXPECTED", "NOT_CONFIGURED", "PENDING", "CAPTURED", "MISSED"}
 _REGISTRY_LOCK = threading.Lock()
@@ -160,6 +160,7 @@ def connect_database(path: Path, *, timeout: float = 2) -> sqlite3.Connection:
         records_need_migration = records_exist and not {
             "invocation_id", "capture_source", "hook_host", "hook_status",
             "fallback_captured", "hook_captured_at", "host_output_json",
+            "shared_capture_id", "shared_capture_complete",
         }.issubset(record_columns)
         summaries_exist = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'learning_summaries'"
@@ -196,6 +197,9 @@ def connect_database(path: Path, *, timeout: float = 2) -> sqlite3.Connection:
                     evaluation_json TEXT,
                     collection_key TEXT,
                     invocation_id TEXT,
+                    shared_capture_id TEXT,
+                    shared_capture_complete INTEGER NOT NULL DEFAULT 0
+                        CHECK (shared_capture_complete IN (0, 1)),
                     capture_source TEXT NOT NULL DEFAULT 'RUNTIME'
                         CHECK (capture_source IN ('RUNTIME', 'SKILL_CONTRACT', 'HOST_HOOK')),
                     hook_host TEXT,
@@ -224,6 +228,15 @@ def connect_database(path: Path, *, timeout: float = 2) -> sqlite3.Connection:
                     connection.execute("ALTER TABLE learning_records ADD COLUMN collection_key TEXT")
                 if "invocation_id" not in columns:
                     connection.execute("ALTER TABLE learning_records ADD COLUMN invocation_id TEXT")
+                if "shared_capture_id" not in columns:
+                    connection.execute(
+                        "ALTER TABLE learning_records ADD COLUMN shared_capture_id TEXT"
+                    )
+                if "shared_capture_complete" not in columns:
+                    connection.execute(
+                        "ALTER TABLE learning_records ADD COLUMN shared_capture_complete "
+                        "INTEGER NOT NULL DEFAULT 0"
+                    )
                 if "capture_source" not in columns:
                     connection.execute(
                         "ALTER TABLE learning_records ADD COLUMN capture_source TEXT NOT NULL DEFAULT 'RUNTIME'"
@@ -276,6 +289,24 @@ def connect_database(path: Path, *, timeout: float = 2) -> sqlite3.Connection:
                     "CREATE UNIQUE INDEX IF NOT EXISTS idx_learning_invocation "
                     "ON learning_records(project_id, skill, invocation_id) "
                     "WHERE invocation_id IS NOT NULL"
+                )
+                connection.execute(
+                    "UPDATE learning_records SET shared_capture_id = "
+                    "json_extract(metadata_json, '$.hookCapture.sharedCaptureId') "
+                    "WHERE shared_capture_id IS NULL AND capture_source = 'HOST_HOOK' "
+                    "AND CASE WHEN json_valid(metadata_json) THEN "
+                    "json_type(metadata_json, '$.hookCapture.sharedCaptureId') = 'text' "
+                    "AND json_extract(metadata_json, '$.hookCapture.attribution') = 'SHARED_HOST_TURN' "
+                    "ELSE 0 END"
+                )
+                connection.execute(
+                    "UPDATE learning_records SET shared_capture_complete = 1 "
+                    "WHERE capture_source = 'HOST_HOOK' AND shared_capture_id IS NOT NULL"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_shared_capture "
+                    "ON learning_records(project_id, shared_capture_id) "
+                    "WHERE capture_source = 'HOST_HOOK' AND shared_capture_id IS NOT NULL"
                 )
                 connection.execute(
                     """
@@ -439,6 +470,35 @@ def has_meaningful_content(value: Any) -> bool:
     if isinstance(value, (list, tuple)):
         return any(has_meaningful_content(item) for item in value)
     return True
+
+
+def _metadata_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if not isinstance(value, str):
+        return {}
+    try:
+        decoded = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return dict(decoded) if isinstance(decoded, dict) else {}
+
+
+def _merge_hook_capture_metadata(primary: Any, hook_metadata: Any) -> dict[str, Any]:
+    """Retain generic Hook quality evidence without replacing Skill output metadata."""
+    merged = _metadata_object(primary)
+    hook_capture = _metadata_object(hook_metadata).get("hookCapture")
+    if isinstance(hook_capture, dict):
+        merged["hookCapture"] = hook_capture
+    return merged
+
+
+def _shared_capture_id(metadata: Any) -> str | None:
+    capture = _metadata_object(metadata).get("hookCapture")
+    if not isinstance(capture, dict) or capture.get("attribution") != "SHARED_HOST_TURN":
+        return None
+    value = capture.get("sharedCaptureId")
+    return value.strip() if isinstance(value, str) and value.strip() else None
 
 
 def _capture_context(envelope: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
@@ -761,6 +821,9 @@ def collect_imported_result(
     invocation_id = capture["invocation_id"]
     collection_key = f"{pid}:{skill}:{invocation_id}" if invocation_id else None
     metadata = result.get("metadata")
+    shared_capture_id = (
+        _shared_capture_id(metadata) if capture["source"] == "HOST_HOOK" else None
+    )
     overlay = envelope.get("runtime_state", {}).get("project_overlay")
     if isinstance(overlay, dict):
         # Keep provenance compact; the reviewed content is already versioned in
@@ -778,7 +841,7 @@ def collect_imported_result(
         with connection:
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
-                "SELECT id, capture_source, reviewed FROM learning_records "
+                "SELECT id, capture_source, reviewed, metadata_json FROM learning_records "
                 "WHERE project_id = ? AND skill = ? AND invocation_id = ?",
                 (pid, skill, invocation_id),
             ).fetchone() if invocation_id else None
@@ -789,16 +852,17 @@ def collect_imported_result(
                         id, project_id, project_name, project_path, skill, run_id, stage,
                         run_status, captured_at, output_json, diagnostics_json,
                         metadata_json, evaluation_json, collection_key, invocation_id,
-                        capture_source, hook_host, hook_status, fallback_captured,
+                        shared_capture_id, shared_capture_complete, capture_source,
+                        hook_host, hook_status, fallback_captured,
                         hook_captured_at, host_output_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         record_id, pid, project.name, str(project), skill,
                         run_id, active.get("stage_id"), result.get("status"),
                         timestamp, _json(output) if has_output else None,
                         _json(diagnostics) if has_diagnostics else None,
-                        _json(metadata), None, collection_key, invocation_id,
+                        _json(metadata), None, collection_key, invocation_id, shared_capture_id, 0,
                         capture["source"], capture["hook_host"], capture["hook_status"],
                         1 if capture["source"] == "SKILL_CONTRACT" else 0,
                         timestamp if capture["source"] == "HOST_HOOK" else None,
@@ -814,7 +878,8 @@ def collect_imported_result(
                 connection.execute(
                     """
                     UPDATE learning_records
-                    SET host_output_json = ?,
+                    SET host_output_json = ?, metadata_json = ?,
+                        shared_capture_id = ?, shared_capture_complete = 0,
                         hook_host = ?,
                         hook_status = 'CAPTURED', hook_captured_at = ?,
                         fallback_captured = CASE
@@ -825,7 +890,8 @@ def collect_imported_result(
                     """,
                     (
                         _json(output),
-                        capture["hook_host"], timestamp, existing["id"],
+                        _json(_merge_hook_capture_metadata(existing["metadata_json"], metadata)),
+                        shared_capture_id, capture["hook_host"], timestamp, existing["id"],
                     ),
                 )
             elif (capture["source"] == "SKILL_CONTRACT"
@@ -846,7 +912,8 @@ def collect_imported_result(
                         run_id, active.get("stage_id"), result.get("status"),
                         _json(output) if has_output else None,
                         _json(diagnostics) if has_diagnostics else None,
-                        _json(metadata), existing["id"],
+                        _json(_merge_hook_capture_metadata(metadata, existing["metadata_json"])),
+                        existing["id"],
                     ),
                 )
     finally:

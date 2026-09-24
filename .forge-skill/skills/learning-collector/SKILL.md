@@ -187,55 +187,14 @@ the explicit dashboard action; neither operation activates an Overlay.
 
 ## Direct host execution
 
-An enabled Skill's direct-host lifecycle starts with one call to
-`scripts/begin_direct_invocation.py` with `--host <current-host>`, then makes one pre-execution Overlay lookup
-through `scripts/resolve_direct_overlay.py`, and finally makes one post-result
-fallback attempt through `scripts/record_direct_result.py`. A successful begin
-receipt supplies the invocation ID and selected Hook host to the fallback. The
-native Hook uses the same ID, so it enriches the same unreviewed record instead
-of creating a duplicate. When the current host differs from Forge's selected
-Hook host, begin returns `hookExpected=false` and creates no pending marker;
-the fallback remains valid and must not be attributed to the selected host.
-The resolver is read-only; the collector checks the same
-project allowlist and writes to the project Skill database. Disabling a Skill is
-therefore both a collection switch and an Overlay runtime kill switch. Applied
-Overlay identity is retained in collection metadata without copying the Overlay
-content. Only user-visible result evidence is collected, never hidden reasoning.
+For any direct-host collection, configuration, diagnosis, or review, read the
+**Direct Host Capture** section in [references/lifecycle.md](references/lifecycle.md).
+It defines the authoritative begin, Overlay lookup, Hook, fallback, attribution,
+shared-turn, review, and failure contracts.
 
-The direct-host contract is strict and best-effort:
-
-- Read `pythonExecutable` and `directCollectionTimeoutSeconds` from
-  the project installation's `forge-data/runtime.json`. Do not use the Windows `py` launcher and do
-  not switch interpreters after a failure. A missing configured executable is
-  a collection failure, not permission to discover another runtime.
-- Write UTF-8 JSON bytes directly to stdin. A PowerShell native text pipeline
-  is not a supported transport.
-- Attempt begin, lookup, and fallback at most once each with the configured
-  short host-side timeout. A failure may retain only its error type, interpreter
-  path, and exit code; it must not delay delivery or trigger content conversion,
-  an interpreter switch, or another attempt.
-- Invalid UTF-8 and lone Unicode surrogate code units are rejected explicitly.
-  Valid Chinese, emoji, and supplementary-plane characters are preserved.
-
-The direct collector accepts the shared `invocationId` created by the begin
-script. The native host Hook and Skill-contract fallback use that same ID for
-one Skill execution. The database keeps one `(projectId, skill, invocationId)` record.
-The Skill-contract result remains the canonical structured training input and the
-host-rendered response is stored separately as supporting evidence. An empty Hook
-result or a late Hook after human review cannot change the record.
-
-Native Hook configuration and the single selected host are local-user settings for
-Codex, Claude Code, and local Cursor. They do not cover cloud, remote, or container
-hosts unless the same installation and configuration are present there. The selection is stored in
-`forge-data/learning-hooks.json`; switching it removes the previous Forge Hook
-and installs the newly selected host Hook. Projects still control collection
-independently through their enabled-Skill configuration. Skill-contract collection remains the fallback when the selected Hook is
-missing, fails, returns empty content, or cannot safely attribute a response.
-Hook configuration and runtime observation are separate states: configured does
-not mean that an event has fired successfully. The dashboard reports each host's
-latest bounded outcome from `forge-data/hook-status/<host>.json`; these diagnostics
-contain no event body. When an event could belong to multiple pending invocations,
-the collector retains every marker and relies on the Skill-contract fallback rather
-than guessing or marking unrelated captures as missed.
-Never add an unkeyed write path: every capture source must participate in the
-shared invocation protocol so record ownership and counts remain deterministic.
+At entrypoint level, preserve these invariants: collection is allowlisted and
+best-effort; begin, lookup, and fallback each run at most once with the configured
+interpreter and timeout; the Hook and fallback share one invocation ID; the
+Skill-contract result is canonical training input while Hook output is supporting
+evidence; and every write path must be keyed. Collection failure must not delay or
+replace the user-visible Skill result.

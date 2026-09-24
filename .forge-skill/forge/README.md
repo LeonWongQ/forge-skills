@@ -4,7 +4,7 @@
 
 `v1.2.1`
 
-<!-- forge-facts: skills=32 packs=9 domains=12 checklists=10 templates=9 validation-count=8 validation-checks=registry,paths,refs,packs,pack-refs,semantics,contracts,derived-registry version=1.2.1 route-regression-count=81 -->
+<!-- forge-facts: skills=33 packs=9 domains=12 checklists=10 templates=9 validation-count=8 validation-checks=registry,paths,refs,packs,pack-refs,semantics,contracts,derived-registry version=1.2.1 route-regression-count=81 -->
 
 This release closes the Operational Validation, Compatibility, and Routing Calibration milestone.
 

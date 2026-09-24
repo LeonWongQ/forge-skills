@@ -149,6 +149,61 @@ def test_single_database_page_fetches_only_requested_rows(tmp_path, monkeypatch)
     assert any("LIMIT 20 OFFSET 40" in query for query in queries)
 
 
+def test_shared_record_page_keeps_detail_queries_bounded(tmp_path, monkeypatch):
+    project_id = "project-shared-page"
+    project = tmp_path / "project"
+    project.mkdir()
+    databases = {}
+    shared_id = "shared-page"
+    for skill in ("code-review", "plan"):
+        database = tmp_path / f"{skill}.sqlite"
+        connection = connect_database(database)
+        with connection:
+            connection.executemany(
+                """INSERT INTO learning_records
+                   (id, project_id, project_name, project_path, skill, captured_at,
+                    output_json, shared_capture_id, shared_capture_complete, capture_source)
+                   VALUES (?, ?, 'project', ?, ?, ?, '{}', ?, ?, ?)""",
+                [
+                    (
+                        f"record-{skill}-{index:03}", project_id, str(project), skill,
+                        f"2026-09-17T00:{index:02}:00Z",
+                        shared_id if index == 29 else None,
+                        1 if index == 29 else 0,
+                        "HOST_HOOK" if index == 29 else "SKILL_CONTRACT",
+                    )
+                    for index in range(30)
+                ],
+            )
+        connection.close()
+        databases[skill] = str(database)
+    monkeypatch.setattr(review_server, "projects", lambda: [{
+        "projectId": project_id, "name": "project", "path": str(project),
+        "database": databases["code-review"], "databases": databases,
+        "status": "ACTIVE",
+    }])
+    original_connect = sqlite3.connect
+    queries = []
+
+    def traced_connect(*args, **kwargs):
+        connection = original_connect(*args, **kwargs)
+        connection.set_trace_callback(queries.append)
+        return connection
+
+    monkeypatch.setattr(review_server.sqlite3, "connect", traced_connect)
+
+    page = review_server.query_record_page({"page": ["1"], "project": [project_id]})
+
+    detail_queries = [
+        query for query in queries
+        if query.lstrip().upper().startswith("SELECT * FROM LEARNING_RECORDS")
+    ]
+    assert page["total"] == 59
+    assert len(page["items"]) == 20
+    assert len(detail_queries) == 2
+    assert all("LIMIT 20 OFFSET 0" in query for query in detail_queries)
+
+
 def test_record_page_uses_stable_ties_and_one_database_read_snapshot(tmp_path, monkeypatch):
     database = tmp_path / "page.sqlite"
     connection = connect_database(database)
@@ -1148,6 +1203,20 @@ def test_create_and_review_summary_filters_ineligible_records(tmp_path, monkeypa
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         rows,
     )
+    connection.execute(
+        """INSERT INTO learning_records
+           (id, project_id, project_name, project_path, skill, run_id, stage, run_status,
+            captured_at, output_json, review_status, reviewed, capture_source, hook_status)
+           VALUES ('hook-only', ?, 'project', ?, 'code-review', 'hook-run', 'direct.host-hook',
+                   'succeeded', '2026-09-04T00:00:00Z', ?, 'ACTIVE', 1, 'HOST_HOOK', 'CAPTURED')""",
+        (
+            project_id, str(project),
+            json.dumps({"findings": [finding(
+                "Hook-only evidence must stay auxiliary",
+                "This reviewed Hook result must not enter a Summary.",
+            )]}),
+        ),
+    )
     connection.commit()
     connection.close()
     registry_item = {"projectId": project_id, "name": "project", "path": str(project), "database": str(database)}
@@ -1244,6 +1313,364 @@ def test_review_queries_and_updates_across_skill_databases(tmp_path, monkeypatch
         assert connection.execute("SELECT COUNT(*) FROM learning_records").fetchone()[0] == 1
     with closing(sqlite3.connect(databases["debug"])) as connection, connection:
         assert connection.execute("SELECT COUNT(*) FROM learning_records").fetchone()[0] == 0
+
+
+def test_shared_hook_turn_is_listed_once_and_reviewed_across_skills(tmp_path, monkeypatch):
+    project_id = "project-shared-review"
+    project = tmp_path / "project"
+    project.mkdir()
+    databases = {}
+    shared_id = "shared-review-once"
+    for skill in ("code-review", "plan"):
+        database = tmp_path / "forge-data" / "projects" / project_id / "learning" / skill / "learning.sqlite"
+        database.parent.mkdir(parents=True)
+        connection = connect_database(database)
+        metadata = {"hookCapture": {
+            "attribution": "SHARED_HOST_TURN",
+            "sharedCaptureId": shared_id,
+            "matchedInvocationCount": 2,
+            "matchedSkills": ["code-review", "plan"],
+        }}
+        connection.execute(
+            """INSERT INTO learning_records
+               (id, project_id, project_name, project_path, skill, captured_at, output_json,
+                metadata_json, shared_capture_id, shared_capture_complete,
+                capture_source, hook_status)
+               VALUES (?, ?, 'project', ?, ?, '2026-09-24T00:00:00Z', ?, ?, ?, 1,
+                       'HOST_HOOK', 'CAPTURED')""",
+            (
+                f"record-{skill}", project_id, str(project), skill,
+                json.dumps({"finalResponse": "one shared response"}), json.dumps(metadata),
+                shared_id,
+            ),
+        )
+        connection.commit()
+        connection.close()
+        databases[skill] = str(database)
+    registry_item = {
+        "projectId": project_id, "name": "project", "path": str(project),
+        "database": databases["code-review"], "databases": databases, "status": "ACTIVE",
+    }
+    monkeypatch.setattr(review_server, "projects", lambda: [registry_item])
+
+    page = review_server.query_record_page({"page": ["1"], "project": [project_id]})
+
+    assert page["total"] == 1
+    assert len(page["items"]) == 1
+    item = page["items"][0]
+    assert item["shared_capture_id"] == shared_id
+    assert item["shared_record_count"] == 2
+    assert item["shared_skills"] == ["code-review", "plan"]
+
+    result = review_server.update_record({
+        "projectId": project_id,
+        "recordId": item["id"],
+        "action": "ACTIVE",
+        "editedContent": "reviewed shared evidence",
+        "note": "reviewed once",
+    })
+
+    assert result["updatedCount"] == 2
+    assert result["sharedCaptureId"] == shared_id
+    assert result["sharedSkills"] == ["code-review", "plan"]
+    for database in databases.values():
+        with closing(sqlite3.connect(database)) as connection:
+            row = connection.execute(
+                "SELECT reviewed, review_status, edited_content, review_note FROM learning_records"
+            ).fetchone()
+        assert row == (1, "ACTIVE", "reviewed shared evidence", "reviewed once")
+
+
+def test_shared_hook_review_rejects_a_missing_declared_skill_database(tmp_path, monkeypatch):
+    project_id = "project-shared-missing-database"
+    project = tmp_path / "project"
+    project.mkdir()
+    shared_id = "shared-missing-database"
+    databases = {}
+    metadata = {"hookCapture": {
+        "attribution": "SHARED_HOST_TURN",
+        "sharedCaptureId": shared_id,
+        "matchedInvocationCount": 2,
+        "matchedSkills": ["code-review", "plan"],
+    }}
+    for skill in ("code-review", "plan"):
+        database = tmp_path / f"{skill}.sqlite"
+        connection = connect_database(database)
+        with connection:
+            connection.execute(
+                """INSERT INTO learning_records
+                   (id, project_id, project_name, project_path, skill, captured_at,
+                    metadata_json, shared_capture_id, shared_capture_complete,
+                    capture_source, hook_status)
+                   VALUES (?, ?, 'project', ?, ?, '2026-09-24T00:00:00Z', ?, ?, 1,
+                           'HOST_HOOK', 'CAPTURED')""",
+                (
+                    f"record-{skill}", project_id, str(project), skill,
+                    json.dumps(metadata), shared_id,
+                ),
+            )
+        connection.close()
+        databases[skill] = str(database)
+    missing = Path(databases["plan"])
+    missing.rename(missing.with_suffix(".missing"))
+    monkeypatch.setattr(review_server, "projects", lambda: [{
+        "projectId": project_id, "name": "project", "path": str(project),
+        "database": databases["code-review"], "databases": databases,
+        "status": "ACTIVE",
+    }])
+
+    with pytest.raises(ValueError, match="database is unavailable for Skill: plan"):
+        review_server.update_record({
+            "projectId": project_id, "recordId": "record-code-review",
+            "action": "EXCLUDED",
+        })
+
+    with closing(sqlite3.connect(databases["code-review"])) as connection:
+        assert connection.execute(
+            "SELECT reviewed, review_status FROM learning_records"
+        ).fetchone() == (0, "ACTIVE")
+
+
+def test_shared_hook_metadata_does_not_group_or_update_skill_contract_records(
+    tmp_path, monkeypatch,
+):
+    project_id = "project-shared-fallback"
+    project = tmp_path / "project"
+    project.mkdir()
+    shared_id = "shared-with-fallback"
+    databases = {}
+    for skill, source in (
+        ("code-review", "SKILL_CONTRACT"),
+        ("plan", "HOST_HOOK"),
+        ("debug", "HOST_HOOK"),
+    ):
+        database = (
+            tmp_path / "forge-data" / "projects" / project_id
+            / "learning" / skill / "learning.sqlite"
+        )
+        database.parent.mkdir(parents=True)
+        connection = connect_database(database)
+        metadata = {"hookCapture": {
+            "attribution": "SHARED_HOST_TURN",
+            "sharedCaptureId": shared_id,
+            "matchedInvocationCount": "invalid",
+            "matchedSkills": ["code-review", "debug", "plan"],
+        }}
+        connection.execute(
+            """INSERT INTO learning_records
+               (id, project_id, project_name, project_path, skill, captured_at, output_json,
+                metadata_json, shared_capture_id, shared_capture_complete,
+                capture_source, hook_status)
+               VALUES (?, ?, 'project', ?, ?, '2026-09-24T00:00:00Z', ?, ?, ?, ?, ?,
+                       'CAPTURED')""",
+            (
+                f"record-{skill}", project_id, str(project), skill,
+                json.dumps({"result": skill}), json.dumps(metadata),
+                shared_id,
+                1 if source == "HOST_HOOK" else 0, source,
+            ),
+        )
+        connection.commit()
+        connection.close()
+        databases[skill] = str(database)
+    monkeypatch.setattr(review_server, "projects", lambda: [{
+        "projectId": project_id, "name": "project", "path": str(project),
+        "database": databases["code-review"], "databases": databases,
+        "status": "ACTIVE",
+    }])
+
+    page = review_server.query_record_page({"page": ["1"], "project": [project_id]})
+
+    assert page["total"] == 2
+    assert len(page["items"]) == 2
+    contract = next(item for item in page["items"] if item["skill"] == "code-review")
+    hook = next(item for item in page["items"] if item["capture_source"] == "HOST_HOOK")
+    assert contract["shared_capture_id"] == shared_id
+    assert contract.get("shared_review_group_id") is None
+    assert "shared_skills" not in contract
+    assert contract["shared_capture_pending"] is True
+    assert hook["shared_capture_id"] == shared_id
+    assert hook["shared_review_group_id"] == shared_id
+    assert hook["shared_record_count"] == 2
+    assert hook["shared_skills"] == ["debug", "plan"]
+
+    with pytest.raises(ValueError, match="still finalizing"):
+        review_server.update_record({
+            "projectId": project_id,
+            "recordId": contract["id"],
+            "action": "ACTIVE",
+        })
+
+    result = review_server.update_record({
+        "projectId": project_id, "recordId": hook["id"], "action": "EXCLUDED",
+        "note": "auxiliary evidence only",
+    })
+
+    assert result["updatedCount"] == 2
+    with closing(sqlite3.connect(databases["code-review"])) as connection:
+        assert connection.execute(
+            "SELECT reviewed, review_status FROM learning_records"
+        ).fetchone() == (0, "ACTIVE")
+    for skill in ("debug", "plan"):
+        with closing(sqlite3.connect(databases[skill])) as connection:
+            assert connection.execute(
+                "SELECT reviewed, review_status FROM learning_records"
+            ).fetchone() == (1, "EXCLUDED")
+
+
+def test_shared_hook_review_rolls_back_all_databases_when_one_write_fails(
+    tmp_path, monkeypatch,
+):
+    project_id = "project-shared-rollback"
+    project = tmp_path / "project"
+    project.mkdir()
+    shared_id = "shared-rollback"
+    databases = {}
+    for skill in ("code-review", "plan"):
+        database = tmp_path / f"{skill}.sqlite"
+        connection = connect_database(database)
+        with connection:
+            connection.execute(
+                """INSERT INTO learning_records
+                   (id, project_id, project_name, project_path, skill, captured_at,
+                    metadata_json, shared_capture_id, shared_capture_complete,
+                    capture_source, hook_status)
+                   VALUES (?, ?, 'project', ?, ?, '2026-09-24T00:00:00Z', ?, ?, 1,
+                           'HOST_HOOK', 'CAPTURED')""",
+                (
+                    f"record-{skill}", project_id, str(project), skill,
+                        json.dumps({"hookCapture": {
+                            "attribution": "SHARED_HOST_TURN",
+                            "sharedCaptureId": shared_id,
+                            "matchedSkills": ["code-review", "plan"],
+                        }}), shared_id,
+                ),
+            )
+            if skill == "plan":
+                connection.execute(
+                    """CREATE TRIGGER reject_shared_review
+                       BEFORE UPDATE ON learning_records
+                       BEGIN SELECT RAISE(ABORT, 'forced shared review failure'); END"""
+                )
+        connection.close()
+        databases[skill] = str(database)
+    monkeypatch.setattr(review_server, "projects", lambda: [{
+        "projectId": project_id, "name": "project", "path": str(project),
+        "database": databases["code-review"], "databases": databases,
+        "status": "ACTIVE",
+    }])
+
+    with pytest.raises(sqlite3.IntegrityError, match="forced shared review failure"):
+        review_server.update_record({
+            "projectId": project_id, "recordId": "record-code-review",
+            "action": "EXCLUDED", "note": "must be atomic",
+        })
+
+    for database in databases.values():
+        with closing(sqlite3.connect(database)) as connection:
+            assert connection.execute(
+                "SELECT reviewed, review_status, review_note FROM learning_records"
+            ).fetchone() == (0, "ACTIVE", "")
+
+
+def test_shared_hook_review_waits_until_every_member_is_complete(tmp_path, monkeypatch):
+    project_id = "project-shared-pending"
+    project = tmp_path / "project"
+    project.mkdir()
+    shared_id = "shared-pending"
+    databases = {}
+    for skill, complete in (("code-review", 1), ("plan", 0)):
+        database = tmp_path / f"{skill}.sqlite"
+        connection = connect_database(database)
+        with connection:
+            connection.execute(
+                """INSERT INTO learning_records
+                   (id, project_id, project_name, project_path, skill, captured_at,
+                    metadata_json, shared_capture_id, shared_capture_complete,
+                    capture_source, hook_status)
+                   VALUES (?, ?, 'project', ?, ?, '2026-09-24T00:00:00Z', ?, ?, ?,
+                           'HOST_HOOK', 'CAPTURED')""",
+                (
+                    f"record-{skill}", project_id, str(project), skill,
+                    json.dumps({"hookCapture": {
+                        "attribution": "SHARED_HOST_TURN",
+                        "sharedCaptureId": shared_id,
+                        "matchedSkills": ["code-review", "plan"],
+                    }}), shared_id, complete,
+                ),
+            )
+        connection.close()
+        databases[skill] = str(database)
+    monkeypatch.setattr(review_server, "projects", lambda: [{
+        "projectId": project_id, "name": "project", "path": str(project),
+        "database": databases["code-review"], "databases": databases,
+        "status": "ACTIVE",
+    }])
+
+    page = review_server.query_record_page({"page": ["1"], "project": [project_id]})
+    assert page["items"][0]["shared_capture_pending"] is True
+
+    with pytest.raises(ValueError, match="still finalizing"):
+        review_server.update_record({
+            "projectId": project_id, "recordId": page["items"][0]["id"],
+            "action": "EXCLUDED",
+        })
+
+    for database in databases.values():
+        with closing(sqlite3.connect(database)) as connection:
+            assert connection.execute(
+                "SELECT reviewed, review_status FROM learning_records"
+            ).fetchone() == (0, "ACTIVE")
+
+
+def test_shared_hook_review_rejects_more_than_eleven_skill_databases(
+    tmp_path, monkeypatch,
+):
+    project_id = "project-shared-limit"
+    project = tmp_path / "project"
+    project.mkdir()
+    shared_id = "shared-over-limit"
+    databases = {}
+    matched_skills = [f"skill-{index}" for index in range(12)]
+    for index in range(12):
+        skill = f"skill-{index}"
+        database = tmp_path / f"{skill}.sqlite"
+        connection = connect_database(database)
+        with connection:
+            connection.execute(
+                """INSERT INTO learning_records
+                   (id, project_id, project_name, project_path, skill, captured_at,
+                    metadata_json, shared_capture_id, shared_capture_complete,
+                    capture_source, hook_status)
+                   VALUES (?, ?, 'project', ?, ?, '2026-09-24T00:00:00Z', ?, ?, 1,
+                           'HOST_HOOK', 'CAPTURED')""",
+                (
+                    f"record-{index}", project_id, str(project), skill,
+                    json.dumps({"hookCapture": {
+                        "attribution": "SHARED_HOST_TURN",
+                        "sharedCaptureId": shared_id,
+                        "matchedSkills": matched_skills,
+                    }}), shared_id,
+                ),
+            )
+        connection.close()
+        databases[skill] = str(database)
+    monkeypatch.setattr(review_server, "projects", lambda: [{
+        "projectId": project_id, "name": "project", "path": str(project),
+        "database": databases["skill-0"], "databases": databases,
+        "status": "ACTIVE",
+    }])
+
+    with pytest.raises(ValueError, match="at most 11 Skill databases"):
+        review_server.update_record({
+            "projectId": project_id, "recordId": "record-0", "action": "EXCLUDED",
+        })
+
+    for database in databases.values():
+        with closing(sqlite3.connect(database)) as connection:
+            assert connection.execute(
+                "SELECT reviewed, review_status FROM learning_records"
+            ).fetchone() == (0, "ACTIVE")
 
 
 class _FakeResponse:
@@ -1487,7 +1914,22 @@ def test_learning_pages_share_language_asset_and_refinement_contract():
     assert 'id="latest-record-evidence"' in review_html
     assert "record.hook_captured_at?'hookCaptured'" in review_html
     assert "status.lastEvent?.outcome" in review_html
+    assert "receipt?.invocationIds?.includes(record.invocation_id)" in review_html
+    assert "record.metadata?.hookCapture" in review_html
+    assert "profile?.matchedSkills?.length" in review_html
+    assert "sharedReviewGroup" in review_html
+    assert "r.shared_review_group_id" in review_html
+    assert "hookOnlyAuxiliary" in review_html
+    assert "value.updatedCount>1" in review_html
+    assert "sharedReviewApplied" in i18n_javascript
+    assert "sharedCapturePending" in review_html
+    assert "sharedCapturePending" in i18n_javascript
+    assert "status.trustStatus==='MANUAL_CHECK_REQUIRED'" in review_html
+    assert "status.eventScope==='HISTORICAL'" in review_html
+    assert "switchHookConfirm" in review_html
     assert 'hookNoInvocation' in i18n_javascript
+    assert 'Claude Code 的原生信任或审批状态尚未验证' in i18n_javascript
+    assert "Switching hosts removes the previous host's Forge Hook" in i18n_javascript
     assert 'Select a project to inspect and configure its Hook.' not in i18n_javascript
     assert 'Remove project Hook' not in i18n_javascript
 

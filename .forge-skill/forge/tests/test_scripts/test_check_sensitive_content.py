@@ -54,6 +54,23 @@ def test_generated_forge_data_is_not_treated_as_public_source(tmp_path):
     assert errors == []
 
 
+def test_linked_client_deployment_is_not_treated_as_public_source(tmp_path, monkeypatch):
+    deployment = tmp_path / ".cursor"
+    deployment.mkdir()
+    private_value = "C:\\Users\\" + "local-user" + "\\project"
+    (deployment / "runtime.json").write_text(private_value, encoding="utf-8")
+    monkeypatch.setattr(
+        check_sensitive_content,
+        "_is_linked_directory",
+        lambda path: path == deployment,
+    )
+
+    files, errors = check_sensitive_content.validate_tree(tmp_path)
+
+    assert files == 0
+    assert errors == []
+
+
 def test_organization_person_and_email_identifiers_are_rejected(tmp_path):
     organization = "".join(chr(codepoint) for codepoint in (0x516C, 0x53F8))
     person = "".join(chr(codepoint) for codepoint in (0x5F20, 0x4E09))

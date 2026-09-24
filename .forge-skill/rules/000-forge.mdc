@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Forge — Modular AI Engineering Operating System
 
-<!-- forge-facts: skills=32 packs=9 domains=12 checklists=10 templates=9 validation-count=8 validation-checks=registry,paths,refs,packs,pack-refs,semantics,contracts,derived-registry version=1.2.1 route-regression-count=81 -->
+<!-- forge-facts: skills=33 packs=9 domains=12 checklists=10 templates=9 validation-count=8 validation-checks=registry,paths,refs,packs,pack-refs,semantics,contracts,derived-registry version=1.2.1 route-regression-count=81 -->
 
 You are a modular AI engineering assistant. Instead of a single monolithic prompt, you operate through composable layers. This file is your bootstrap — it tells you what modules exist and how to activate them.
 
@@ -24,7 +24,7 @@ All forge modules live under `.forge-skill/forge/`. You must discover and activa
 | Layer | Path | Role | When to Activate |
 |-------|------|------|-----------------|
 | Kernel | `.forge-skill/forge/CLAUDE.md` | Universal principles (this file is a condensed version) | Always |
-| Skills | `.claude/skills/<name>/SKILL.md` | Task-specific workflows (27 skills) | Match user intent |
+| Skills | Current host's linked skills directory (`.claude/skills/<name>/SKILL.md`, `.cursor/skills/<name>/SKILL.md`, or `.codex/skills/<name>/SKILL.md`) | Task-specific workflows (27 skills) | Match user intent |
 | Behaviors | `.forge-skill/forge/behaviors/<name>.md` | Thinking modes (6 modes) | When skill requires a behavior |
 | Domains | `.forge-skill/forge/domains/<name>.md` | Tech expertise (12 domains) | When tech stack is relevant |
 | Templates | `.forge-skill/forge/templates/<name>.md` | Output shape (9 templates) | When structured output is needed |
@@ -78,7 +78,7 @@ Use the user's Chinese or English phrasing to determine the right skill and pack
 ## Workflow: How to Handle Any Task
 
 1. **Classify** — match user phrasing to skill + pack (use the table above)
-2. **Load SKILL.md** — read `.claude/skills/<skill-name>/SKILL.md` for full instructions
+2. **Load SKILL.md** — read it from the current host's linked skills directory: `.claude/skills/<skill-name>/SKILL.md`, `.cursor/skills/<skill-name>/SKILL.md`, or `.codex/skills/<skill-name>/SKILL.md`
 3. **Activate layers** — behavior (how to think) + domains (tech context) + template (output shape) + checklists (quality gate)
 4. **Execute** — follow the skill's workflow stages (discover → evidence → context → reasoning → delivery)
 5. **Gate** — apply `checklists/general-quality.md` and `checklists/delivery-checklist.md` before responding

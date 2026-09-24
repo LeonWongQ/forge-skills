@@ -24,6 +24,26 @@ TRACE_LOCK_TIMEOUT_SECONDS = 0.25
 _TRACE_LOCK = threading.Lock()
 
 
+def _decode_payload(raw: bytes, *, cursor_compatible: bool) -> tuple[object, str]:
+    """Decode one Hook object, tolerating Cursor's bounded JSON quirks only."""
+    text = raw.decode("utf-8-sig", errors="strict")
+    try:
+        return json.loads(text), "strict"
+    except json.JSONDecodeError as strict_error:
+        if not cursor_compatible:
+            raise
+        candidate = text.lstrip(" \t\r\n")
+        try:
+            value, end = json.JSONDecoder(strict=False).raw_decode(candidate)
+        except json.JSONDecodeError:
+            raise strict_error from None
+        # Cursor may append transport NULs. Never accept a second document or
+        # arbitrary trailing content while recovering its response payload.
+        if candidate[end:].strip(" \t\r\n\x00"):
+            raise strict_error
+        return value, "cursor-compatible"
+
+
 def _status_path(forge_root: Path, host: str) -> Path:
     configured = os.getenv("FORGE_DATA_ROOT")
     root = Path(configured).expanduser().resolve(strict=False) if configured else (
@@ -99,8 +119,13 @@ def _write_status(
     *,
     detail: str | None = None,
     error_type: str | None = None,
+    invocation_ids: object = None,
 ) -> None:
     """Persist bounded diagnostics without exposing event content."""
+    bounded_ids = [
+        item[:128] for item in invocation_ids
+        if isinstance(item, str) and item.strip()
+    ][:20] if isinstance(invocation_ids, list) else []
     value = {
         "schemaVersion": "1.0",
         "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -109,6 +134,7 @@ def _write_status(
         "outcome": outcome,
         "detail": detail[:240] if isinstance(detail, str) else None,
         "errorType": error_type,
+        "invocationIds": bounded_ids,
         "interpreterPath": sys.executable,
     }
     path = _status_path(forge_root, host)
@@ -177,13 +203,21 @@ def main() -> None:
         print("{}")
         return
     try:
-        payload = json.loads(raw.decode("utf-8-sig", errors="strict"))
+        payload, decode_mode = _decode_payload(
+            raw,
+            cursor_compatible=args.host == "cursor",
+        )
         if not isinstance(payload, dict):
             raise ValueError("Hook input must be an object")
-        trace("payload_decoded", hasCwd=isinstance(payload.get("cwd"), str),
+        trace("payload_decoded", decodeMode=decode_mode,
+              hasCwd=isinstance(payload.get("cwd"), str),
               hasWorkspaceRoots=isinstance(payload.get("workspace_roots"), list),
               hasFinalMessage=bool(payload.get("last_assistant_message")),
-              identityFields=[key for key in ("session_id", "turn_id") if payload.get(key)])
+              identityFields=[
+                  key for key in
+                  ("conversation_id", "generation_id", "session_id", "turn_id")
+                  if payload.get(key)
+              ])
         from forge_cli.learning_invocations import handle_host_event
 
         result = handle_host_event(args.forge_root.resolve(), args.host, args.event, payload, trace=trace)
@@ -193,7 +227,27 @@ def main() -> None:
         detail = result.get("action") or result.get("reason")
         trace("hook_finished", outcome=outcome, reason=detail,
               matchedCount=len(result.get("invocationIds", [])))
-        _write_status(args.forge_root, args.host, args.event, outcome, detail=detail)
+        _write_status(
+            args.forge_root, args.host, args.event, outcome, detail=detail,
+            invocation_ids=result.get("invocationIds", []),
+        )
+    except json.JSONDecodeError as error:
+        if args.host == "cursor" and args.event == "after-agent-response":
+            reason = "DEFERRED_TO_TRANSCRIPT"
+            trace(
+                "hook_finished", outcome="SKIPPED", reason=reason,
+                errorType=type(error).__name__,
+            )
+            _write_status(
+                args.forge_root, args.host, args.event, "SKIPPED",
+                detail=reason, error_type=type(error).__name__,
+            )
+        else:
+            trace("hook_finished", outcome="FAILED", errorType=type(error).__name__)
+            _write_status(
+                args.forge_root, args.host, args.event, "FAILED",
+                error_type=type(error).__name__,
+            )
     except Exception as error:
         trace("hook_finished", outcome="FAILED", errorType=type(error).__name__)
         _write_status(

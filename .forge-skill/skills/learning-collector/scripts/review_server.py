@@ -841,7 +841,7 @@ def _record_query_options(query: dict[str, list[str]]) -> tuple[str, str, str, s
 
 def _query_record_snapshot(
     query: dict[str, list[str]], project_items: list[dict], *, limit: int, offset: int,
-    include_total: bool,
+    include_total: bool, collapse_shared_hooks: bool = False,
 ) -> tuple[list[dict], int | None]:
     project_filter, skill_filter, _status_filter, _search, where, values = _record_query_options(query)
     records = []
@@ -854,6 +854,7 @@ def _query_record_snapshot(
         if database.is_file()
     ]
     single_database = len(targets) == 1
+    shared_counts: dict[tuple[str, str], int] = {}
     for project in project_items:
         if not _project_matches_scan(project, project_filter):
             continue
@@ -866,6 +867,21 @@ def _query_record_snapshot(
                 try:
                     connection.row_factory = sqlite3.Row
                     connection.execute("BEGIN")
+                    if collapse_shared_hooks:
+                        shared_rows = connection.execute(
+                            "SELECT project_id, shared_capture_id, COUNT(*) AS member_count "
+                            "FROM learning_records" + where
+                            + (" AND " if where else " WHERE ")
+                            + "capture_source = 'HOST_HOOK' "
+                            + "AND shared_capture_id IS NOT NULL "
+                            + "GROUP BY project_id, shared_capture_id",
+                            values,
+                        ).fetchall()
+                        for shared_row in shared_rows:
+                            key = (shared_row["project_id"], shared_row["shared_capture_id"])
+                            shared_counts[key] = (
+                                shared_counts.get(key, 0) + int(shared_row["member_count"])
+                            )
                     if include_total:
                         total += int(connection.execute(
                             "SELECT COUNT(*) FROM learning_records" + where, values,
@@ -873,7 +889,11 @@ def _query_record_snapshot(
                     rows = connection.execute(
                         "SELECT * FROM learning_records" + where
                         + " ORDER BY captured_at DESC, id DESC LIMIT ? OFFSET ?",
-                        (*values, limit if single_database else fetch_limit, offset if single_database else 0),
+                        (
+                            *values,
+                            fetch_limit if shared_counts or not single_database else limit,
+                            0 if shared_counts or not single_database else offset,
+                        ),
                     ).fetchall()
                 finally:
                     connection.close()
@@ -885,6 +905,9 @@ def _query_record_snapshot(
                 continue
             for row in rows:
                 item = dict(row)
+                item["shared_capture_pending"] = bool(item.get("shared_capture_id")) and not bool(
+                    item.get("shared_capture_complete")
+                )
                 for field in (
                     "output_json", "host_output_json", "diagnostics_json",
                     "metadata_json", "evaluation_json",
@@ -892,7 +915,123 @@ def _query_record_snapshot(
                     item[field.removesuffix("_json")] = decode_json(item.pop(field))
                 records.append(item)
     records.sort(key=lambda item: (item["captured_at"], item["id"], item["project_id"], item["skill"]), reverse=True)
+    if collapse_shared_hooks:
+        if not shared_counts:
+            return (
+                records[:limit] if single_database else records[offset:offset + limit],
+                total,
+            )
+        records = _collapse_shared_hook_records(records)
+        page = records[offset:offset + limit]
+        _enrich_shared_hook_records(page, project_items)
+        collapsed_total = (
+            total - sum(count - 1 for count in shared_counts.values())
+            if include_total and total is not None else None
+        )
+        return page, collapsed_total
     return records[:limit] if single_database else records[offset:offset + limit], total
+
+
+def _hook_capture_metadata(record: dict) -> dict:
+    metadata = record.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = decode_json(record.get("metadata_json"))
+    capture = metadata.get("hookCapture") if isinstance(metadata, dict) else None
+    return capture if isinstance(capture, dict) else {}
+
+
+def _shared_hook_capture_id(record: dict) -> str | None:
+    if record.get("capture_source") != "HOST_HOOK":
+        return None
+    stored = record.get("shared_capture_id")
+    if isinstance(stored, str) and stored.strip():
+        return stored.strip()
+    capture = _hook_capture_metadata(record)
+    value = capture.get("sharedCaptureId")
+    if capture.get("attribution") != "SHARED_HOST_TURN":
+        return None
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _collapse_shared_hook_records(records: list[dict]) -> list[dict]:
+    result = []
+    groups: dict[tuple[str, str], dict] = {}
+    for record in records:
+        shared_id = _shared_hook_capture_id(record)
+        if shared_id is None:
+            result.append(record)
+            continue
+        key = (record["project_id"], shared_id)
+        representative = groups.get(key)
+        if representative is None:
+            representative = dict(record)
+            representative["shared_capture_id"] = shared_id
+            representative["shared_review_group_id"] = shared_id
+            representative["shared_record_ids"] = []
+            representative["shared_skills"] = []
+            groups[key] = representative
+            result.append(representative)
+        representative["shared_record_ids"].append(record["id"])
+        representative["shared_skills"].append(record["skill"])
+    for record in groups.values():
+        record["shared_skills"] = sorted(set(record["shared_skills"]))
+        record["shared_record_count"] = len(record["shared_record_ids"])
+    return result
+
+
+def _enrich_shared_hook_records(records: list[dict], project_items: list[dict]) -> None:
+    requested: dict[str, set[str]] = {}
+    representatives: dict[tuple[str, str], dict] = {}
+    for record in records:
+        shared_id = record.get("shared_review_group_id")
+        project_id = record.get("project_id")
+        if isinstance(shared_id, str) and isinstance(project_id, str):
+            requested.setdefault(project_id, set()).add(shared_id)
+            representatives[(project_id, shared_id)] = record
+    if not requested:
+        return
+    members: dict[tuple[str, str], list[tuple[str, str, bool]]] = {}
+    for project in project_items:
+        project_id = project.get("projectId")
+        shared_ids = requested.get(project_id)
+        if not shared_ids:
+            continue
+        placeholders = ",".join("?" for _item in shared_ids)
+        for database in _project_databases(project):
+            if not database.is_file():
+                continue
+            try:
+                connection = connect_database(database, timeout=5)
+                try:
+                    rows = connection.execute(
+                        "SELECT id, skill, shared_capture_id, shared_capture_complete "
+                        "FROM learning_records "
+                        "WHERE project_id = ? AND capture_source = 'HOST_HOOK' "
+                        f"AND shared_capture_id IN ({placeholders})",
+                        (project_id, *sorted(shared_ids)),
+                    ).fetchall()
+                finally:
+                    connection.close()
+            except sqlite3.DatabaseError:
+                _warnings().append({
+                    "projectId": project_id, "path": project.get("path"),
+                    "error": "database unavailable",
+                })
+                continue
+            for row in rows:
+                members.setdefault((project_id, row["shared_capture_id"]), []).append(
+                    (row["id"], row["skill"], bool(row["shared_capture_complete"]))
+                )
+    for key, representative in representatives.items():
+        group = members.get(key, [])
+        representative["shared_record_ids"] = [record_id for record_id, _skill, _complete in group]
+        representative["shared_skills"] = sorted({skill for _record_id, skill, _complete in group})
+        representative["shared_record_count"] = len(group)
+        representative["shared_capture_pending"] = any(
+            not complete for _record_id, _skill, complete in group
+        ) or bool(representative.get("shared_capture_pending"))
+        if len(group) <= 1 and not representative["shared_capture_pending"]:
+            representative["shared_review_group_id"] = None
 
 
 def query_records(
@@ -928,7 +1067,7 @@ def query_record_page(query: dict[str, list[str]]) -> dict:
     _warnings().clear()
     items, total = _query_record_snapshot(
         base, project_items, limit=page_size, offset=(page - 1) * page_size,
-        include_total=True,
+        include_total=True, collapse_shared_hooks=True,
     )
     assert total is not None
     return {
@@ -1723,6 +1862,7 @@ def create_summary(payload: dict) -> dict:
                           is_classic, classic_reason
                    FROM learning_records WHERE project_id = ? AND skill = ?
                    AND review_status = 'ACTIVE' AND reviewed = 1
+                   AND capture_source <> 'HOST_HOOK'
                    AND (output_json IS NOT NULL OR (edited_content IS NOT NULL AND trim(edited_content) <> ''))
                    AND (is_classic = 1 OR julianday(captured_at) >= julianday(?))
                    ORDER BY captured_at ASC, id ASC"""
@@ -1985,6 +2125,10 @@ def update_record(payload: dict) -> dict | None:
     project = next((item for item in projects() if item.get("projectId") == project_id), None)
     if project is None:
         return None
+    classic = payload.get("isClassic", False)
+    if action != "DELETED" and not isinstance(classic, bool):
+        return None
+    shared_group_record = None
     for database in _project_databases(project):
         if not database.is_file():
             continue
@@ -1993,11 +2137,19 @@ def update_record(payload: dict) -> dict | None:
             with connection:
                 connection.execute("BEGIN IMMEDIATE")
                 record = connection.execute(
-                    "SELECT id, project_id, skill, metadata_json FROM learning_records WHERE id = ? AND project_id = ?",
+                    "SELECT id, project_id, skill, metadata_json, capture_source, "
+                    "shared_capture_id, shared_capture_complete "
+                    "FROM learning_records WHERE id = ? AND project_id = ?",
                     (record_id, project_id),
                 ).fetchone()
                 if record is None:
                     continue
+                if record["shared_capture_id"] and not record["shared_capture_complete"]:
+                    raise ValueError("shared Hook capture is still finalizing")
+                shared_capture_id = _shared_hook_capture_id(dict(record))
+                if shared_capture_id is not None:
+                    shared_group_record = dict(record)
+                    break
                 summary_sources_exist = connection.execute(
                     "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'learning_summary_sources'"
                 ).fetchone()
@@ -2014,9 +2166,6 @@ def update_record(payload: dict) -> dict | None:
                         (record_id, project_id),
                     )
                 else:
-                    classic = payload.get("isClassic", False)
-                    if not isinstance(classic, bool):
-                        return None
                     cursor = connection.execute(
                         """UPDATE learning_records
                            SET review_status = ?, reviewed = 1, edited_content = ?, review_note = ?,
@@ -2030,7 +2179,156 @@ def update_record(payload: dict) -> dict | None:
                     return {"updated": True, "disabledOverlay": disabled_overlay}
         finally:
             connection.close()
-    return None
+        if shared_capture_id is not None:
+            break
+    else:
+        return None
+    return _update_shared_hook_records(
+        project, project_id, shared_capture_id, shared_group_record, payload,
+        classic=classic,
+    )
+
+
+def _update_shared_hook_records(
+    project: dict, project_id: str, shared_capture_id: str, group_record: dict,
+    payload: dict,
+    *, classic: bool,
+) -> dict:
+    def declared_members(record: dict) -> set[str]:
+        declared = _hook_capture_metadata(record).get("matchedSkills")
+        if not isinstance(declared, list) or not declared:
+            raise ValueError("shared Hook review group has no authoritative Skill membership")
+        if any(not isinstance(skill, str) or not skill.strip() for skill in declared):
+            raise ValueError("shared Hook review group has invalid Skill membership")
+        normalized = [skill.strip() for skill in declared]
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("shared Hook review group has inconsistent Skill membership")
+        return set(normalized)
+
+    expected_skills = declared_members(group_record)
+    if group_record.get("skill") not in expected_skills:
+        raise ValueError("shared Hook review group has inconsistent Skill membership")
+
+    registered = project.get("databases")
+    targets: list[tuple[Path, dict]] = []
+    members: list[tuple[Path, dict]] = []
+    for skill in sorted(expected_skills):
+        if isinstance(registered, dict):
+            database_value = registered.get(skill)
+            if not isinstance(database_value, str) or not database_value.strip():
+                raise ValueError(f"shared Hook review database is not registered for Skill: {skill}")
+            database = Path(database_value)
+        else:
+            database = Path(str(project.get("database", "")))
+        if not database.is_file():
+            raise ValueError(f"shared Hook review database is unavailable for Skill: {skill}")
+        connection = connect_database(database, timeout=5)
+        try:
+            rows = connection.execute(
+                "SELECT id, project_id, skill, metadata_json, capture_source, "
+                "shared_capture_id, shared_capture_complete "
+                "FROM learning_records WHERE project_id = ? AND skill = ? "
+                "AND shared_capture_id = ?",
+                (project_id, skill, shared_capture_id),
+            ).fetchall()
+        finally:
+            connection.close()
+        if len(rows) != 1:
+            raise ValueError(f"shared Hook review member is unavailable for Skill: {skill}")
+        member = dict(rows[0])
+        if declared_members(member) != expected_skills:
+            raise ValueError("shared Hook review group has inconsistent Skill membership")
+        members.append((database, member))
+        if member["capture_source"] == "HOST_HOOK":
+            targets.append((database, member))
+        elif member["capture_source"] != "SKILL_CONTRACT":
+            raise ValueError("shared Hook review group has an invalid capture source")
+    if not targets:
+        raise ValueError("shared Hook review group has no Hook evidence to review")
+    if any(not record["shared_capture_complete"] for _database, record in targets):
+        raise ValueError("shared Hook capture is still finalizing")
+
+    reviewed_at = now()
+    database_paths = list(dict.fromkeys(database.resolve() for database, _record in members))
+    if len(database_paths) > 11:
+        raise ValueError("shared Hook review supports at most 11 Skill databases")
+    aliases = {database_paths[0]: "main"}
+    connection = connect_database(database_paths[0], timeout=5)
+    try:
+        for index, database in enumerate(database_paths[1:], start=1):
+            alias = f"skill_{index}"
+            connection.execute(f"ATTACH DATABASE ? AS {alias}", (str(database),))
+            aliases[database] = alias
+        for alias in aliases.values():
+            mode = connection.execute(f"PRAGMA {alias}.journal_mode=TRUNCATE").fetchone()[0]
+            if str(mode).casefold() != "truncate":
+                raise sqlite3.OperationalError(
+                    f"shared Hook review requires rollback journaling for {alias}"
+                )
+        with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            updated = 0
+            updated_skills = []
+            for database, record in members:
+                alias = aliases[database.resolve()]
+                current = connection.execute(
+                    "SELECT id, project_id, skill, metadata_json, capture_source, "
+                    "shared_capture_id, shared_capture_complete "
+                    f"FROM {alias}.learning_records WHERE id = ? AND project_id = ?",
+                    (record["id"], project_id),
+                ).fetchone()
+                current_record = dict(current) if current is not None else None
+                if (
+                    current_record is None
+                    or current_record["skill"] != record["skill"]
+                    or current_record["shared_capture_id"] != shared_capture_id
+                    or current_record["capture_source"] != record["capture_source"]
+                    or declared_members(current_record) != expected_skills
+                    or current_record["capture_source"] not in {"HOST_HOOK", "SKILL_CONTRACT"}
+                ):
+                    raise ValueError("shared Hook review group changed while it was being reviewed")
+                if current_record["capture_source"] == "SKILL_CONTRACT":
+                    continue
+                if not current_record["shared_capture_complete"]:
+                    raise ValueError("shared Hook capture is still finalizing")
+                if connection.execute(
+                    f"SELECT 1 FROM {alias}.learning_summary_sources "
+                    "WHERE record_id = ? LIMIT 1",
+                    (record["id"],),
+                ).fetchone():
+                    raise ValueError(
+                        "a shared Hook record is referenced by a Summary and cannot be modified or deleted"
+                    )
+                if payload["action"] == "DELETED":
+                    cursor = connection.execute(
+                        f"DELETE FROM {alias}.learning_records WHERE id = ? AND project_id = ?",
+                        (record["id"], project_id),
+                    )
+                else:
+                    cursor = connection.execute(
+                        f"""UPDATE {alias}.learning_records
+                           SET review_status = ?, reviewed = 1, edited_content = ?, review_note = ?,
+                               reviewed_at = ?, deleted_at = NULL, is_classic = ?, classic_reason = ?
+                           WHERE id = ? AND project_id = ?""",
+                        (
+                            payload["action"], payload.get("editedContent"),
+                            str(payload.get("note") or ""), reviewed_at, int(classic),
+                            str(payload.get("classicReason") or ""), record["id"], project_id,
+                        ),
+                    )
+                if cursor.rowcount != 1:
+                    raise ValueError("shared Hook review member could not be updated")
+                updated += 1
+                updated_skills.append(current_record["skill"])
+    finally:
+        connection.close()
+    return {
+        "updated": True,
+        "updatedCount": updated,
+        "sharedCaptureId": shared_capture_id,
+        "sharedSkills": sorted(updated_skills),
+        "disabledOverlay": None,
+    }
 
 
 class Handler(BaseHTTPRequestHandler):

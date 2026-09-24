@@ -274,6 +274,12 @@
         "role": "bailian-and-dashscope-api-integration-workflow"
       },
       {
+        "id": "skill.hook_doctor",
+        "path": ".claude/skills/hook-doctor/SKILL.md",
+        "name": "Hook Doctor",
+        "role": "cross-host-learning-hook-diagnostics-and-repair-workflow"
+      },
+      {
         "id": "skill.learning_collector",
         "path": ".claude/skills/learning-collector/SKILL.md",
         "name": "Learning Collector",

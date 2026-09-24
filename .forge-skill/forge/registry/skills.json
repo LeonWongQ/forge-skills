@@ -1219,6 +1219,36 @@
       "context": "fork"
     },
     {
+      "id": "skill.hook_doctor",
+      "name": "hook-doctor",
+      "path": ".claude/skills/hook-doctor/SKILL.md",
+      "description": "Install, inspect, repair, and verify the Forge learning Hook across Codex, Claude Code, and Cursor.",
+      "triggers": [
+        "$hook-doctor",
+        "hook-doctor",
+        "Forge Hook",
+        "Hook health",
+        "Hook trust",
+        "Hook capture",
+        "Hook 诊断",
+        "Hook 信任",
+        "Hook 采集"
+      ],
+      "behavior": null,
+      "domains": [
+        "domain.testing",
+        "domain.observability_reliability"
+      ],
+      "template": "template.default",
+      "checklists": [
+        "checklist.general_quality",
+        "checklist.verification",
+        "checklist.delivery"
+      ],
+      "workflow": "workflow.full_default",
+      "context": "fork"
+    },
+    {
       "id": "skill.learning_collector",
       "name": "learning-collector",
       "path": ".claude/skills/learning-collector/SKILL.md",

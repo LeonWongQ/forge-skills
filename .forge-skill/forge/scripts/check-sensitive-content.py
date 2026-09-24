@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 import sys
 import os
+import stat
 from pathlib import Path
 
 
@@ -70,12 +71,24 @@ PATTERNS = {
 }
 
 
+def _is_linked_directory(path: Path) -> bool:
+    """Exclude local client deployments without hiding real source directories."""
+    try:
+        attributes = getattr(os.lstat(path), "st_file_attributes", 0)
+    except OSError:
+        return False
+    return path.is_symlink() or bool(
+        attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    )
+
+
 def public_text_files(root: Path = REPO_ROOT) -> list[Path]:
     files = []
     for directory, dirnames, filenames in os.walk(root):
         dirnames[:] = [
             name for name in dirnames
             if name not in EXCLUDED_PARTS and not name.startswith(".pytest-")
+            and not _is_linked_directory(Path(directory) / name)
         ]
         for filename in filenames:
             path = Path(directory) / filename

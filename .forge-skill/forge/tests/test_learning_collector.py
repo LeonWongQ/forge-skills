@@ -439,9 +439,11 @@ def test_existing_database_migration_preserves_records(tmp_path):
     assert "fallback_captured" in columns
     assert "hook_captured_at" in columns
     assert "host_output_json" in columns
+    assert "shared_capture_id" in columns
+    assert "shared_capture_complete" in columns
     assert "is_classic" in columns
     assert "classic_reason" in columns
-    assert version == 9
+    assert version == 10
 
 
 def test_database_creates_dashboard_filter_indexes(tmp_path):
