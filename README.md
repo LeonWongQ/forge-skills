@@ -2,7 +2,18 @@
 
 <!-- forge-facts: skills=33 version=1.2.1 route-regression-count=81 skill-eval-case-count=49 skill-eval-skill-count=33 -->
 
-Forge Skills is a modular engineering Skill collection for Codex, Claude, and Cursor. It combines focused Skill entrypoints with deterministic routing, reusable engineering guidance, validation tooling, and opt-in LLM behavior evaluation.
+Forge Skills is a cross-host engineering toolkit for Codex, Claude Code, and
+Cursor. It combines focused Skills, deterministic routing and validation, and
+an opt-in project learning loop that turns reviewed execution evidence into
+versioned, project-specific guidance.
+
+## About the Maintainer
+
+Forge Skills is built and maintained by Leon Wong, an engineer who enjoys
+exploring emerging technologies, developing independent ideas, and validating
+them through hands-on implementation. The project reflects a practical habit:
+study what is new, build something real, and keep improving it with evidence
+from actual use.
 
 ## What Forge Includes
 
