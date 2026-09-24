@@ -3,7 +3,7 @@ name: hook-doctor
 description: >-
   Primary entry point for installing, inspecting, repairing, and verifying the
   user-global Forge learning Hook across Codex, Claude Code, and Cursor. Use
-  for general Hook health questions, unknown-host diagnosis, host switching,
+  for general Hook health questions, unknown-host diagnosis, host configuration,
   or end-to-end Skill capture checks; load the matching host-specific doctor
   for native trust and protocol details.
 ---
@@ -14,7 +14,7 @@ Load `.forge-skill/forge/CLAUDE.md` and `.forge-skill/forge/AUTOLOAD.md` at
 activation, including the shared direct-host learning lifecycle.
 
 Use this Skill as the main entry point for Forge learning Hook work. It owns
-the shared lifecycle, host selection, common status language, and mutation
+the shared lifecycle, independent host configuration, common status language, and mutation
 boundaries. Host-specific doctors add native evidence; they do not redefine
 the shared success criteria.
 
@@ -22,12 +22,11 @@ the shared success criteria.
 
 Report these dimensions independently:
 
-1. `configured`: Forge owns the expected user-global Hook entry.
-2. `selected`: this host is the single host currently selected by Forge.
-3. `enabled`: the host reports the Hook enabled, when that state is observable.
-4. `trusted`: the host-specific trust result, or `UNVERIFIED` when no verified trust contract exists.
-5. `invoked`: an event from the current installation reached the Hook runtime.
-6. `captured`: one Hook trace and one learning row correlate to the same invocation ID.
+1. `configured`: the expected user-global Forge Hook entry exists for this host.
+2. `enabled`: the host reports the Hook enabled, when that state is observable.
+3. `trusted`: the host-specific trust result, or `UNVERIFIED` when no verified trust contract exists.
+4. `invoked`: an event from the current installation reached the Hook runtime.
+5. `captured`: one Hook trace and one learning row correlate to the same invocation ID.
 
 Do not collapse unknown, unsupported, or unverified states into `false`.
 Configuration does not prove invocation, and invocation does not prove capture.
@@ -43,7 +42,7 @@ Locate the configured interpreter and installation root from the active
 & "<configured Forge Python>" "<learning-collector>\scripts\manage_host_hook.py" status
 ```
 
-Use `selectedHost`, per-host `configState`, `runtimeState`, `lastEvent`, and
+Use `configuredHosts`, per-host `configState`, `runtimeState`, `lastEvent`, and
 `detail` as the generic evidence. `runtimeState=NEVER_OBSERVED` means the
 current installation has not been observed even if an older status file or
 learning record exists.
@@ -59,24 +58,27 @@ After identifying the host, load only its specialized guidance:
 Do not apply Codex trust hashes, `trustStatus`, Desktop UI, or bypass flags to
 Claude Code or Cursor.
 
-## Install, Switch, Or Repair
+## Install Or Repair
 
 Configuration is an explicit mutation. Perform it only when the user asks to
-install, switch, or repair the Hook:
+install or repair a Hook:
 
 ```powershell
 & "<configured Forge Python>" "<learning-collector>\scripts\manage_host_hook.py" configure --host <codex|claude-code|cursor>
 ```
 
-Forge supports one selected global Hook host. Switching hosts removes Forge's
-owned entry from the previous host. Preserve unrelated user Hooks and never
-edit native trust persistence directly.
+Each host is configured independently. Configuring one host leaves Forge's
+owned entries on every other host unchanged. Preserve unrelated user Hooks and
+never edit native trust persistence directly.
 
-Removal also requires an explicit request:
+Removing one host also requires an explicit request:
 
 ```powershell
-& "<configured Forge Python>" "<learning-collector>\scripts\manage_host_hook.py" remove
+& "<configured Forge Python>" "<learning-collector>\scripts\manage_host_hook.py" remove --host <codex|claude-code|cursor>
 ```
+
+Omitting `--host` is the explicit remove-all operation. Do not use it when the
+user asked to remove only one host.
 
 ## End-To-End Verification
 
@@ -102,7 +104,7 @@ Never execute a Hook handler manually to manufacture native evidence.
 
 ## Reporting
 
-Name the selected host, report every shared dimension, and identify which
+Name every configured host, report every shared dimension per host, and identify which
 states came from generic Forge evidence versus a host-specific doctor. Include
 invocation IDs and timestamps when available. State explicitly when trust or
 enabled state is `UNVERIFIED` instead of guessing.

@@ -30,7 +30,6 @@ SPEC.loader.exec_module(doctor)
 def configured_layers(**changes):
     layers = {
         "configured": True,
-        "selected": True,
         "enabled": True,
         "trusted": True,
         "invoked": True,
@@ -356,10 +355,9 @@ def test_learning_failure_does_not_hide_proven_runtime_states():
     ) == "HOOK_IN_PROGRESS"
 
 
-@pytest.mark.parametrize("layer", ["configured", "selected"])
-def test_unknown_manager_layers_produce_status_unknown(layer):
+def test_unknown_manager_configuration_produces_status_unknown():
     assert doctor._assessment(
-        configured_layers(**{layer: None}), {"enabled": True}, None,
+        configured_layers(configured=None), {"enabled": True}, None,
     ) == "STATUS_UNKNOWN"
 
 
@@ -382,9 +380,10 @@ def test_corrupt_hook_state_still_emits_structured_json(tmp_path):
     output = json.loads(result.stdout)
 
     assert result.returncode == 0, result.stderr
+    assert output["schemaVersion"] == "2.0"
     assert output["assessment"] == "STATUS_UNKNOWN"
     assert output["layers"]["configured"] is None
-    assert output["layers"]["selected"] is None
+    assert "selected" not in output["layers"]
     assert output["forge"]["managerError"]["errorType"] == "ValueError"
     assert output["runtime"]["stateError"]["errorType"] == "ValueError"
 

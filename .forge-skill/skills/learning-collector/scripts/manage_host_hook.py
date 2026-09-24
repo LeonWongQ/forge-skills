@@ -29,7 +29,7 @@ def main() -> None:
     if args.action == "configure":
         result = configure_global_hook(forge_root, args.host)
     elif args.action == "remove":
-        result = remove_global_hook(forge_root)
+        result = remove_global_hook(forge_root, args.host)
     else:
         result = global_hook_status(forge_root)
     print(json.dumps(result, ensure_ascii=True))

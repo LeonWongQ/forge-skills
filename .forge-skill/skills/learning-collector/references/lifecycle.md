@@ -54,11 +54,11 @@ An enabled Skill's direct-host lifecycle starts with one call to
 pre-execution Overlay lookup through `scripts/resolve_direct_overlay.py`, and
 finishes with one post-result fallback attempt through
 `scripts/record_direct_result.py`. A successful begin receipt supplies the
-invocation ID and selected Hook host to the fallback. The native Hook uses the
+invocation ID and current Hook host to the fallback. The native Hook uses the
 same ID and enriches the same unreviewed record instead of creating a duplicate.
-If the current host differs from Forge's selected Hook host, begin returns
+If the current host's Hook is not configured, begin returns
 `hookExpected=false` without creating a marker; the fallback remains valid and
-must not be attributed to the selected host.
+must not be attributed to another configured host.
 
 The resolver is read-only. The collector checks the same project allowlist and
 writes to the project Skill database, so disabling a Skill stops both collection
@@ -101,12 +101,13 @@ limit; larger groups skip Hook capture and retain fallback collection. After a
 Skill-contract result becomes canonical, its Skill-specific structured output is
 reviewed independently.
 
-Native Hook configuration and the single selected host are local-user settings
-for Codex, Claude Code, and local Cursor. They do not cover cloud, remote, or
-container hosts unless the same installation exists there. Selection lives in
-`forge-data/learning-hooks.json`; switching removes Forge's previous owned Hook
-and installs the new one while preserving unrelated Hooks. Configuration does not
-prove invocation. The dashboard reads bounded, content-free outcomes from
+Native Hook configurations are independent local-user settings for Codex,
+Claude Code, and local Cursor. They may coexist, and configuring one does not
+remove another. They do not cover cloud, remote, or container hosts unless the
+same installation exists there. Managed registrations live in
+`forge-data/learning-hooks.json`; a host is removed only by an explicit removal
+action, while unrelated Hooks are always preserved. Configuration does not prove
+invocation. The dashboard reads bounded, content-free outcomes from
 `forge-data/hook-status/<host>.json`. Ambiguous events retain every marker and use
 fallback rather than guessing or marking unrelated captures as missed. Never add
 an unkeyed capture path.

@@ -11,7 +11,7 @@ description: >-
 
 This is the Codex-specific module nested under the main `hook-doctor` Skill.
 Read and apply `../SKILL.md` first. The main Skill owns
-host selection, generic installation and repair, the shared status model, and
+independent host configuration, generic installation and repair, the shared status model, and
 cross-host reporting. This Skill owns only Codex-native discovery, trust, and
 runtime evidence.
 
@@ -22,8 +22,8 @@ Map Codex evidence onto the shared model as follows:
 - `invoked`: Codex started the installed command and the current installation produced status/trace evidence.
 - `captured`: a Codex trace and project learning row contain the same invocation ID.
 
-Do not infer `configured` or `selected` solely from app-server output; those
-remain manager-owned states from the main Skill.
+Do not infer `configured` solely from app-server output; it remains a
+manager-owned state from the main Skill.
 
 ## Inspect
 
@@ -47,7 +47,6 @@ identity or the active installation baseline cannot be verified. Historical
 
 - `CAPTURED`: all runtime evidence needed for a successful Skill capture exists.
 - `HOOK_IN_PROGRESS`: the latest project-attributable trace has started but has not reached `hook_finished`.
-- `HOST_NOT_SELECTED`: the Codex entry may exist, but Forge currently selects another global Hook host.
 - `PREVIOUSLY_CAPTURED`: an earlier correlated capture exists, but the latest Hook trace did not capture that invocation (for example, an ordinary later turn returned `NO_PENDING_INVOCATION`).
 - `CAPTURE_EVIDENCE_MISMATCH`: the latest trace says `CAPTURED`, but its invocation IDs do not match the latest captured learning row; treat this as inconsistent evidence, not success.
 - `ACTIVE_NO_MATCH`: the Hook ran but no pending enabled Skill invocation matched. This is expected for ordinary greetings and unrelated turns.
@@ -94,8 +93,8 @@ To verify capture rather than mere invocation:
 
 ## Reporting
 
-Report all six shared dimensions explicitly: `configured`, `selected`,
-`enabled`, `trusted`, `invoked`, and `captured`. Also report
+Report all five shared dimensions explicitly: `configured`, `enabled`,
+`trusted`, `invoked`, and `captured`. Also report
 `capturedPreviously`, the latest invocation ID, and timestamps when present.
 Distinguish observed facts from next-step instructions. A `hook/started` or
 `hook/completed` app-server event alone is insufficient because it does not

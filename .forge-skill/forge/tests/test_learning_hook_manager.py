@@ -34,8 +34,9 @@ from forge_cli.runtime_paths import _project_id
 
 
 def begin_invocation(forge_root, project_root, skill, **kwargs):
+    configured_hosts = load_hook_state(forge_root).get("hosts", {})
     current_host = kwargs.pop(
-        "current_host", load_hook_state(forge_root).get("selectedHost") or "unknown"
+        "current_host", next(iter(configured_hosts), "unknown")
     )
     return _begin_invocation(
         forge_root, project_root, skill, current_host=current_host, **kwargs
@@ -103,38 +104,141 @@ def fallback(
     return database
 
 
-def test_switching_global_host_installs_target_and_removes_previous_hook(tmp_path):
+def test_configuring_all_hosts_preserves_every_owned_hook(tmp_path):
     forge_root = bundle(tmp_path)
     home = tmp_path / "home"
 
-    first = configure_global_hook(forge_root, "claude-code", home=home)
-    switched = configure_global_hook(forge_root, "cursor", home=home)
+    codex = configure_global_hook(forge_root, "codex", home=home)
+    claude = configure_global_hook(forge_root, "claude-code", home=home)
+    cursor_result = configure_global_hook(forge_root, "cursor", home=home)
 
-    assert first["state"] == "CONFIGURED"
-    assert switched["previousHost"] == "claude-code"
-    assert switched["cleanup"] == {"claude-code": "NOT_CONFIGURED"}
-    claude = json.loads((home / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    assert codex["configuredHosts"] == ["codex"]
+    assert claude["configuredHosts"] == ["claude-code", "codex"]
+    assert cursor_result["configuredHosts"] == ["claude-code", "codex", "cursor"]
+    assert cursor_result["managedHosts"] == ["claude-code", "codex", "cursor"]
+    codex_config = json.loads((home / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+    claude_config = json.loads((home / ".claude" / "settings.json").read_text(encoding="utf-8"))
     cursor = json.loads((home / ".cursor" / "hooks.json").read_text(encoding="utf-8"))
-    assert "hooks" not in claude
+    assert "Stop" in codex_config["hooks"]
+    assert "Stop" in claude_config["hooks"]
     assert set(cursor["hooks"]) == {"afterAgentResponse", "stop"}
     state = json.loads(hook_state_path(forge_root).read_text(encoding="utf-8"))
-    assert set(state["hosts"]) == {"cursor"}
-    assert state["selectedHost"] == "cursor"
+    assert state["schemaVersion"] == "3.0"
+    assert set(state["hosts"]) == {"codex", "claude-code", "cursor"}
+    assert "selectedHost" not in state
 
 
-def test_removing_global_hook_clears_selection_and_owned_config(tmp_path):
+def test_removing_one_global_hook_preserves_other_hosts(tmp_path):
     forge_root = bundle(tmp_path)
     home = tmp_path / "home"
     configure_global_hook(forge_root, "claude-code", home=home)
-    removed = remove_global_hook(forge_root, home=home)
+    configure_global_hook(forge_root, "cursor", home=home)
+    removed = remove_global_hook(forge_root, "claude-code", home=home)
 
-    assert removed["selectedHost"] is None
+    assert removed["configuredHosts"] == ["cursor"]
     assert removed["cleanup"] == {"claude-code": "NOT_CONFIGURED"}
     claude = json.loads((home / ".claude" / "settings.json").read_text(encoding="utf-8"))
     assert "hooks" not in claude
+    cursor = json.loads((home / ".cursor" / "hooks.json").read_text(encoding="utf-8"))
+    assert set(cursor["hooks"]) == {"afterAgentResponse", "stop"}
 
 
-def test_legacy_single_host_selection_migrates_to_global_semantics(tmp_path):
+def test_configure_response_distinguishes_configured_and_managed_hosts(tmp_path):
+    forge_root = bundle(tmp_path)
+    home = tmp_path / "home"
+    configure_global_hook(forge_root, "claude-code", home=home)
+    claude_path = home / ".claude" / "settings.json"
+    claude = json.loads(claude_path.read_text(encoding="utf-8"))
+    claude.pop("hooks")
+    claude_path.write_text(json.dumps(claude), encoding="utf-8")
+
+    configured = configure_global_hook(forge_root, "cursor", home=home)
+
+    assert configured["configuredHosts"] == ["cursor"]
+    assert configured["managedHosts"] == ["claude-code", "cursor"]
+
+
+def test_remove_response_distinguishes_configured_and_managed_hosts(tmp_path):
+    forge_root = bundle(tmp_path)
+    home = tmp_path / "home"
+    configure_global_hook(forge_root, "claude-code", home=home)
+    configure_global_hook(forge_root, "cursor", home=home)
+    claude_path = home / ".claude" / "settings.json"
+    claude = json.loads(claude_path.read_text(encoding="utf-8"))
+    claude.pop("hooks")
+    claude_path.write_text(json.dumps(claude), encoding="utf-8")
+
+    removed = remove_global_hook(forge_root, "cursor", home=home)
+
+    assert removed["configuredHosts"] == []
+    assert removed["managedHosts"] == ["claude-code"]
+
+
+def test_remove_cleans_recorded_and_current_codex_homes(tmp_path):
+    forge_root = bundle(tmp_path)
+    home = tmp_path / "home"
+    recorded_home = tmp_path / "codex-recorded"
+    current_home = tmp_path / "codex-current"
+    configure_global_hook(
+        forge_root, "codex", home=home, codex_home=recorded_home
+    )
+    current_home.mkdir(parents=True)
+    current_config = current_home / "hooks.json"
+    current_config.write_bytes((recorded_home / "hooks.json").read_bytes())
+
+    removed = remove_global_hook(
+        forge_root, "codex", home=home, codex_home=current_home
+    )
+
+    assert removed["state"] == "NOT_CONFIGURED"
+    assert removed["configuredHosts"] == []
+    assert removed["managedHosts"] == []
+    assert removed["cleanup"]["codex"] == (
+        "recorded=NOT_CONFIGURED; current=NOT_CONFIGURED"
+    )
+    recorded = json.loads(
+        (recorded_home / "hooks.json").read_text(encoding="utf-8")
+    )
+    current = json.loads(current_config.read_text(encoding="utf-8"))
+    assert "hooks" not in recorded
+    assert "hooks" not in current
+
+
+def test_removing_without_host_explicitly_removes_all_hooks(tmp_path):
+    forge_root = bundle(tmp_path)
+    home = tmp_path / "home"
+    configure_global_hook(forge_root, "claude-code", home=home)
+    configure_global_hook(forge_root, "cursor", home=home)
+
+    removed = remove_global_hook(forge_root, home=home)
+
+    assert removed["configuredHosts"] == []
+    assert set(removed["cleanup"]) == {"codex", "claude-code", "cursor"}
+    assert load_hook_state(forge_root)["hosts"] == {}
+
+
+def test_remove_all_persists_successful_removals_when_other_providers_fail(tmp_path):
+    forge_root = bundle(tmp_path)
+    home = tmp_path / "home"
+    configure_global_hook(forge_root, "codex", home=home)
+    runtime_path = forge_root.parent / "forge-data" / "runtime.json"
+    runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+    runtime["directCollectionTimeoutSeconds"] = 0
+    runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
+
+    removed = remove_global_hook(forge_root, home=home)
+
+    assert removed["state"] == "PARTIAL"
+    assert "recorded=NOT_CONFIGURED" in removed["cleanup"]["codex"]
+    assert "current=CLEANUP_FAILED" in removed["cleanup"]["codex"]
+    assert removed["cleanup"]["claude-code"].startswith("CLEANUP_FAILED")
+    assert removed["cleanup"]["cursor"].startswith("CLEANUP_FAILED")
+    assert load_hook_state(forge_root)["hosts"] == {}
+    codex = json.loads((home / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+    assert "hooks" not in codex
+
+
+def test_legacy_v1_state_migrates_to_independent_host_semantics(tmp_path):
     forge_root = bundle(tmp_path)
     path = hook_state_path(forge_root)
     path.write_text(json.dumps({
@@ -148,8 +252,29 @@ def test_legacy_single_host_selection_migrates_to_global_semantics(tmp_path):
 
     state = load_hook_state(forge_root)
 
-    assert state["schemaVersion"] == "2.0"
-    assert state["selectedHost"] == "claude-code"
+    assert state == {
+        "schemaVersion": "3.0",
+        "hosts": {"claude-code": {"configPath": "legacy"}},
+    }
+
+
+def test_legacy_v2_state_preserves_all_hosts_and_discards_selection(tmp_path):
+    forge_root = bundle(tmp_path)
+    path = hook_state_path(forge_root)
+    path.write_text(json.dumps({
+        "schemaVersion": "2.0",
+        "selectedHost": "codex",
+        "hosts": {
+            "codex": {"configPath": "codex"},
+            "cursor": {"configPath": "cursor"},
+        },
+    }), encoding="utf-8")
+
+    state = load_hook_state(forge_root)
+
+    assert state["schemaVersion"] == "3.0"
+    assert set(state["hosts"]) == {"codex", "cursor"}
+    assert "selectedHost" not in state
 
 
 @pytest.mark.parametrize(
@@ -180,7 +305,7 @@ def test_current_host_detection_rejects_conflicting_host_environments(monkeypatc
     assert current_host_from_environment() is None
 
 
-def test_host_mismatch_does_not_create_pending_marker(tmp_path):
+def test_unconfigured_current_host_does_not_create_pending_marker(tmp_path):
     forge_root = bundle(tmp_path)
     project_root = project(tmp_path)
     home = tmp_path / "home"
@@ -196,8 +321,29 @@ def test_host_mismatch_does_not_create_pending_marker(tmp_path):
     )
     assert invocation["hookHost"] is None
     assert invocation["hookExpected"] is False
-    assert invocation["reason"] == "HOOK_HOST_MISMATCH"
+    assert invocation["reason"] == "HOOK_NOT_CONFIGURED_FOR_HOST"
     assert not invocation_dir.exists()
+
+
+@pytest.mark.parametrize("host", ["codex", "claude-code", "cursor"])
+def test_each_configured_current_host_creates_its_own_pending_marker(tmp_path, host):
+    forge_root = bundle(tmp_path)
+    project_root = project(tmp_path)
+    home = tmp_path / "home"
+    for configured_host in ("codex", "claude-code", "cursor"):
+        configure_global_hook(forge_root, configured_host, home=home)
+
+    invocation = _begin_invocation(
+        forge_root, project_root, "code-review", current_host=host, hook_home=home
+    )
+
+    assert invocation["hookExpected"] is True
+    assert invocation["hookHost"] == host
+    marker = (
+        forge_root.parent / "forge-data" / "projects" / invocation["projectId"]
+        / "learning" / "invocations" / f"{invocation['invocationId']}.json"
+    )
+    assert json.loads(marker.read_text(encoding="utf-8"))["host"] == host
 
 
 def test_begin_rejects_unknown_current_host_name(tmp_path):
@@ -340,7 +486,7 @@ def test_host_trace_records_matching_and_collection_without_response_content(tmp
 
     assert result.get("action") == "CAPTURED", (result, steps)
     assert [entry["step"] for entry in steps] == [
-        "handler_entered", "project_resolution", "host_selection", "pending_lookup",
+        "handler_entered", "project_resolution", "host_configuration", "pending_lookup",
         "identity_check", "invocation_match", "response_check", "collection_started",
         "collection_finished",
     ]
@@ -1260,15 +1406,16 @@ def test_hook_event_resolves_project_from_nested_working_directory(tmp_path):
     assert json.loads(row[1]) == {"finalResponse": "nested result"}
 
 
-def test_global_hook_status_reports_selected_host_and_installation(tmp_path):
+def test_global_hook_status_reports_configured_hosts_and_installation(tmp_path):
     forge_root = bundle(tmp_path)
     home = tmp_path / "home"
     configure_global_hook(forge_root, "codex", home=home)
 
     status = global_hook_status(forge_root, home=home)
 
-    assert status["selectedHost"] == "codex"
-    assert status["hosts"]["codex"]["selected"] is True
+    assert status["configuredHosts"] == ["codex"]
+    assert status["configuredReady"] is True
+    assert status["hosts"]["codex"]["managed"] is True
     assert status["hosts"]["codex"]["state"] == "CONFIGURED"
     assert status["hosts"]["codex"]["configState"] == "CONFIGURED"
     assert status["hosts"]["codex"]["runtimeState"] == "NEVER_OBSERVED"
@@ -1351,7 +1498,7 @@ def test_global_hook_status_reports_repair_required_for_missing_runtime(tmp_path
 
     status = global_hook_status(forge_root, home=tmp_path / "home")
 
-    assert status["selectedReady"] is False
+    assert status["configuredReady"] is False
     assert all(item["configState"] == "REPAIR_REQUIRED" for item in status["hosts"].values())
 
 
@@ -1405,7 +1552,7 @@ def test_reconfigure_replaces_stale_runtime_command(tmp_path):
     assert result["state"] == "CONFIGURED"
     assert base64.b64encode(str(replacement).encode("utf-8")).decode("ascii") in command
     assert before != after
-    assert global_hook_status(forge_root, home=home)["selectedReady"] is True
+    assert global_hook_status(forge_root, home=home)["configuredReady"] is True
 
 
 def test_reconfigure_upgrades_legacy_timeout_only_drift(tmp_path):
@@ -1492,7 +1639,7 @@ def test_reconfigure_reinstalls_manually_removed_hook(tmp_path):
     config = json.loads(config_path.read_text(encoding="utf-8"))
     assert result["state"] == "CONFIGURED"
     assert "Stop" in config["hooks"]
-    assert global_hook_status(forge_root, home=home)["selectedReady"] is True
+    assert global_hook_status(forge_root, home=home)["configuredReady"] is True
 
 
 def test_state_write_failure_rolls_back_new_target_hook(tmp_path, monkeypatch):
@@ -1513,24 +1660,23 @@ def test_state_write_failure_rolls_back_new_target_hook(tmp_path, monkeypatch):
     assert "Stop" in claude["hooks"]
 
 
-def test_cleanup_failure_is_reported_as_partial_and_retained(tmp_path, monkeypatch):
+def test_configuring_another_host_never_uninstalls_existing_host(tmp_path, monkeypatch):
     forge_root = bundle(tmp_path)
     home = tmp_path / "home"
     configure_global_hook(forge_root, "claude-code", home=home)
     original = hook_manager.LearningHookProvider.uninstall
+    uninstalled = []
 
-    def fail_claude(self):
-        if self.host == "claude-code":
-            raise OSError("simulated cleanup failure")
+    def observe_uninstall(self):
+        uninstalled.append(self.host)
         return original(self)
 
-    monkeypatch.setattr(hook_manager.LearningHookProvider, "uninstall", fail_claude)
+    monkeypatch.setattr(hook_manager.LearningHookProvider, "uninstall", observe_uninstall)
     result = configure_global_hook(forge_root, "cursor", home=home)
 
-    assert result["state"] == "PARTIAL"
-    assert result["cleanup"]["claude-code"].startswith("CLEANUP_FAILED")
+    assert result["state"] == "CONFIGURED"
+    assert uninstalled == []
     state = load_hook_state(forge_root)
-    assert state["selectedHost"] == "cursor"
     assert set(state["hosts"]) == {"claude-code", "cursor"}
 
 

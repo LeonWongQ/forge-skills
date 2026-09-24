@@ -779,12 +779,12 @@ def update_global_hook(payload: dict) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("Hook configuration must be a JSON object")
     action = payload.get("action")
+    host = payload.get("host")
+    if host not in {"codex", "claude-code", "cursor"}:
+        raise ValueError("host must be codex, claude-code, or cursor")
     if action == "REMOVE":
-        return remove_global_hook(FORGE_ROOT)
+        return remove_global_hook(FORGE_ROOT, host)
     if action == "CONFIGURE":
-        host = payload.get("host")
-        if host not in {"codex", "claude-code", "cursor"}:
-            raise ValueError("host must be codex, claude-code, or cursor")
         return configure_global_hook(FORGE_ROOT, host)
     raise ValueError("action must be CONFIGURE or REMOVE")
 

@@ -19,7 +19,7 @@ from .learning_collector import (
     connect_database,
     has_meaningful_content,
 )
-from .learning_hook_manager import global_hook_selection
+from .learning_hook_manager import global_hook_hosts
 from .personal_hook_state import _atomic_write, _json_bytes
 from .runtime_paths import _project_id
 
@@ -196,7 +196,7 @@ def begin_invocation(
     hook_home: Path | None = None,
     codex_home: Path | None = None,
 ) -> dict[str, Any]:
-    """Create one correlation marker only when native Hook capture is selected."""
+    """Create one correlation marker when the current host Hook is configured."""
     if current_host not in {*_HOST_ENVIRONMENT_MARKERS, "unknown"}:
         raise ValueError(f"unsupported current host: {current_host}")
     project = project.resolve()
@@ -205,23 +205,23 @@ def begin_invocation(
     if enabled is None or normalized not in enabled or normalized == "learning-collector":
         return {"started": False, "reason": "SKILL_NOT_ENABLED"}
     project_id = _project_id(forge_root, project)
-    host = global_hook_selection(forge_root, home=hook_home, codex_home=codex_home)
+    configured_hosts = global_hook_hosts(
+        forge_root, home=hook_home, codex_home=codex_home
+    )
     invocation_id = f"inv-{uuid.uuid4()}"
-    hook_matches_current = isinstance(host, str) and current_host == host
+    hook_matches_current = current_host in configured_hosts
     result = {
         "started": True,
         "invocationId": invocation_id,
         "projectId": project_id,
         "skill": normalized,
-        "hookHost": host if hook_matches_current else None,
+        "hookHost": current_host if hook_matches_current else None,
         "hookExpected": hook_matches_current,
     }
-    if not isinstance(host, str):
-        return result
     if not hook_matches_current:
         result["reason"] = (
             "CURRENT_HOST_UNKNOWN" if current_host == "unknown"
-            else "HOOK_HOST_MISMATCH"
+            else "HOOK_NOT_CONFIGURED_FOR_HOST"
         )
         return result
     directory = _invocation_directory(forge_root, project_id)
@@ -232,12 +232,12 @@ def begin_invocation(
         "projectId": project_id,
         "projectPath": str(project),
         "skill": normalized,
-        "host": host,
+        "host": current_host,
         "status": "PENDING",
         "startedAt": _timestamp(_now()),
         "expiresAt": _timestamp(_now() + timedelta(hours=INVOCATION_TTL_HOURS)),
     }
-    identity = _ambient_host_identity(host)
+    identity = _ambient_host_identity(current_host)
     if identity:
         marker["hostIdentity"] = identity
     with _INVOCATION_LOCK, _registry_file_lock(directory / ".lock"):
@@ -613,10 +613,15 @@ def handle_host_event(
         note("project_resolution", matched=False, reason="PROJECT_NOT_REGISTERED")
         return {"handled": False, "reason": "PROJECT_NOT_REGISTERED"}
     note("project_resolution", matched=True, projectId=project_id)
-    selected_host = global_hook_selection(forge_root, home=hook_home, codex_home=codex_home)
-    note("host_selection", matched=selected_host == host, selectedHost=selected_host)
-    if selected_host != host:
-        return {"handled": False, "reason": "HOST_NOT_SELECTED"}
+    configured_hosts = global_hook_hosts(
+        forge_root, home=hook_home, codex_home=codex_home
+    )
+    note(
+        "host_configuration", configured=host in configured_hosts,
+        configuredHosts=sorted(configured_hosts),
+    )
+    if host not in configured_hosts:
+        return {"handled": False, "reason": "HOST_NOT_CONFIGURED"}
     directory = _invocation_directory(forge_root, project_id)
     if not directory.is_dir():
         note("pending_lookup", count=0, reason="NO_PENDING_INVOCATION")

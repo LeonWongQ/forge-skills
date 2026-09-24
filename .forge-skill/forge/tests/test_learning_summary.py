@@ -1926,10 +1926,26 @@ def test_learning_pages_share_language_asset_and_refinement_contract():
     assert "sharedCapturePending" in i18n_javascript
     assert "status.trustStatus==='MANUAL_CHECK_REQUIRED'" in review_html
     assert "status.eventScope==='HISTORICAL'" in review_html
-    assert "switchHookConfirm" in review_html
+    assert 'type="checkbox" name="hook-host"' in review_html
+    assert "value.configuredHosts" in review_html
+    assert "updateHook(input.value,input.checked)" in review_html
     assert 'hookNoInvocation' in i18n_javascript
-    assert 'Claude Code 的原生信任或审批状态尚未验证' in i18n_javascript
-    assert "Switching hosts removes the previous host's Forge Hook" in i18n_javascript
+    assert 'id="codex-trust-reminder" class="hook-trust-reminder" hidden' in review_html
+    assert 'data-i18n="codexTrustHint"' in review_html
+    assert 'data-i18n="codexTrustSummary"' in review_html
+    assert '如尚未信任 Codex Hook，请在 Codex Desktop 中确认' in i18n_javascript
+    assert 'If the Codex Hook is not yet trusted, confirm it in Codex Desktop' in i18n_javascript
+    assert "$('codex-trust-reminder').hidden=!(hosts||[]).includes('codex')" in review_html
+    assert "const trust=host!=='codex'?'':status.trustStatus" in review_html
+    assert 'hookCapabilityText(status,host)' in review_html
+    assert 'claudeTrustTitle' not in i18n_javascript
+    assert 'claudeTrustNote' not in i18n_javascript
+    assert 'cursorTrustTitle' not in i18n_javascript
+    assert 'cursorTrustNote' not in i18n_javascript
+    assert 'data-guidance-host' not in review_html
+    assert "Forge Hooks for all three hosts can be enabled together" in i18n_javascript
+    assert "hookHostsActive" in i18n_javascript
+    assert "switchHookConfirm" not in i18n_javascript
     assert 'Select a project to inspect and configure its Hook.' not in i18n_javascript
     assert 'Remove project Hook' not in i18n_javascript
 
@@ -1939,13 +1955,13 @@ def test_hook_status_is_global(monkeypatch):
 
     def status(forge_root):
         observed["forgeRoot"] = forge_root
-        return {"selectedHost": "codex", "hosts": {}}
+        return {"configuredHosts": ["codex", "cursor"], "hosts": {}}
 
     monkeypatch.setattr(review_server, "global_hook_status", status)
 
     result = review_server.hook_status()
 
-    assert result["selectedHost"] == "codex"
+    assert result["configuredHosts"] == ["codex", "cursor"]
     assert observed == {"forgeRoot": review_server.FORGE_ROOT}
 
 
@@ -1955,30 +1971,34 @@ def test_global_hook_configuration_validates_host_and_supports_removal(monkeypat
         review_server,
         "configure_global_hook",
         lambda forge_root, host: calls.append(("configure", forge_root, host))
-        or {"selectedHost": host, "state": "CONFIGURED"},
+        or {"host": host, "configuredHosts": [host], "state": "CONFIGURED"},
     )
     monkeypatch.setattr(
         review_server,
         "remove_global_hook",
-        lambda forge_root: calls.append(("remove", forge_root))
-        or {"selectedHost": None, "state": "NOT_CONFIGURED"},
+        lambda forge_root, host: calls.append(("remove", forge_root, host))
+        or {"host": host, "configuredHosts": [], "state": "NOT_CONFIGURED"},
     )
 
     configured = review_server.update_global_hook({
         "action": "CONFIGURE", "host": "claude-code",
     })
-    removed = review_server.update_global_hook({"action": "REMOVE"})
+    removed = review_server.update_global_hook({
+        "action": "REMOVE", "host": "claude-code",
+    })
 
-    assert configured["selectedHost"] == "claude-code"
-    assert removed["selectedHost"] is None
+    assert configured["configuredHosts"] == ["claude-code"]
+    assert removed["configuredHosts"] == []
     assert calls == [
         ("configure", review_server.FORGE_ROOT, "claude-code"),
-        ("remove", review_server.FORGE_ROOT),
+        ("remove", review_server.FORGE_ROOT, "claude-code"),
     ]
     with pytest.raises(ValueError, match="host must be"):
         review_server.update_global_hook({
             "action": "CONFIGURE", "host": "unknown",
         })
+    with pytest.raises(ValueError, match="host must be"):
+        review_server.update_global_hook({"action": "REMOVE"})
 
 
 def test_refine_rejects_source_changed_while_llm_is_running(tmp_path, monkeypatch):

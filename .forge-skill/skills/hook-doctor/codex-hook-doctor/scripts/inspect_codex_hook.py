@@ -417,12 +417,10 @@ def _assessment(
     *, identity_verified: bool = True, installation_verified: bool = True,
     learning_verified: bool = True,
 ) -> str:
-    if layers.get("configured") is None or layers.get("selected") is None:
+    if layers.get("configured") is None:
         return "STATUS_UNKNOWN"
     if layers["configured"] is False:
         return "NOT_CONFIGURED"
-    if layers["selected"] is False:
-        return "HOST_NOT_SELECTED"
     if owned is None:
         return "STATUS_UNKNOWN"
     if not identity_verified or not installation_verified:
@@ -520,14 +518,8 @@ def main() -> None:
         if isinstance(codex_state, dict) and isinstance(codex_state.get("configState"), str)
         else None
     )
-    selected = (
-        codex_state.get("selected")
-        if isinstance(codex_state, dict) and isinstance(codex_state.get("selected"), bool)
-        else None
-    )
     layers = {
         "configured": configured,
-        "selected": selected,
         "enabled": enabled,
         "trusted": trusted,
         "invoked": invoked,
@@ -540,7 +532,7 @@ def main() -> None:
         learning_verified=not learning_errors,
     )
     print(json.dumps({
-        "schemaVersion": "1.0", "assessment": assessment, "layers": layers,
+        "schemaVersion": "2.0", "assessment": assessment, "layers": layers,
         "forge": {"root": str(forge_root), "manager": codex_state,
                   "managerError": manager_error},
         "codex": {"hook": owned, "warnings": hook_group.get("warnings", []) if hook_group else [],

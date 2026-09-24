@@ -1,4 +1,4 @@
-"""Global learning Hook registration and single-host ownership."""
+"""Independent user-global learning Hook registration for supported hosts."""
 
 from __future__ import annotations
 
@@ -18,8 +18,8 @@ from .learning_hook_providers import (
 from .personal_hook_state import _atomic_write, _json_bytes
 
 
-STATE_VERSION = "2.0"
-LEGACY_STATE_VERSION = "1.0"
+STATE_VERSION = "3.0"
+LEGACY_STATE_VERSIONS = {"1.0", "2.0"}
 HOOK_EVENT_STALE_HOURS = 24
 
 
@@ -40,7 +40,7 @@ def hook_event_status_path(forge_root: Path, host: str) -> Path:
 def load_hook_state(forge_root: Path) -> dict[str, Any]:
     path = hook_state_path(forge_root)
     if not path.is_file():
-        return {"schemaVersion": STATE_VERSION, "selectedHost": None, "hosts": {}}
+        return {"schemaVersion": STATE_VERSION, "hosts": {}}
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -50,25 +50,20 @@ def load_hook_state(forge_root: Path) -> dict[str, Any]:
     hosts = value.get("hosts")
     if not isinstance(hosts, dict):
         raise ValueError(f"invalid learning Hook state: {path}")
-    if value.get("schemaVersion") == LEGACY_STATE_VERSION:
+    version = value.get("schemaVersion")
+    if version == "1.0":
         projects = value.get("projects")
         if not isinstance(projects, dict):
             raise ValueError(f"invalid legacy learning Hook state: {path}")
-        selected = {
-            item.get("host") for item in projects.values()
-            if isinstance(item, dict) and item.get("host") in SUPPORTED_HOSTS
-        }
-        return {
-            "schemaVersion": STATE_VERSION,
-            "selectedHost": next(iter(selected)) if len(selected) == 1 else None,
-            "hosts": hosts,
-        }
-    if value.get("schemaVersion") != STATE_VERSION:
+    if version not in {*LEGACY_STATE_VERSIONS, STATE_VERSION}:
         raise ValueError(f"unsupported learning Hook state: {path}")
-    selected = value.get("selectedHost")
-    if selected is not None and selected not in SUPPORTED_HOSTS:
+    legacy_selected = value.get("selectedHost") if version == "2.0" else None
+    if legacy_selected is not None and legacy_selected not in SUPPORTED_HOSTS:
         raise ValueError(f"invalid selected Hook host: {path}")
-    return value
+    invalid_hosts = set(hosts) - set(SUPPORTED_HOSTS)
+    if invalid_hosts:
+        raise ValueError(f"invalid learning Hook hosts: {path}")
+    return {"schemaVersion": STATE_VERSION, "hosts": hosts}
 
 
 def _save_hook_state(forge_root: Path, state: dict[str, Any]) -> None:
@@ -229,14 +224,13 @@ def configure_global_hook(
     home: Path | None = None,
     codex_home: Path | None = None,
 ) -> dict[str, Any]:
-    """Select exactly one user-global host and remove other Forge Hooks."""
+    """Install or repair one host without changing any other host."""
     if host not in SUPPORTED_HOSTS:
         raise ValueError(f"unsupported Hook host: {host}")
     state_path = hook_state_path(forge_root)
     with _REGISTRY_LOCK, _registry_file_lock(state_path):
         state = load_hook_state(forge_root)
         hosts = state["hosts"]
-        previous = state.get("selectedHost")
         provider, commands = _current_provider(
             forge_root, host, home=home, codex_home=codex_home
         )
@@ -291,82 +285,139 @@ def configure_global_hook(
             "events": list(provider.events),
             "installedAt": previous_record.get("installedAt") if preserve_installation else _now(),
         }
-        state["selectedHost"] = host
         try:
-            # Persist a valid selected target before removing another host. If
-            # cleanup later fails, the old entry remains recorded and can be
-            # reconciled safely on the next request.
             _save_hook_state(forge_root, state)
         except BaseException:
             if rollback is not None:
                 rollback()
-            elif previous != host and not target_was_configured:
+            elif not target_was_configured:
                 provider.uninstall()
             raise
-        cleanup: dict[str, str] = {}
-        for other in SUPPORTED_HOSTS:
-            if other == host or other not in hosts:
-                continue
-            other_provider, _ = _provider_from_record(
-                other, hosts.get(other), forge_root, home=home, codex_home=codex_home
-            )
-            try:
-                cleanup[other] = other_provider.uninstall().state
-                hosts.pop(other, None)
-            except (OSError, ValueError) as error:
-                cleanup[other] = f"CLEANUP_FAILED: {error}"
-        if cleanup:
-            try:
-                _save_hook_state(forge_root, state)
-            except OSError as error:
-                cleanup["state"] = f"STATE_UPDATE_FAILED: {error}"
-        partial = any(value.startswith(("CLEANUP_FAILED", "STATE_UPDATE_FAILED")) for value in cleanup.values())
         return {
-            "selectedHost": host,
-            "state": "PARTIAL" if partial else installed.state,
+            "host": host,
+            "configuredHosts": sorted(global_hook_hosts(
+                forge_root, home=home, codex_home=codex_home
+            )),
+            "managedHosts": sorted(hosts),
+            "state": installed.state,
             "configPath": str(provider.config_path),
             "events": list(provider.events),
-            "previousHost": previous,
-            "cleanup": cleanup,
         }
 
 
 def remove_global_hook(
     forge_root: Path,
+    host: str | None = None,
     *,
     home: Path | None = None,
     codex_home: Path | None = None,
 ) -> dict[str, Any]:
+    if host is not None and host not in SUPPORTED_HOSTS:
+        raise ValueError(f"unsupported Hook host: {host}")
     state_path = hook_state_path(forge_root)
     with _REGISTRY_LOCK, _registry_file_lock(state_path):
         state = load_hook_state(forge_root)
-        previous = state.get("selectedHost")
         cleanup: dict[str, str] = {}
         failed = False
-        for host in tuple(state["hosts"]):
-            provider, _ = _provider_from_record(
-                host, state["hosts"].get(host), forge_root,
-                home=home, codex_home=codex_home,
-            )
+        targets = (host,) if host is not None else tuple(SUPPORTED_HOSTS)
+        for target in targets:
+            record = state["hosts"].get(target)
+            recorded_provider = None
+            current_provider = None
+            outcomes: list[str] = []
             try:
-                cleanup[host] = provider.uninstall().state
-                state["hosts"].pop(host, None)
+                if isinstance(record, dict):
+                    recorded_provider, _ = _provider_from_record(
+                        target, record, forge_root,
+                        home=home, codex_home=codex_home,
+                    )
             except (OSError, ValueError) as error:
-                cleanup[host] = f"CLEANUP_FAILED: {error}"
+                outcomes.append(f"recorded=CLEANUP_FAILED: {error}")
                 failed = True
-        if previous not in state["hosts"]:
-            state["selectedHost"] = None
+            try:
+                current_provider, _ = _current_provider(
+                    forge_root, target,
+                    home=home, codex_home=codex_home,
+                )
+            except (OSError, ValueError) as error:
+                outcomes.append(f"current=CLEANUP_FAILED: {error}")
+                failed = True
+            candidates: list[tuple[str, LearningHookProvider, bool]] = []
+            if recorded_provider is not None and current_provider is not None:
+                if _same_provider(recorded_provider, current_provider):
+                    candidates.append(("current", current_provider, True))
+                elif recorded_provider.config_path == current_provider.config_path:
+                    current_status = current_provider.detect()
+                    recorded_status = recorded_provider.detect()
+                    provider = (
+                        current_provider
+                        if current_status.configured or not recorded_status.configured
+                        else recorded_provider
+                    )
+                    candidates.append(("current", provider, True))
+                else:
+                    candidates.extend((
+                        ("recorded", recorded_provider, True),
+                        ("current", current_provider, False),
+                    ))
+            elif recorded_provider is not None:
+                candidates.append(("recorded", recorded_provider, True))
+            elif current_provider is not None:
+                clears_record = (
+                    isinstance(record, dict)
+                    and record.get("configPath") == str(current_provider.config_path)
+                )
+                candidates.append(("current", current_provider, clears_record))
+
+            record_cleared = record is None
+            for label, provider, clears_record in candidates:
+                try:
+                    outcome = provider.uninstall().state
+                    outcomes.append(f"{label}={outcome}")
+                    record_cleared = record_cleared or clears_record
+                except (OSError, ValueError) as error:
+                    outcomes.append(f"{label}=CLEANUP_FAILED: {error}")
+                    failed = True
+            if record_cleared:
+                state["hosts"].pop(target, None)
+            if len(outcomes) == 1 and "=" in outcomes[0]:
+                cleanup[target] = outcomes[0].split("=", 1)[1]
+            else:
+                cleanup[target] = "; ".join(outcomes)
         try:
             _save_hook_state(forge_root, state)
         except OSError as error:
             cleanup["state"] = f"STATE_UPDATE_FAILED: {error}"
             failed = True
         return {
-            "selectedHost": state.get("selectedHost"),
+            "host": host,
+            "configuredHosts": sorted(global_hook_hosts(
+                forge_root, home=home, codex_home=codex_home
+            )),
+            "managedHosts": sorted(state["hosts"]),
             "state": "PARTIAL" if failed else "NOT_CONFIGURED",
-            "previousHost": previous,
             "cleanup": cleanup,
         }
+
+
+def global_hook_hosts(
+    forge_root: Path,
+    *,
+    home: Path | None = None,
+    codex_home: Path | None = None,
+) -> set[str]:
+    """Return every host whose current Forge Hook command is configured."""
+    configured = set()
+    for host in SUPPORTED_HOSTS:
+        try:
+            provider, _ = _current_provider(
+                forge_root, host, home=home, codex_home=codex_home
+            )
+            if provider.detect().configured:
+                configured.add(host)
+        except (OSError, ValueError):
+            continue
+    return configured
 
 
 def global_hook_selection(
@@ -375,16 +426,11 @@ def global_hook_selection(
     home: Path | None = None,
     codex_home: Path | None = None,
 ) -> str | None:
-    selected = load_hook_state(forge_root).get("selectedHost")
-    if selected not in SUPPORTED_HOSTS:
-        return None
-    try:
-        provider, _ = _current_provider(
-            forge_root, selected, home=home, codex_home=codex_home
-        )
-        return selected if provider.detect().configured else None
-    except (OSError, ValueError):
-        return None
+    """Compatibility view for callers that can represent only one host."""
+    configured = global_hook_hosts(
+        forge_root, home=home, codex_home=codex_home
+    )
+    return next(iter(configured)) if len(configured) == 1 else None
 
 
 def global_hook_status(
@@ -396,7 +442,6 @@ def global_hook_status(
     state_path = hook_state_path(forge_root)
     with _REGISTRY_LOCK, _registry_file_lock(state_path):
         state = load_hook_state(forge_root)
-        selected = state.get("selectedHost")
         statuses = {}
         for host in SUPPORTED_HOSTS:
             event = _load_last_event(forge_root, host)
@@ -441,13 +486,16 @@ def global_hook_status(
                 "events": events,
                 "detail": detail,
                 "lastEvent": event,
-                "selected": selected == host,
+                "managed": host in state.get("hosts", {}),
             }
+        configured_hosts = sorted(
+            host for host, status in statuses.items() if status["configured"]
+        )
         return {
-            "selectedHost": selected,
-            "selectedReady": bool(
-                selected in statuses and statuses[selected]["configured"]
-            ),
+            "configuredHosts": configured_hosts,
+            "configuredReady": bool(configured_hosts),
             "hosts": statuses,
-            "lastEvent": statuses.get(selected, {}).get("lastEvent"),
+            "lastEvents": {
+                host: statuses[host].get("lastEvent") for host in configured_hosts
+            },
         }
