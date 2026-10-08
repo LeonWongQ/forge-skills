@@ -2,7 +2,10 @@
 
 ## Purpose
 
-This guide explains how to start using the repository in practice.
+This guide explains how to compose Forge modules for an external host or integration.
+For Skill installation and everyday CLI usage, start with [QUICKSTART.md](QUICKSTART.md).
+Module paths below are relative to the Forge root. Installed project paths are
+explained in [BOOTSTRAP.md](BOOTSTRAP.md).
 
 It is written for:
 - humans manually composing prompts

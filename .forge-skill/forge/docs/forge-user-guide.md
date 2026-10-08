@@ -8,7 +8,14 @@ You don't need to memorize which skill to use for which scenario, which template
 
 ## 1. Get Started in One Minute
 
-Once installed, you really only need one command:
+Installing host Skills does not install the `forge` executable. For CLI development,
+run this from the source repository root:
+
+```bash
+python -m pip install -e ".forge-skill/forge[dev]"
+```
+
+See [Quick start](../QUICKSTART.md) for installation options. Start ordinary requests with:
 
 ```bash
 forge ask "what you need"
@@ -23,7 +30,8 @@ forge ask "add unit tests for this module"
 forge ask "help me understand the current state of this codebase"
 ```
 
-It responds with something like:
+The following illustrates a module composition; actual fields and strategy labels
+depend on the current CLI version:
 
 ```
 Suggested handling:
@@ -46,7 +54,7 @@ Now you know: this task should use **code review** mode, paired with the **sprin
 
 ---
 
-## 2. Three Commands, Same Logic
+## 2. Three CLI Entry Points
 
 | Command | When to use | Best for |
 |---------|-------------|----------|
@@ -54,7 +62,11 @@ Now you know: this task should use **code review** mode, paired with the **sprin
 | `forge route` | Debug routing — see scores & candidates | Forge developers |
 | `forge recommend` | Structured output for programmatic use | Toolchain integration |
 
-All three use the exact same routing logic internally. The only difference is output style.
+They share routing machinery but have different entry behavior. `ask` handles
+explicit learning-service and Runtime requests and applies host ownership policy
+to ordinary tasks. `route` and `recommend` expose routing diagnostics and
+recommendations without those handlers. An ordinary handoff does not execute
+the engineering task in the host.
 
 ### `forge ask` — your daily driver
 
@@ -182,7 +194,8 @@ forge show template default
 | implement a Vue 3 component or Vue 3/Vite config | vite_vue3 | — |
 | generic Vue/Vite request without version evidence | confirm target package Vue version | — |
 
-**27 skills**: code_review, debug, plan, error_analysis, report, explain, refactor, optimize, document, test_design, incident, test_implementation, migration, explore, page_test, test_strategy, implement, architecture_design, security_review, data_design, dependency_audit, release_readiness, contract_compatibility, auto_compact, vite_vue3, vue2, vue2_7
+The registry contains 33 Skills. See the [Skill inventory](../../skills/README.md)
+or run `forge list skills`. Routing follows the registry and host ownership policy.
 
 **9 packs**: spring_review, playwright_debug, redis_incident, java_refactor, general_test_report, general_test_plan, general_exploration, spring_ai_review, release_readiness
 
@@ -276,11 +289,25 @@ All 8 checks passing confirms the current deterministic registry, derived-regist
 
 ### Q: What's the difference between `ask` and `recommend`?
 
-Same internal logic. `ask` outputs conversationally, for humans. `recommend` outputs structurally, for programs. Pick whichever you prefer.
+`ask` includes host ownership and dedicated learning-service / Runtime handling.
+`recommend` provides structured routing recommendations for integrations; use
+`forge --format json recommend "..."` for JSON.
 
 ### Q: Can I use only part of forge?
 
 Yes. Forge is modular — packs, domains, and templates you don't use won't affect core functionality.
+
+---
+
+## Project Learning
+
+Collection is disabled by default. After opt-in configuration, use
+`forge ask "启动学习审核页面"` to open the dashboard and
+`forge ask "关闭学习审核服务"` to stop it.
+The workflow is collection → evidence review → batched AI Summary → Summary review
+→ Overlay → evaluation → publication → manual activation.
+Learning improves project guidance, not model parameters or the global Skill.
+See the [learning lifecycle](../../skills/learning-collector/references/lifecycle.md).
 
 ---
 

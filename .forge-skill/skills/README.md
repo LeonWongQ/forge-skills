@@ -30,9 +30,13 @@ Framework and platform:
 
 Operations:
 
-`auto-compact`, `forge`.
+`auto-compact`, `forge`, `hook-doctor`, `learning-collector`.
 
-The machine-readable source of truth is `.forge-skill/forge/registry/skills.json`; do not maintain a second routing model in this document.
+`hook-doctor` includes nested Codex and Claude Code extensions. These extensions
+are not separate top-level registry entries.
+
+The machine-readable source of truth is [skills.json](../forge/registry/skills.json);
+do not maintain a second routing model in this document.
 
 ## Installation
 

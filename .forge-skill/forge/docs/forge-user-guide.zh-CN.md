@@ -8,7 +8,13 @@ Forge 是一个帮你自动判断"这个任务该怎么处理"的工具。
 
 ## 一、一分钟上手
 
-装好之后，你只需要记住一个命令：
+仅安装宿主 Skills 不会安装全局 `forge` 命令。需要 CLI 时，从源码仓库根目录运行：
+
+```bash
+python -m pip install -e ".forge-skill/forge[dev]"
+```
+
+安装选项见 [快速入门](../QUICKSTART.md)。普通工程请求可从以下命令开始：
 
 ```bash
 forge ask "你的需求"
@@ -23,7 +29,7 @@ forge ask "帮我补一组单元测试"
 forge ask "先帮我摸清楚这个模块现状"
 ```
 
-它会告诉你：
+以下仅示意模块组合，实际字段和策略以当前 CLI 输出为准：
 
 ```
 Suggested handling:
@@ -54,7 +60,7 @@ Why:
 | `forge route` | 想看路由细节，包括分数、候选列表 | 调试 / 开发 forge 本身 |
 | `forge recommend` | 需要结构化输出，给程序读 | 集成到工具链 |
 
-三者内部逻辑完全一样，只是输出风格不同。
+三者共享路由能力，但入口行为不同。`ask` 先处理明确的学习服务和 Runtime 请求，并对普通任务应用宿主归属策略；`route` 和 `recommend` 提供路由诊断与推荐，不执行这些专用处理。普通任务的分派决定不会替宿主执行任务。
 
 ### `forge ask` — 日常首选
 
@@ -182,7 +188,7 @@ forge show template default
 | 实现 Vue 3 组件或 Vue 3/Vite 配置 | vite_vue3 | — |
 | 未明确版本的 Vue/Vite 请求 | 先确认目标 package 的 Vue 版本 | — |
 
-**支持的技能（27 个）**：code_review、debug、plan、error_analysis、report、explain、refactor、optimize、document、test_design、incident、test_implementation、migration、explore、page_test、test_strategy、implement、architecture_design、security_review、data_design、dependency_audit、release_readiness、contract_compatibility、auto_compact、vite_vue3、vue2、vue2_7
+当前注册表包含 33 个 Skills。完整分类见 [Skill 清单](../../skills/README.md)，CLI 查询使用 `forge list skills`。路由以注册表和宿主归属策略为准。
 
 **支持的专项包（9 个）**：spring_review、playwright_debug、redis_incident、java_refactor、general_test_report、general_test_plan、general_exploration、spring_ai_review、release_readiness
 
@@ -276,11 +282,21 @@ forge validate
 
 ### Q: `ask` 和 `recommend` 有什么区别？
 
-内部逻辑完全一样。`ask` 输出像聊天，适合人看。`recommend` 输出更结构化，适合程序读。选你喜欢的用。
+`ask` 包含宿主归属、学习服务和 Runtime 专用处理。`recommend` 提供结构化路由推荐，适合程序集成；需要 JSON 时使用 `forge --format json recommend "..."`。
 
 ### Q: 能不能只装一部分？
 
 可以。forge 是模块化的，你不用的 pack / domain / template 不影响核心功能。但现在没有提供"按需安装"的自动机制——你直接不引用就行了。
+
+---
+
+## 项目学习
+
+采集默认关闭。启用配置后可使用 `forge ask "启动学习审核页面"` 打开本地页面，
+使用 `forge ask "关闭学习审核服务"` 关闭服务。
+采集 → 审核证据 → 分批 AI Summary → 审核 Summary → Overlay → 评估 → 发布 → 手动激活。
+学习改善项目指导，不修改模型参数或全局 Skill。详情见
+[学习生命周期](../../skills/learning-collector/references/lifecycle.md)。
 
 ---
 
