@@ -14,9 +14,8 @@ explicit feedback threshold below says otherwise.
 2. **Persistence and traceability (`COMPLETE`)** provides versioned Overlay
    storage, source-Summary links and digests, one ACTIVE Overlay per project and
    Skill, and project-copy isolation.
-3. **Overlay generation (`COMPLETE`)** builds a DRAFT from one or more reviewed
-   Summary versions using confirmed rules, normalized deduplication, source
-   traceability, and size limits.
+3. **Overlay generation (`COMPLETE`)** builds a DRAFT from exactly one reviewed
+   v6 Summary using confirmed rules, source traceability, and size limits.
 4. **Human review and version management (`COMPLETE`)** supports editing,
    review, physical deletion of non-active versions, explicit activation, and
    disabling. Creation and review never activate an Overlay.
@@ -34,7 +33,7 @@ explicit feedback threshold below says otherwise.
    Skill evaluation directory. Baseline responses are cached by Skill, corpus,
    active Overlay, model, wire API, and endpoint digests; Candidate generation
    and blind judging always run fresh. Explicit retry refreshes the Baseline.
-   Responses API refinement and evaluation use the same relay-compatible
+   Responses API Summary generation and evaluation use the same relay-compatible
    non-stream-requesting payload. If a relay returns server-sent events anyway,
    output is accepted only after `response.completed`; interrupted, failed,
    incomplete, malformed, or oversized streams fail closed without persisting
@@ -114,9 +113,24 @@ an unkeyed capture path.
 
 ## Summary Quality Gates
 
+- Dashboard generation and retry carry a persisted submission ID. The server
+  registers `PREPARING` before loading evidence and links `ACCEPTED` to the job
+  in the job-creation transaction. Reusing the same ID and request returns its
+  existing outcome without creating another job; different requests cannot reuse
+  an ID. Preparation failure is terminal, and restart interrupts unfinished
+  preparation. The browser retains unresolved IDs across reloads and queries the
+  exact submission. A missing receipt during response-loss recovery remains an
+  unknown outcome: it neither ends recovery nor causes an automatic POST replay.
+  The browser retains the original minimal request alongside its ID and offers
+  an explicit same-ID resend when status queries fail. This action sends the
+  identical payload and uses the server's submission reservation to avoid a
+  second job even if the original request arrives late. Transient failures
+  persisting preparation errors retain the terminal outcome for reconciliation
+  before later status reads or submission reservations; reconciliation changes
+  only `PREPARING` receipts and preserves accepted or interrupted outcomes.
 - Hook-only records are retained as supporting evidence and may be reviewed for
-  audit purposes, but never enter deterministic or LLM-refined Summaries until a
-  Skill-contract fallback becomes their canonical structured input.
+  audit purposes, but never enter an AI Summary until a Skill-contract fallback
+  becomes their canonical structured input.
 - A `SHARED_HOST_TURN` uses one shared capture identity when the host supplies a
   stable turn-level identity. Cursor generation identity currently supports this;
   multiple Codex or Claude Code markers with only session identity stay ambiguous
@@ -126,22 +140,17 @@ an unkeyed capture path.
   members publish completion. A shared turn is limited to 11 distinct Skill databases
   so the review remains one atomic SQLite transaction; larger turns use Skill-contract
   fallback instead of partial Hook capture.
-- In a specialized deterministic extractor, ordinary Skill output becomes a
-  candidate only when the same adjustment is supported by at least two
-  independent records. An explicit `learningSignal` or a non-empty human review
-  note may admit a single-record candidate. The generic fallback remains a
-  review queue because it cannot infer semantic agreement safely.
-- LLM refinement removes task-specific facts, current project or UI state, and
-  subject-matter answers. Returning zero rules is valid when no reusable Skill
-  adjustment remains.
-- Refinement rejects replacement characters and isolated Unicode surrogates so
-  damaged source text cannot become a new Summary version.
-- Explicit refinement sends a bounded packet of reviewed effective content,
-  review notes, candidate IDs and evidence to the configured model. All
-  candidates receive a KEEP/DISCARD/CONFLICT decision before a second call
-  synthesizes only KEEP candidates into at most six rules. Unknown citations,
-  duplicate instructions, missing triggers and verification, oversized input,
-  changed evidence, and malformed output fail without creating a version.
+- Explicit AI Summary generation sends all eligible reviewed effective content
+  and review notes to the configured model through bounded MAP packets. Every
+  source receives a KEEP/DISCARD/CONFLICT/NO_LEARNING decision. Only KEEP sources
+  may produce candidates; CONFLICT evidence remains visible for audit but cannot
+  become a rule. REDUCE and FINAL each disposition every candidate and synthesize
+  only KEEP candidates into at most 12 rules. Returning zero rules is valid.
+- Generation rejects replacement characters, isolated Unicode surrogates,
+  unknown citations, duplicate instructions, missing triggers or verification,
+  changed evidence, malformed output, oversized individual records, excessive
+  source count or total evidence bytes, and excessive total batches. It never
+  silently truncates source evidence and fails without creating a Summary.
 - The Summary review page displays classification reasons and linked source
   evidence. The labeled cases in `forge/evals/summary-refinement-cases.json`
   are an advisory starting set, not an approved judge calibration or evidence

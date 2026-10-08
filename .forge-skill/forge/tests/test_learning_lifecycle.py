@@ -17,6 +17,7 @@ if str(SCRIPTS_ROOT) not in sys.path:
 import review_server
 from forge_cli.learning_collector import collect_imported_result
 from forge_cli.overlay_runtime import load_active_overlay
+from llm_summary_pipeline import generate_llm_summary
 
 
 def _collect(forge_root: Path, project: Path, run_id: str, output: dict, overlay: dict | None = None) -> Path | None:
@@ -81,8 +82,66 @@ def test_learning_lifecycle_closes_from_collection_to_feedback_disable(tmp_path,
     })
     assert reviewed == {"updated": True, "disabledOverlay": None}
 
-    summary = review_server.create_summary({"projectId": project_id, "skill": "code-review"})
-    assert summary["sourceCount"] == 1
+    def summary_llm(_instruction, payload):
+        usage = {"status": "reported", "inputTokens": 10, "outputTokens": 5, "totalTokens": 15}
+        if "records" in payload:
+            record_ids = [record["recordId"] for record in payload["records"]]
+            candidate = {
+                "id": "transaction-candidate",
+                "sourceRecordIds": record_ids,
+                "stage": "FINAL_VALIDATION",
+                "type": "CORRECTNESS_CHECK",
+                "title": "Verify transaction boundaries",
+                "trigger": "Before reporting a partial-write risk",
+                "instruction": "Verify dependent writes share one explicit transaction boundary.",
+                "verification": "Trace every dependent write through commit and rollback paths.",
+                "antiPattern": "Do not infer atomicity from adjacent write calls.",
+                "rationale": "The reviewed evidence identified a concrete partial-write risk.",
+            }
+            return json.dumps({
+                "recordDecisions": [{
+                    "recordId": record_id,
+                    "decision": "KEEP",
+                    "reason": "Reusable transaction-review evidence.",
+                } for record_id in record_ids],
+                "candidates": [candidate],
+            }), usage
+        candidate_ids = [candidate["id"] for candidate in payload["candidates"]]
+        source_ids = list(dict.fromkeys(
+            source_id
+            for candidate in payload["candidates"]
+            for source_id in candidate["sourceRecordIds"]
+        ))
+        return json.dumps({
+            "decisions": [{
+                "candidateId": candidate_id,
+                "decision": "KEEP",
+                "reason": "The evidence supports an executable review rule.",
+            } for candidate_id in candidate_ids],
+            "rules": [{
+                "id": "transaction-rule",
+                "candidateIds": candidate_ids,
+                "sourceRecordIds": source_ids,
+                "stage": "FINAL_VALIDATION",
+                "type": "CORRECTNESS_CHECK",
+                "title": "Verify transaction boundaries",
+                "trigger": "Before reporting a partial-write risk",
+                "instruction": "Verify dependent writes share one explicit transaction boundary.",
+                "verification": "Trace every dependent write through commit and rollback paths.",
+                "antiPattern": "Do not infer atomicity from adjacent write calls.",
+                "rationale": "The reviewed evidence identified a concrete partial-write risk.",
+            }],
+        }), usage
+
+    summary = generate_llm_summary(
+        database,
+        project_id=project_id,
+        skill="code-review",
+        skill_text=code_review_skill.read_text(encoding="utf-8"),
+        model="test-summary-model",
+        call_llm=summary_llm,
+    )
+    assert summary["summary"]["sourceCount"] == 1
     summary_rules = summary["summary"]["rules"]
     assert summary_rules
     reviewed_summary = review_server.review_summary({

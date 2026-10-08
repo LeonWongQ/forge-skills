@@ -12,7 +12,12 @@ from pathlib import Path
 
 import pytest
 
-from forge_cli.learning_collector import _registry_file_lock, collect_imported_result, connect_database
+from forge_cli.learning_collector import (
+    DATABASE_SCHEMA_VERSION,
+    _registry_file_lock,
+    collect_imported_result,
+    connect_database,
+)
 from forge_cli.runtime_paths import forge_runtime_directory
 
 
@@ -102,6 +107,29 @@ def test_direct_collection_needs_no_click_and_preserves_unicode(tmp_path):
         stored = connection.execute("SELECT output_json FROM learning_records").fetchone()[0]
     assert stored.isascii()
     assert json.loads(stored) == {"conclusion": "中文审查 😀 𠀀"}
+
+
+def test_collection_preserves_explicit_project_archive(tmp_path):
+    forge_root, script = isolated_collector(tmp_path)
+    project = enabled_project(tmp_path)
+    payload = json.dumps({"status": "succeeded", "conclusion": "review"}).encode("utf-8")
+    assert run_direct(script, forge_root, project, payload).returncode == 0
+    registry = forge_root.parent / "forge-data" / "project-registry.json"
+    data = json.loads(registry.read_text(encoding="utf-8"))
+    data["projects"][0].update(status="DISABLED", disabledAt="2026-10-08T00:00:00Z")
+    registry.write_text(json.dumps(data), encoding="utf-8")
+    assert run_direct(script, forge_root, project, payload).returncode == 0
+    entry = json.loads(registry.read_text(encoding="utf-8"))["projects"][0]
+    assert entry["status"] == "DISABLED"
+    assert entry["disabledAt"] == "2026-10-08T00:00:00Z"
+    with closing(sqlite3.connect(project_database(forge_root, project))) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM learning_records").fetchone()[0] == 2
+    # Explicit restoration remains authoritative for subsequent collection.
+    data = json.loads(registry.read_text(encoding="utf-8"))
+    data["projects"][0].update(status="ACTIVE", disabledAt=None)
+    registry.write_text(json.dumps(data), encoding="utf-8")
+    assert run_direct(script, forge_root, project, payload).returncode == 0
+    assert json.loads(registry.read_text(encoding="utf-8"))["projects"][0]["status"] == "ACTIVE"
 
 
 def test_direct_collection_rejects_non_utf8_without_creating_database(tmp_path):
@@ -339,7 +367,7 @@ def test_one_toolchain_stores_each_enabled_skill_once(tmp_path):
     assert json.loads(rows[0][1]) == {"result": "code-review"}
 
 
-def test_collection_reactivates_archived_registration_and_clears_stale_health(tmp_path):
+def test_collection_preserves_archive_and_clears_stale_health(tmp_path):
     forge_root, _ = isolated_collector(tmp_path)
     project = enabled_project(tmp_path)
     assert _collect(forge_root, project, "runtime.first", "code-review", {"result": "first"})
@@ -354,8 +382,8 @@ def test_collection_reactivates_archived_registration_and_clears_stale_health(tm
     assert _collect(forge_root, project, "runtime.second", "code-review", {"result": "second"})
 
     restored = json.loads(registry_path.read_text(encoding="utf-8"))["projects"][0]
-    assert restored["status"] == "ACTIVE"
-    assert restored["disabledAt"] is None
+    assert restored["status"] == "DISABLED"
+    assert restored["disabledAt"] == "2026-09-15T00:00:00Z"
     assert restored["unavailableSince"] is None
     assert restored["healthReason"] is None
 
@@ -443,7 +471,7 @@ def test_existing_database_migration_preserves_records(tmp_path):
     assert "shared_capture_complete" in columns
     assert "is_classic" in columns
     assert "classic_reason" in columns
-    assert version == 10
+    assert version == DATABASE_SCHEMA_VERSION
 
 
 def test_database_creates_dashboard_filter_indexes(tmp_path):
@@ -493,7 +521,9 @@ def test_legacy_project_database_is_split_into_skill_data_roots(tmp_path):
     assert legacy.is_file()
 
 
-def test_copied_project_gets_new_id_and_cloned_skill_databases(tmp_path):
+@pytest.mark.parametrize("resolve_runtime_first", [False, True])
+def test_copied_project_gets_new_id_without_inheriting_learning_data(
+        tmp_path, resolve_runtime_first):
     forge_root, _ = isolated_collector(tmp_path)
     original = enabled_project(tmp_path / "original", ["code-review", "debug"])
     for skill in ("code-review", "debug"):
@@ -510,13 +540,43 @@ def test_copied_project_gets_new_id_and_cloned_skill_databases(tmp_path):
                VALUES ('summary-original', ?, 'code-review', 1, '2026-01-01T00:00:00Z', 1, '{}', 'REVIEWED')""",
             (original_identity["projectId"],),
         )
+        connection.execute(
+            """INSERT INTO skill_overlays
+               (id, project_id, skill, version, status, content, manifest_json,
+                content_digest, created_at)
+               VALUES ('overlay-original', ?, 'code-review', 1, 'DRAFT', '# original',
+                       '{}', 'sha256:original', '2026-01-01T00:00:00Z')""",
+            (original_identity["projectId"],),
+        )
+        connection.execute(
+            """INSERT INTO summary_generation_jobs
+               (id, project_id, skill, status, window_months, cutoff_at, source_digest,
+                skill_digest, model, prompt_version, source_count, created_at)
+               VALUES ('job-original', ?, 'code-review', 'FAILED', 6, '2026-01-01T00:00:00Z',
+                       'sha256:source', 'sha256:skill', 'model', 'prompt', 1,
+                       '2026-01-01T00:00:00Z')""",
+            (original_identity["projectId"],),
+        )
         connection.commit()
+
+    legacy = original / ".forge-skill" / "learning" / "learning.sqlite"
+    with closing(connect_database(legacy)) as connection, connection:
+        connection.executemany(
+            """INSERT INTO learning_records
+               (id, project_id, project_name, project_path, skill, captured_at, output_json)
+               VALUES (?, ?, 'project', ?, ?, '2026-01-01T00:00:00Z', '{}')""",
+            [
+                ("embedded-code-review", original_identity["projectId"], str(original), "code-review"),
+                ("embedded-explain", original_identity["projectId"], str(original), "explain"),
+            ],
+        )
 
     copied = tmp_path / "copied" / "project"
     shutil.copytree(original, copied)
-    original_runtime = forge_runtime_directory(forge_root, original)
-    copied_runtime = forge_runtime_directory(forge_root, copied)
-    assert copied_runtime != original_runtime
+    if resolve_runtime_first:
+        original_runtime = forge_runtime_directory(forge_root, original)
+        copied_runtime = forge_runtime_directory(forge_root, copied)
+        assert copied_runtime != original_runtime
     _collect(forge_root, copied, "copied-code-review", "code-review", {"result": "copy"})
 
     copied_identity = json.loads((copied / ".forge-skill" / "learning" / "project.json").read_text(encoding="utf-8"))
@@ -526,16 +586,23 @@ def test_copied_project_gets_new_id_and_cloned_skill_databases(tmp_path):
     data_root = forge_root.parent / "forge-data" / "projects"
     original_code_review = data_root / original_identity["projectId"] / "learning" / "code-review" / "learning.sqlite"
     copied_learning = data_root / copied_identity["projectId"] / "learning"
+    assert not (data_root / original_identity["projectId"] / "learning" / "explain" / "learning.sqlite").exists()
     with closing(sqlite3.connect(original_code_review)) as connection, connection:
         assert connection.execute("SELECT DISTINCT project_id FROM learning_records").fetchall() == [(original_identity["projectId"],)]
         assert connection.execute("SELECT COUNT(*) FROM learning_records").fetchone()[0] == 1
         assert connection.execute("SELECT lifecycle_status FROM learning_summaries").fetchone()[0] == "REVIEWED"
-    for skill in ("code-review", "debug"):
-        with closing(sqlite3.connect(copied_learning / skill / "learning.sqlite")) as connection, connection:
-            assert connection.execute("SELECT DISTINCT project_id FROM learning_records").fetchall() == [(copied_identity["projectId"],)]
+        assert connection.execute("SELECT COUNT(*) FROM skill_overlays").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM summary_generation_jobs").fetchone()[0] == 1
+    assert not (copied_learning / "debug" / "learning.sqlite").exists()
+    assert not (copied_learning / "explain" / "learning.sqlite").exists()
     with closing(sqlite3.connect(copied_learning / "code-review" / "learning.sqlite")) as connection, connection:
-        assert connection.execute("SELECT COUNT(*) FROM learning_records").fetchone()[0] == 2
-        assert connection.execute("SELECT lifecycle_status FROM learning_summaries").fetchone()[0] == "REVIEWED"
+        assert connection.execute("SELECT DISTINCT project_id FROM learning_records").fetchall() == [
+            (copied_identity["projectId"],)
+        ]
+        assert connection.execute("SELECT COUNT(*) FROM learning_records").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM learning_summaries").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM skill_overlays").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM summary_generation_jobs").fetchone()[0] == 0
 
 
 def test_moved_project_updates_all_skill_record_paths(tmp_path):

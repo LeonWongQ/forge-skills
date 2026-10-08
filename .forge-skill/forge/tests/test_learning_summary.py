@@ -6,15 +6,21 @@ import json
 import socket
 import sqlite3
 import sys
+import threading
 import urllib.error
-from contextlib import closing
+from contextlib import closing, contextmanager
 from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
 
 
-@pytest.mark.parametrize("path", ["/", "/api/service", "/api/records", "/api/projects"])
+@pytest.mark.parametrize(
+    "path", [
+        "/", "/api/service", "/api/records", "/api/projects",
+        "/api/summary-generation", "/api/summary-generation-estimate",
+    ]
+)
 def test_get_rejects_rebinding_host_before_serving_data(path):
     handler = object.__new__(review_server.Handler)
     handler.path = path
@@ -36,6 +42,246 @@ def test_get_service_probe_accepts_loopback_host():
     handler.do_GET()
     assert responses[0][1] == 200
     assert responses[0][0]["token"] == review_server.SERVICE_TOKEN
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_overlay_evaluation_reservation_blocks_duplicate_and_releases_on_completion(monkeypatch, fails):
+    entered, release = threading.Event(), threading.Event()
+    results = []
+    payload = {"projectId": "project", "skill": "code-review", "overlayId": "one"}
+
+    def evaluate(value):
+        if value["overlayId"] == "other":
+            return {"status": "PUBLISHED"}
+        entered.set()
+        assert release.wait(5)
+        if fails:
+            raise ValueError("evaluation failed")
+        return {"status": "PUBLISHED"}
+
+    monkeypatch.setattr(review_server, "_evaluate_and_publish_overlay", evaluate)
+
+    def worker():
+        try:
+            results.append(review_server.evaluate_and_publish_overlay(payload))
+        except ValueError as error:
+            results.append(str(error))
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    try:
+        assert entered.wait(5)
+        with pytest.raises(ValueError, match="already running"):
+            review_server.evaluate_and_publish_overlay({**payload, "skill": "skill.code_review"})
+        assert review_server.evaluate_and_publish_overlay({**payload, "overlayId": "other"}) == {"status": "PUBLISHED"}
+    finally:
+        release.set()
+        thread.join(5)
+    assert not thread.is_alive()
+    assert results == ["evaluation failed" if fails else {"status": "PUBLISHED"}]
+    monkeypatch.setattr(review_server, "_evaluate_and_publish_overlay", lambda _value: {"status": "PUBLISHED"})
+    assert review_server.evaluate_and_publish_overlay(payload) == {"status": "PUBLISHED"}
+
+
+def test_summary_generation_get_distinguishes_missing_job_from_service_error(monkeypatch):
+    handler = object.__new__(review_server.Handler)
+    handler.path = "/api/summary-generation?project=project&skill=plan"
+    handler.headers = {"Host": "127.0.0.1:8765"}
+    handler.server = SimpleNamespace(server_port=8765)
+    responses = []
+    handler.send_json = lambda value, status=200: responses.append((value, status))
+
+    def missing(_query):
+        raise review_server.SummaryJobNotFound("Summary generation job not found")
+
+    monkeypatch.setattr(review_server, "get_summary_generation", missing)
+    handler.do_GET()
+    assert responses == [({"error": "Summary generation job not found", "code": "SUMMARY_JOB_NOT_FOUND"}, 404)]
+
+    def unavailable(_query):
+        raise OSError("status unavailable")
+
+    responses.clear()
+    monkeypatch.setattr(review_server, "get_summary_generation", unavailable)
+    handler.do_GET()
+    assert responses[0][1] == 500
+    assert "code" not in responses[0][0]
+
+
+def test_summary_submission_get_has_distinct_unknown_outcome_code(monkeypatch):
+    handler = object.__new__(review_server.Handler)
+    handler.path = "/api/summary-generation?project=project&skill=plan&submission=not-yet-registered"
+    handler.headers = {"Host": "127.0.0.1:8765"}
+    handler.server = SimpleNamespace(server_port=8765)
+    responses = []
+    handler.send_json = lambda value, status=200: responses.append((value, status))
+    monkeypatch.setattr(review_server, "_summary_generation_scope", lambda *args, **kwargs: ({}, Path("unused"), "plan"))
+    captured = {}
+
+    def missing(_database, **kwargs):
+        captured.update(kwargs)
+        return None
+
+    monkeypatch.setattr(review_server, "summary_job_status", missing)
+    handler.do_GET()
+    assert responses[0][1] == 404
+    assert responses[0][0]["code"] == "SUMMARY_SUBMISSION_NOT_FOUND"
+    assert captured["submission_id"] == "not-yet-registered"
+
+
+def test_summary_submission_is_registered_before_llm_setup_failure(tmp_path, monkeypatch):
+    database = tmp_path / "learning.sqlite"
+    monkeypatch.setattr(review_server, "_summary_generation_scope", lambda *args, **kwargs: ({}, database, "plan"))
+
+    def unavailable():
+        status = review_server.summary_job_status(database, submission_id="setup-failure")
+        assert status["status"] == "PREPARING"
+        raise ValueError("LLM not configured")
+
+    monkeypatch.setattr(review_server, "_summary_llm", unavailable)
+    with pytest.raises(ValueError, match="LLM not configured"):
+        review_server.start_summary_generation({
+            "projectId": "project", "skill": "plan", "submissionId": "setup-failure",
+        })
+    status = review_server.get_summary_generation({
+        "project": ["project"], "skill": ["plan"], "submission": ["setup-failure"],
+    })
+    assert status["status"] == "FAILED" and status["retryable"] is False
+    assert review_server.start_summary_generation({
+        "projectId": "project", "skill": "plan", "submissionId": "setup-failure",
+    })["status"] == "FAILED"
+    monkeypatch.setattr(review_server, "_summary_generation_scope", lambda *args, **kwargs: ({}, database, "debug"))
+    with pytest.raises(review_server.SummarySubmissionNotFound):
+        review_server.get_summary_generation({
+            "project": ["project"], "skill": ["debug"], "submission": ["setup-failure"],
+        })
+
+
+def test_summary_submission_generate_and_retry_api_link_receipts_to_one_job_each(tmp_path, monkeypatch):
+    database = tmp_path / "learning.sqlite"
+    connection = connect_database(database)
+    with connection:
+        connection.execute(
+            "INSERT INTO learning_records "
+            "(id, project_id, project_name, project_path, skill, captured_at, output_json, reviewed, review_status, capture_source) "
+            "VALUES ('source', 'project', 'project', ?, 'plan', ?, ?, 1, 'ACTIVE', 'SKILL_CONTRACT')",
+            (str(tmp_path), review_server.now(), json.dumps({"objective": "Verify dependencies"})),
+        )
+    connection.close()
+    monkeypatch.setattr(review_server, "_summary_generation_scope", lambda *args, **kwargs: ({}, database, "plan"))
+    monkeypatch.setattr(review_server, "_skill_text", lambda _skill: "# Plan")
+    monkeypatch.setattr(threading.Thread, "start", lambda _thread: None)
+    calls = []
+
+    def configured():
+        calls.append("config")
+        return {"model": "test", "baseUrl": "https://example.test/v1", "wireApi": "responses"}, lambda *_args: None
+
+    monkeypatch.setattr(review_server, "_summary_llm", configured)
+    payload = {"projectId": "project", "skill": "plan", "submissionId": "generate-once"}
+    first = review_server.start_summary_generation(payload)
+    duplicate = review_server.start_summary_generation(payload)
+    assert first["jobId"] == duplicate["jobId"]
+    assert calls == ["config"]
+    assert review_server.get_summary_generation({
+        "project": ["project"], "skill": ["plan"], "submission": ["generate-once"],
+    })["jobId"] == first["jobId"]
+    assert review_server.interrupt_stale_jobs(database) == 1
+    retry_payload = {**payload, "submissionId": "retry-once", "jobId": first["jobId"]}
+    retry = review_server.retry_summary_generation(retry_payload)
+    assert retry["jobId"] != first["jobId"]
+    assert review_server.retry_summary_generation(retry_payload)["jobId"] == retry["jobId"]
+    assert calls == ["config", "config"]
+    connection = connect_database(database)
+    assert connection.execute("SELECT COUNT(*) FROM summary_generation_jobs").fetchone()[0] == 2
+    assert connection.execute("SELECT COUNT(*) FROM summary_generation_submissions WHERE status = 'ACCEPTED'").fetchone()[0] == 2
+    connection.close()
+
+
+def test_summary_generation_estimate_get_routes_query(monkeypatch):
+    handler = object.__new__(review_server.Handler)
+    handler.path = "/api/summary-generation-estimate?project=project&skill=plan&language=en"
+    handler.headers = {"Host": "127.0.0.1:8765"}
+    handler.server = SimpleNamespace(server_port=8765)
+    responses = []
+    handler.send_json = lambda value, status=200: responses.append((value, status))
+    monkeypatch.setattr(
+        review_server, "get_summary_generation_estimate",
+        lambda query: {"project": query["project"][0], "skill": query["skill"][0]},
+    )
+
+    handler.do_GET()
+
+    assert responses == [({"project": "project", "skill": "plan"}, 200)]
+
+
+@pytest.mark.parametrize(
+    ("path", "target"),
+    [
+        ("/api/summary-generation", "start_summary_generation"),
+        ("/api/summary-generation-retry", "retry_summary_generation"),
+    ],
+)
+def test_summary_generation_mutations_return_accepted(monkeypatch, path, target):
+    payload = {"projectId": "project", "skill": "plan"}
+    body = json.dumps(payload).encode()
+    handler = object.__new__(review_server.Handler)
+    handler.path = path
+    handler.headers = {
+        "Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765",
+        "Content-Type": "application/json", "Content-Length": str(len(body)),
+        "Cookie": f"{review_server.SERVICE_COOKIE}=test-token",
+    }
+    handler.server = SimpleNamespace(server_port=8765)
+    handler.rfile = io.BytesIO(body)
+    responses = []
+    handler.send_json = lambda value, status=200: responses.append((value, status))
+    monkeypatch.setattr(review_server, "SERVICE_TOKEN", "test-token")
+    monkeypatch.setattr(
+        review_server, target,
+        lambda value: {"jobId": "job", "status": "PENDING", "request": value},
+    )
+
+    handler.do_POST()
+
+    assert responses == [({"jobId": "job", "status": "PENDING", "request": payload}, 202)]
+
+
+@pytest.mark.parametrize("path", ["/api/refine", "/api/summarize"])
+def test_retired_summary_mutation_paths_return_not_found(path):
+    handler = object.__new__(review_server.Handler)
+    handler.path = path
+    responses = []
+    handler.send_json = lambda value, status=200: responses.append((value, status))
+
+    handler.do_POST()
+
+    assert responses == [({"error": "not found"}, 404)]
+
+
+def test_copy_overlay_endpoint_creates_a_draft(monkeypatch):
+    payload = {"projectId": "project", "skill": "plan", "overlayId": "overlay-1"}
+    body = json.dumps(payload).encode()
+    handler = object.__new__(review_server.Handler)
+    handler.path = "/api/copy-overlay"
+    handler.headers = {
+        "Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765",
+        "Content-Type": "application/json", "Content-Length": str(len(body)),
+        "Cookie": f"{review_server.SERVICE_COOKIE}=test-token",
+    }
+    handler.server = SimpleNamespace(server_port=8765)
+    handler.rfile = io.BytesIO(body)
+    responses = []
+    handler.send_json = lambda value, status=200: responses.append((value, status))
+    monkeypatch.setattr(review_server, "SERVICE_TOKEN", "test-token")
+    monkeypatch.setattr(
+        review_server, "copy_overlay",
+        lambda value: {"id": "overlay-2", "status": "DRAFT", "request": value},
+    )
+
+    handler.do_POST()
+
+    assert responses == [({"id": "overlay-2", "status": "DRAFT", "request": payload}, 201)]
 
 
 @pytest.mark.parametrize("operation", ["overlay", "summary", "record"])
@@ -90,34 +336,6 @@ def test_mutation_guards_hold_write_lock_before_read(tmp_path, monkeypatch, oper
     else:
         review_server.update_record({**payload, "recordId": "record", "action": "EXCLUDED"})
     assert blocked == [True]
-
-
-def test_summary_extraction_allows_writes_but_rejects_changed_evidence(tmp_path, monkeypatch):
-    database = tmp_path / "summary.sqlite"
-    connection = connect_database(database)
-    with connection:
-        connection.execute(
-            "INSERT INTO learning_records (id, project_id, project_name, project_path, skill, captured_at, output_json, reviewed) "
-            "VALUES ('record', 'project-snapshot', 'project', ?, 'code-review', ?, ?, 1)",
-            (str(tmp_path), review_server.now(), json.dumps({"findings": [{"title": "Check transactions", "suggested_direction": "Verify write locks"}]})),
-        )
-    connection.close()
-    monkeypatch.setattr(review_server, "projects", lambda: [{
-        "projectId": "project-snapshot", "name": "project", "path": str(tmp_path), "database": str(database),
-    }])
-    monkeypatch.setattr(review_server, "_enabled_skills", lambda _: {"code-review"})
-    original_build = review_server.build_summary
-
-    def concurrent_build(records, **kwargs):
-        with closing(sqlite3.connect(database, timeout=0)) as other, other:
-            other.execute("UPDATE learning_records SET review_note = 'changed' WHERE id = 'record'")
-        return original_build(records, **kwargs)
-
-    monkeypatch.setattr(review_server, "build_summary", concurrent_build)
-    with pytest.raises(ValueError, match="source evidence changed"):
-        review_server.create_summary({"projectId": "project-snapshot", "skill": "code-review"})
-    with closing(sqlite3.connect(database)) as check, check:
-        assert check.execute("SELECT COUNT(*) FROM learning_summaries").fetchone()[0] == 0
 
 
 def test_single_database_page_fetches_only_requested_rows(tmp_path, monkeypatch):
@@ -258,9 +476,241 @@ if str(SCRIPTS_ROOT) not in sys.path:
 
 import review_server
 import overlay_evaluator
-from forge_cli.learning_collector import _adopt_copied_database, connect_database
-from summary_engine import build_code_review_summary, build_generic_summary, build_summary, encoded_size
-from refinement_quality import SKILL_CRITERIA, evidence_packet, validate_decisions, validate_rules
+from forge_cli.learning_collector import connect_database
+from refinement_quality import SKILL_CRITERIA, evidence_packet
+
+
+def test_retry_summary_generation_preserves_original_job_parameters(tmp_path, monkeypatch):
+    database = tmp_path / "learning.sqlite"
+    call_llm = object()
+    monkeypatch.setattr(
+        review_server, "_summary_generation_scope",
+        lambda project_id, skill: ({"projectId": project_id}, database, skill),
+    )
+    monkeypatch.setattr(
+        review_server, "summary_job_status",
+        lambda _database, *, job_id: {
+            "jobId": job_id, "projectId": "project", "skill": "plan",
+        },
+    )
+    monkeypatch.setattr(
+        review_server, "_summary_llm",
+        lambda: ({"model": "test-model", "baseUrl": "https://example.test/v1", "wireApi": "responses"}, call_llm),
+    )
+    monkeypatch.setattr(review_server, "_skill_text", lambda skill: f"# {skill}")
+    captured = {}
+
+    def retry(database_path, **kwargs):
+        captured.update({"database": database_path, **kwargs})
+        return {"jobId": "retry-job", "language": "en"}
+
+    monkeypatch.setattr(review_server, "retry_summary_job", retry)
+
+    result = review_server.retry_summary_generation({
+        "projectId": "project", "skill": "plan", "jobId": "failed-job",
+        "language": "fr",
+    })
+
+    assert result == {"jobId": "retry-job", "language": "en"}
+    assert captured == {
+        "database": database, "previous_job_id": "failed-job",
+        "skill_text": "# plan", "model": "test-model",
+        "call_llm": call_llm,
+        "provider_identity": review_server._summary_provider_identity({
+            "baseUrl": "https://example.test/v1", "wireApi": "responses",
+        }),
+    }
+
+
+def test_summary_service_identity_tracks_endpoint_and_protocol_without_credentials():
+    config = {"baseUrl": "https://example.test/v1/", "wireApi": "responses", "apiKey": "secret"}
+    identity = review_server._summary_provider_identity(config)
+    assert identity.startswith("sha256:")
+    assert "secret" not in identity
+    assert review_server._summary_provider_identity({**config, "apiKey": "changed"}) == identity
+    assert review_server._summary_provider_identity({**config, "baseUrl": "https://example.test/v1"}) == identity
+    assert review_server._summary_provider_identity({**config, "baseUrl": "https://other.test/v1"}) != identity
+    assert review_server._summary_provider_identity({**config, "wireApi": "chat_completions"}) != identity
+
+
+def test_review_server_does_not_recover_jobs_without_service_ownership(monkeypatch):
+    events = []
+
+    class Server:
+        def serve_forever(self):
+            events.append("serve")
+
+        def server_close(self):
+            events.append("close")
+
+    @contextmanager
+    def unavailable_lock(_path, *, timeout):
+        assert timeout == 0
+        raise TimeoutError("already owned")
+        yield
+
+    monkeypatch.setattr(review_server, "ThreadingHTTPServer", lambda address, handler: Server())
+    monkeypatch.setattr(review_server, "_registry_file_lock", unavailable_lock)
+    monkeypatch.setattr(
+        review_server, "recover_summary_generation_jobs",
+        lambda: events.append("recover"),
+    )
+
+    with pytest.raises(TimeoutError, match="already owned"):
+        review_server.serve_review_server(9876, "token")
+
+    assert events == ["close"]
+
+
+def test_review_server_recovers_only_after_taking_service_ownership(monkeypatch):
+    events = []
+
+    class Server:
+        def serve_forever(self):
+            events.append("serve")
+
+        def server_close(self):
+            events.append("close")
+
+    @contextmanager
+    def owned_lock(path, *, timeout):
+        assert path == review_server.SERVICE_OWNER_PATH
+        assert timeout == 0
+        events.append("lock")
+        yield
+        events.append("unlock")
+
+    monkeypatch.setattr(review_server, "ThreadingHTTPServer", lambda address, handler: Server())
+    monkeypatch.setattr(review_server, "_registry_file_lock", owned_lock)
+    monkeypatch.setattr(
+        review_server, "recover_summary_generation_jobs",
+        lambda: events.append("recover"),
+    )
+
+    review_server.serve_review_server(9876, "fixed-token")
+
+    assert review_server.SERVICE_TOKEN == "fixed-token"
+    assert events == ["lock", "recover", "serve", "unlock", "close"]
+
+
+def _insert_releasable_v6_summary(
+    connection: sqlite3.Connection,
+    *,
+    project_id: str,
+    skill: str = "code-review",
+    version: int = 1,
+    summary_id: str | None = None,
+    rules: list[dict] | None = None,
+    source_ids: list[str] | None = None,
+    final_rules: list[dict] | None = None,
+) -> dict:
+    summary_id = summary_id or f"summary-{version}"
+    record_id = f"record-{version}"
+    source_ids = source_ids or [record_id]
+    job_id = f"job-{version}"
+    rules = rules or [{
+        "id": f"rule-{version}",
+        "stage": "FINAL_VALIDATION",
+        "status": "CONFIRMED",
+        "trigger": "Before returning the final review",
+        "instruction": "Check that every finding has direct evidence.",
+        "verification": "Verify each finding cites an exact file and line.",
+        "sourceRecordIds": [record_id],
+    }]
+    rules = [dict(rule) for rule in rules]
+    for rule in rules:
+        rule.setdefault("supportCount", len(rule.get("sourceRecordIds", [])))
+        rule.setdefault("sourceIdsTruncated", False)
+    final_rules = [dict(rule, status="PENDING") for rule in (final_rules or rules)]
+    snapshot = {
+        "format": "forge-skill-training-summary-v6",
+        "projectId": project_id,
+        "skill": skill,
+        "version": version,
+        "status": "REVIEWED",
+        "sourceCount": len(source_ids),
+        "generation": {
+            "mode": "llm-direct",
+            "model": "summary-model",
+            "promptVersion": "llm-summary-map-reduce-v1",
+            "sourceDigest": f"sha256:source-{version}",
+            "skillDigest": "sha256:skill",
+            "outputLanguage": "zh-CN",
+        },
+        "coverage": {
+            "sourceRecords": len(source_ids),
+            "processedRecords": len(source_ids),
+            "coverageRate": 1.0,
+        },
+        "quality": {
+            "humanReviewRequired": True,
+            "allInputsDispositioned": True,
+        },
+        "rules": rules,
+    }
+    connection.executemany(
+        "INSERT INTO learning_records "
+        "(id, project_id, project_name, project_path, skill, captured_at, output_json, reviewed) "
+        "VALUES (?, ?, 'project', '.', ?, '2026-09-14T00:00:00Z', ?, 1)",
+        ((source_id, project_id, skill, json.dumps({"source": source_id})) for source_id in source_ids),
+    )
+    connection.execute(
+        "INSERT INTO learning_summaries "
+        "(id, project_id, skill, version, created_at, source_count, summary_json, lifecycle_status) "
+        "VALUES (?, ?, ?, ?, '2026-09-14T00:00:00Z', ?, ?, 'REVIEWED')",
+        (summary_id, project_id, skill, version, len(source_ids), json.dumps(snapshot, ensure_ascii=False)),
+    )
+    connection.executemany(
+        "INSERT INTO learning_summary_sources (summary_id, record_id) VALUES (?, ?)",
+        ((summary_id, source_id) for source_id in source_ids),
+    )
+    for rule in final_rules:
+        connection.executemany(
+            "INSERT INTO learning_summary_rule_sources (summary_id, rule_id, record_id) VALUES (?, ?, ?)",
+            ((summary_id, rule["id"], source_id) for source_id in rule["sourceRecordIds"]),
+        )
+    connection.execute(
+        """INSERT INTO summary_generation_jobs
+           (id, project_id, skill, status, window_months, cutoff_at, source_digest,
+            skill_digest, model, prompt_version, language, source_count, total_batches,
+            completed_batches, summary_id, created_at, started_at, completed_at)
+           VALUES (?, ?, ?, 'SUCCEEDED', 6, '2026-03-14T00:00:00Z', ?, ?, ?, ?, ?, ?,
+                   1, 1, ?, '2026-09-14T00:00:00Z', '2026-09-14T00:00:00Z',
+                   '2026-09-14T00:01:00Z')""",
+        (
+            job_id, project_id, skill, snapshot["generation"]["sourceDigest"],
+            snapshot["generation"]["skillDigest"], snapshot["generation"]["model"],
+            snapshot["generation"]["promptVersion"], snapshot["generation"]["outputLanguage"],
+            len(source_ids), summary_id,
+        ),
+    )
+    connection.executemany(
+        "INSERT INTO summary_generation_sources (job_id, record_id, ordinal, record_digest) "
+        "VALUES (?, ?, ?, ?)",
+        ((job_id, source_id, index, f"sha256:{source_id}") for index, source_id in enumerate(source_ids)),
+    )
+    connection.execute(
+        """INSERT INTO summary_generation_batches
+           (job_id, phase, level, batch_index, input_digest, status, item_count,
+            result_json, usage_json, created_at, completed_at)
+           VALUES (?, 'FINAL', 1, 0, ?, 'SUCCEEDED', ?, ?, '{}',
+                   '2026-09-14T00:00:00Z', '2026-09-14T00:01:00Z')""",
+        (
+            job_id, f"sha256:final-{version}", len(final_rules),
+            json.dumps({"decisions": [], "rules": final_rules}, ensure_ascii=False),
+        ),
+    )
+    return snapshot
+
+
+def _configure_overlay_project(monkeypatch, project_id: str, project: Path, database: Path) -> None:
+    monkeypatch.setattr(review_server, "projects", lambda: [{
+        "projectId": project_id,
+        "name": "project",
+        "path": str(project),
+        "database": str(database),
+    }])
+    monkeypatch.setattr(review_server, "_enabled_skills", lambda _: {"code-review"})
 
 
 def test_overlay_llm_evaluation_applies_user_approved_default_gate(tmp_path):
@@ -448,66 +898,6 @@ def finding(title: str, direction: str, severity: str = "High") -> dict:
         "why_it_matters": "The current implementation can lose project registration data.",
         "confidence": "High",
     }
-
-
-def test_code_review_summary_clusters_related_findings_and_stays_compact():
-    records = [
-        {"recordId": "r1", "capturedAt": "2026-09-01T00:00:00Z", "reviewNote": "", "content": {"findings": [
-            finding("项目注册表的读改写没有并发保护，可能丢失注册项目", "使用跨平台文件锁保护注册表读改写。")]}},
-        {"recordId": "r2", "capturedAt": "2026-09-02T00:00:00Z", "reviewNote": "", "content": {"findings": [
-            finding("注册表锁仅限单个 Python 进程，跨进程仍可能丢失项目", "使用跨平台文件锁或 SQLite registry。")]}},
-        {"recordId": "r3", "capturedAt": "2026-09-03T00:00:00Z", "reviewNote": "", "content": {"findings": [
-            finding("项目身份文件初始化不受注册锁保护", "将 project.json 初始化放入同一个跨进程锁。")]}},
-        {"recordId": "r4", "capturedAt": "2026-09-04T00:00:00Z", "reviewNote": "", "content": {"findings": [
-            finding("汇总响应体没有大小上限", "限制汇总响应体大小并按需读取详情。", "Medium")]}},
-    ]
-
-    summary = build_code_review_summary(records)
-
-    assert summary["statistics"]["originalFindings"] == 4
-    assert summary["statistics"]["candidateClusters"] == 3
-    assert summary["rules"][0]["supportCount"] == 2
-    assert summary["rules"][0]["sourceRecordIds"] == ["r1", "r2"]
-    assert all(rule["status"] == "PENDING" for rule in summary["rules"])
-    assert encoded_size(summary) < 20_000
-    assert "findings" not in summary
-
-
-def test_code_review_summary_does_not_merge_unrelated_findings_with_generic_prefixes():
-    records = [{
-        "recordId": "r1", "capturedAt": "2026-09-01T00:00:00Z", "content": {"findings": [
-            finding("Missing authorization check in delete endpoint", "Validate delete permission."),
-        ]},
-    }, {
-        "recordId": "r2", "capturedAt": "2026-09-02T00:00:00Z", "content": {"findings": [
-            finding("Missing transaction around database update", "Wrap the update in a transaction."),
-        ]},
-    }]
-
-    summary = build_code_review_summary(records)
-
-    assert summary["statistics"]["candidateClusters"] == 2
-    assert all(rule["supportCount"] == 1 for rule in summary["rules"])
-
-
-def test_code_review_summary_keeps_conflicting_directions_separate():
-    records = [
-        {"recordId": "r1", "capturedAt": "2026-09-01T00:00:00Z", "content": {"findings": [
-            finding("Timeout should be adjusted", "Increase the timeout to 30 seconds."),
-        ]}},
-        {"recordId": "r2", "capturedAt": "2026-09-02T00:00:00Z", "content": {"findings": [
-            finding("Timeout should be adjusted", "Do not increase the timeout; fix cancellation."),
-        ]}},
-    ]
-
-    summary = build_code_review_summary(records)
-
-    assert summary["statistics"]["candidateClusters"] == 2
-    assert {rule["instruction"] for rule in summary["rules"]} == {
-        "Increase the timeout to 30 seconds.", "Do not increase the timeout; fix cancellation.",
-    }
-
-
 def test_overlay_schema_tracks_sources_and_allows_one_active_overlay(tmp_path):
     database = tmp_path / "overlay.sqlite"
     connection = connect_database(database)
@@ -537,139 +927,42 @@ def test_overlay_schema_tracks_sources_and_allows_one_active_overlay(tmp_path):
         connection.close()
 
 
-def test_copied_database_resets_active_overlay_to_draft(tmp_path):
-    database = tmp_path / "copied.sqlite"
-    project = tmp_path / "copied-project"
-    project.mkdir()
-    connection = connect_database(database)
-    try:
-        connection.execute(
-            "INSERT INTO skill_overlays "
-            "(id, project_id, skill, version, status, content, manifest_json, content_digest, created_at, enabled_at) "
-            "VALUES ('overlay-1', 'project-old', 'code-review', 1, 'ACTIVE', '# v1', '{}', 'sha256:1', "
-            "'2026-09-14T00:00:00Z', '2026-09-14T00:00:00Z')"
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-    _adopt_copied_database(
-        database,
-        "project-old",
-        {"projectId": "project-new", "name": "copied-project"},
-        project,
-    )
-
-    connection = connect_database(database)
-    try:
-        overlay = connection.execute(
-            "SELECT project_id, status, enabled_at, disabled_at, evaluation_json, published_at, manifest_json "
-            "FROM skill_overlays WHERE id = 'overlay-1'"
-        ).fetchone()
-        assert overlay[0] == "project-new"
-        assert overlay[1] == "DRAFT"
-        assert overlay[2] is None
-        assert overlay[3] is None
-        assert overlay[4] is None and overlay[5] is None
-        assert json.loads(overlay[6])["projectId"] == "project-new"
-    finally:
-        connection.close()
-
-
-def test_copied_overlay_sources_are_rebased_and_require_fresh_review(tmp_path):
-    database = tmp_path / "copied.sqlite"
-    project = tmp_path / "copied-project"
-    project.mkdir()
-    connection = connect_database(database)
-    summary = {"format": "forge-skill-training-summary-v5", "projectId": "project-old",
-               "status": "REVIEWED", "rules": [{"id": "rule-1", "status": "CONFIRMED"}]}
-    summary_json = json.dumps(summary)
-    old_digest = "sha256:" + hashlib.sha256(summary_json.encode()).hexdigest()
-    manifest = {"projectId": "project-old", "skill": "code-review", "executionSource": "content",
-                "rules": [{"instruction": "Check the evidence"}]}
-    content = "Check the evidence"
-    digest = "sha256:" + hashlib.sha256(content.encode()).hexdigest()
-    with connection:
-        connection.execute(
-            "INSERT INTO learning_summaries (id, project_id, skill, version, created_at, source_count, summary_json, lifecycle_status) "
-            "VALUES ('summary-1', 'project-old', 'code-review', 1, 'now', 0, ?, 'REVIEWED')",
-            (summary_json,),
-        )
-        connection.execute(
-            "INSERT INTO skill_overlays (id, project_id, skill, version, status, content, manifest_json, "
-            "content_digest, created_at, reviewed_at, enabled_at, evaluation_json, published_at) "
-            "VALUES ('overlay-1', 'project-old', 'code-review', 1, 'ACTIVE', ?, ?, ?, 'now', 'now', 'now', '{}', 'now')",
-            (content, json.dumps(manifest), digest),
-        )
-        connection.execute(
-            "INSERT INTO skill_overlay_sources (overlay_id, summary_id, summary_digest) VALUES ('overlay-1', 'summary-1', ?)",
-            (old_digest,),
-        )
-    connection.close()
-
-    _adopt_copied_database(database, "project-old", {"projectId": "project-new", "name": "copied"}, project)
-
-    connection = connect_database(database)
-    try:
-        row = connection.execute("SELECT * FROM skill_overlays WHERE id = 'overlay-1'").fetchone()
-        checks = review_server._structural_overlay_evaluation(connection, row, "code-review")
-        assert checks["passed"] is True
-        assert row["status"] == "DRAFT"
-        assert row["reviewed_at"] is None and row["evaluation_json"] is None and row["published_at"] is None
-        new_summary = connection.execute("SELECT summary_json FROM learning_summaries WHERE id = 'summary-1'").fetchone()[0]
-        new_digest = connection.execute("SELECT summary_digest FROM skill_overlay_sources").fetchone()[0]
-        assert new_digest != old_digest
-        assert new_digest == "sha256:" + hashlib.sha256(new_summary.encode()).hexdigest()
-    finally:
-        connection.close()
-
-
-def test_create_overlay_merges_reviewed_summary_rules_into_draft(tmp_path, monkeypatch):
+def test_create_overlay_uses_one_reviewed_ai_summary_for_draft(tmp_path, monkeypatch):
     project_id = "project-overlay"
     project = tmp_path / "project"
     project.mkdir()
     database = tmp_path / "overlay.sqlite"
     connection = connect_database(database)
-    try:
-        for version, rule_id, instruction in (
-            (1, "rule-1", "检查 API 错误码是否稳定。"),
-            (2, "rule-2", "  检查   API 错误码是否稳定。  "),
-        ):
-            snapshot = {
-                "format": "forge-skill-training-summary-v5", "status": "REVIEWED",
-                "rules": [{"id": rule_id, "stage": "FINAL_VALIDATION", "status": "CONFIRMED",
-                           "instruction": instruction}],
-            }
-            summary_id = f"summary-{version}"
-            connection.execute(
-                "INSERT INTO learning_summaries "
-                "(id, project_id, skill, version, created_at, source_count, summary_json, lifecycle_status) "
-                "VALUES (?, ?, 'code-review', ?, '2026-09-14T00:00:00Z', 1, ?, 'REVIEWED')",
-                (summary_id, project_id, version, json.dumps(snapshot, ensure_ascii=False)),
-            )
-    finally:
-        connection.commit()
-        connection.close()
+    with connection:
+        _insert_releasable_v6_summary(connection, project_id=project_id, version=1)
+        _insert_releasable_v6_summary(connection, project_id=project_id, version=2)
+    connection.close()
     registry_item = {"projectId": project_id, "name": "project", "path": str(project),
                      "database": str(database)}
     monkeypatch.setattr(review_server, "projects", lambda: [registry_item])
     monkeypatch.setattr(review_server, "_enabled_skills", lambda _: {"code-review"})
 
+    with pytest.raises(ValueError, match="exactly one"):
+        review_server.create_overlay({
+            "projectId": project_id, "skill": "code-review", "summaryVersions": [1, 2],
+        })
     created = review_server.create_overlay({
-        "projectId": project_id, "skill": "code-review", "summaryVersions": [1, 2],
+        "projectId": project_id, "skill": "code-review", "summaryVersions": [1],
         "language": "zh-CN",
     })
 
     assert created["status"] == "DRAFT"
     assert created["version"] == 1
-    assert created["manifest"]["summaryVersions"] == [1, 2]
+    assert created["manifest"]["summaryVersions"] == [1]
+    assert created["manifest"]["sourceSummary"]["id"] == "summary-1"
+    assert created["manifest"]["sourceSummary"]["format"] == "forge-skill-training-summary-v6"
     assert created["manifest"]["executionSource"] == "content"
     assert created["manifest"]["outputLanguage"] == "zh-CN"
     assert "# 项目 Overlay：code-review" in created["content"]
-    assert created["content"].count("检查 API 错误码是否稳定") == 1
+    assert created["content"].count("Check that every finding has direct evidence") == 1
     with closing(sqlite3.connect(database)) as check, check:
         assert check.execute("SELECT status FROM skill_overlays").fetchone()[0] == "DRAFT"
-        assert check.execute("SELECT COUNT(*) FROM skill_overlay_sources").fetchone()[0] == 2
+        assert check.execute("SELECT COUNT(*) FROM skill_overlay_sources").fetchone()[0] == 1
     with pytest.raises(ValueError, match="referenced by an Overlay"):
         review_server.review_summary({
             "projectId": project_id, "skill": "code-review", "version": 1, "rules": [],
@@ -680,24 +973,30 @@ def test_create_overlay_merges_reviewed_summary_rules_into_draft(tmp_path, monke
         })
     with pytest.raises(review_server.OverlayConflict) as conflict:
         review_server.create_overlay({
-            "projectId": project_id, "skill": "code-review", "summaryVersions": [2, 1],
+            "projectId": project_id, "skill": "code-review", "summaryVersions": [1],
         })
     assert conflict.value.replaceable is True
     replaced = review_server.create_overlay({
-        "projectId": project_id, "skill": "code-review", "summaryVersions": [2, 1],
+        "projectId": project_id, "skill": "code-review", "summaryVersions": [1],
         "replaceExisting": True,
     })
     assert replaced["id"] == created["id"]
     assert replaced["version"] == created["version"]
+    with pytest.raises(ValueError, match="read-only; copy it before editing"):
+        review_server.review_overlay({
+            "projectId": project_id, "skill": "skill.code_review", "overlayId": created["id"],
+            "content": replaced["content"] + "\n- 人工补充校验。\n",
+        })
     reviewed_overlay = review_server.review_overlay({
         "projectId": project_id, "skill": "skill.code_review", "overlayId": created["id"],
-        "content": created["content"] + "\n- 人工补充校验。\n",
+        "content": replaced["content"],
     })
     assert reviewed_overlay["status"] == "REVIEWED"
     with closing(sqlite3.connect(database)) as check, check:
         manifest = json.loads(check.execute("SELECT manifest_json FROM skill_overlays").fetchone()[0])
         assert manifest["executionSource"] == "content"
-        assert manifest["contentEdited"] is True
+        assert manifest["origin"] == {"type": "SUMMARY_GENERATED"}
+        assert "contentEdited" not in manifest
     def unavailable_llm():
         raise ValueError("LLM disabled for test")
     monkeypatch.setattr(review_server, "_configured_llm", unavailable_llm)
@@ -743,6 +1042,37 @@ def test_create_overlay_merges_reviewed_summary_rules_into_draft(tmp_path, monke
             "projectId": project_id, "skill": "code-review", "overlayId": created["id"],
         })
     with closing(sqlite3.connect(database)) as check, check:
+        original_evaluation = check.execute(
+            "SELECT evaluation_json FROM skill_overlays WHERE id = ?", (created["id"],),
+        ).fetchone()[0]
+        stale = json.loads(original_evaluation)
+        stale["behavior"]["skillDigest"] = "sha256:old-skill"
+        check.execute(
+            "UPDATE skill_overlays SET evaluation_json = ? WHERE id = ?",
+            (json.dumps(stale), created["id"]),
+        )
+    with pytest.raises(ValueError, match="copy this Overlay to a new version and review/evaluate it"):
+        review_server.activate_overlay({
+            "projectId": project_id, "skill": "code-review", "overlayId": created["id"],
+        })
+    recovered = review_server.copy_overlay({
+        "projectId": project_id, "skill": "code-review", "overlayId": created["id"],
+    })
+    review_server.review_overlay({
+        "projectId": project_id, "skill": "code-review", "overlayId": recovered["id"],
+        "content": replaced["content"],
+    })
+    assert review_server.evaluate_and_publish_overlay({
+        "projectId": project_id, "skill": "code-review", "overlayId": recovered["id"],
+    })["status"] == "PUBLISHED"
+    with closing(sqlite3.connect(database)) as check, check:
+        check.execute("DELETE FROM skill_overlay_sources WHERE overlay_id = ?", (recovered["id"],))
+        check.execute("DELETE FROM skill_overlays WHERE id = ?", (recovered["id"],))
+        check.execute(
+            "UPDATE skill_overlays SET evaluation_json = ? WHERE id = ?",
+            (original_evaluation, created["id"]),
+        )
+    with closing(sqlite3.connect(database)) as check, check:
         check.execute(
             "INSERT INTO skill_overlays "
             "(id, project_id, skill, version, status, content, manifest_json, content_digest, created_at) "
@@ -759,6 +1089,60 @@ def test_create_overlay_merges_reviewed_summary_rules_into_draft(tmp_path, monke
     assert review_server.disable_overlay({
         "projectId": project_id, "skill": "code-review", "overlayId": created["id"],
     })["status"] == "DISABLED"
+
+
+def test_copied_overlay_is_editable_and_does_not_replace_generated_draft(tmp_path, monkeypatch):
+    project_id = "project-overlay-copy"
+    project = tmp_path / "project"
+    project.mkdir()
+    database = tmp_path / "overlay.sqlite"
+    connection = connect_database(database)
+    with connection:
+        _insert_releasable_v6_summary(connection, project_id=project_id)
+    connection.close()
+    _configure_overlay_project(monkeypatch, project_id, project, database)
+    generated = review_server.create_overlay({
+        "projectId": project_id, "skill": "code-review", "summaryVersions": [1],
+    })
+
+    copied = review_server.copy_overlay({
+        "projectId": project_id, "skill": "code-review", "overlayId": generated["id"],
+    })
+
+    assert copied["version"] == 2
+    assert copied["origin"] == "MANUAL_COPY"
+    edited_content = generated["content"] + "\n- Manually verify the project-specific boundary.\n"
+    reviewed = review_server.review_overlay({
+        "projectId": project_id, "skill": "code-review", "overlayId": copied["id"],
+        "content": edited_content,
+    })
+    assert reviewed["status"] == "REVIEWED"
+    connection = connect_database(database)
+    connection.row_factory = sqlite3.Row
+    copied_row = connection.execute(
+        "SELECT * FROM skill_overlays WHERE id = ?", (copied["id"],)
+    ).fetchone()
+    manifest = json.loads(copied_row["manifest_json"])
+    structural = review_server._structural_overlay_evaluation(
+        connection, copied_row, "code-review",
+    )
+    connection.close()
+    assert manifest["origin"]["type"] == "MANUAL_COPY"
+    assert manifest["origin"]["sourceOverlay"] == {
+        "id": generated["id"],
+        "version": 1,
+        "contentDigest": "sha256:" + hashlib.sha256(generated["content"].encode()).hexdigest(),
+    }
+    assert manifest["contentEdited"] is True
+    assert structural["passed"] is True
+
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("DELETE FROM skill_overlays WHERE id = ?", (generated["id"],))
+    regenerated = review_server.create_overlay({
+        "projectId": project_id, "skill": "code-review", "summaryVersions": [1],
+    })
+    assert regenerated["version"] == 3
+    assert regenerated["manifest"]["origin"] == {"type": "SUMMARY_GENERATED"}
 
 
 def test_overlay_content_follows_selected_language_and_rejects_unknown_language():
@@ -806,24 +1190,227 @@ def test_create_overlay_rejects_unreviewed_summary(tmp_path, monkeypatch):
         review_server.create_overlay({"projectId": project_id, "skill": "code-review", "summaryVersions": [1]})
 
 
+def test_create_overlay_rejects_reviewed_summary_without_confirmed_rules(tmp_path, monkeypatch):
+    project_id = "project-no-confirmed-rules"
+    project = tmp_path / "project"
+    project.mkdir()
+    database = tmp_path / "overlay.sqlite"
+    connection = connect_database(database)
+    rules = [{
+        "id": "rule-excluded", "stage": "FINAL_VALIDATION", "status": "EXCLUDED",
+        "trigger": "Before returning the final review",
+        "instruction": "Check direct evidence.",
+        "verification": "Verify every finding.",
+        "sourceRecordIds": ["record-1"],
+    }]
+    with connection:
+        _insert_releasable_v6_summary(connection, project_id=project_id, rules=rules)
+    connection.close()
+    _configure_overlay_project(monkeypatch, project_id, project, database)
+
+    with pytest.raises(ValueError, match="no confirmed rules"):
+        review_server.create_overlay({
+            "projectId": project_id, "skill": "code-review", "summaryVersions": [1],
+        })
+
+
+@pytest.mark.parametrize(
+    ("corruption", "message"),
+    [
+        ("v5", "not a reviewed AI Summary v6"),
+        ("missing_job", "no unique successful generation job"),
+        ("mismatched_job_sources", "generation lineage does not match its job"),
+        ("wrong_job_scope", "generation lineage does not match its job"),
+        ("missing_rule_source", "incomplete rule lineage"),
+        ("added_rule_source", "incomplete rule lineage"),
+        ("swapped_rule_source", "incomplete rule lineage"),
+        ("missing_trigger", "incomplete executable rule metadata"),
+        ("wrong_source_count", "AI Summary quality gate"),
+    ],
+)
+def test_create_overlay_rejects_summary_without_complete_v6_lineage(
+    tmp_path, monkeypatch, corruption, message,
+):
+    project_id = "project-invalid-v6"
+    project = tmp_path / "project"
+    project.mkdir()
+    database = tmp_path / "overlay.sqlite"
+    connection = connect_database(database)
+    with connection:
+        snapshot = _insert_releasable_v6_summary(connection, project_id=project_id)
+        if corruption == "v5":
+            snapshot["format"] = "forge-skill-training-summary-v5"
+        elif corruption == "missing_job":
+            connection.execute("DELETE FROM summary_generation_jobs WHERE id = 'job-1'")
+        elif corruption == "mismatched_job_sources":
+            connection.execute("DELETE FROM summary_generation_sources WHERE job_id = 'job-1'")
+        elif corruption == "wrong_job_scope":
+            connection.execute(
+                "UPDATE summary_generation_jobs SET project_id = 'project-other' WHERE id = 'job-1'"
+            )
+        elif corruption in {"added_rule_source", "swapped_rule_source"}:
+            connection.execute(
+                "INSERT INTO learning_records "
+                "(id, project_id, project_name, project_path, skill, captured_at, output_json, reviewed) "
+                "VALUES ('record-outsider', ?, 'project', '.', 'code-review', "
+                "'2026-09-14T00:00:00Z', '{}', 1)",
+                (project_id,),
+            )
+            if corruption == "swapped_rule_source":
+                connection.execute(
+                    "DELETE FROM learning_summary_rule_sources "
+                    "WHERE summary_id = 'summary-1' AND rule_id = 'rule-1' AND record_id = 'record-1'"
+                )
+            connection.execute(
+                "INSERT INTO learning_summary_rule_sources(summary_id, rule_id, record_id) "
+                "VALUES ('summary-1', 'rule-1', 'record-outsider')"
+            )
+        elif corruption == "missing_rule_source":
+            connection.execute(
+                "DELETE FROM learning_summary_rule_sources "
+                "WHERE summary_id = 'summary-1' AND rule_id = 'rule-1'"
+            )
+        elif corruption == "missing_trigger":
+            snapshot["rules"][0]["trigger"] = ""
+        elif corruption == "wrong_source_count":
+            connection.execute(
+                "UPDATE learning_summaries SET source_count = 2 WHERE id = 'summary-1'"
+            )
+        if corruption in {"v5", "missing_trigger"}:
+            connection.execute(
+                "UPDATE learning_summaries SET summary_json = ? WHERE id = 'summary-1'",
+                (json.dumps(snapshot),),
+            )
+    connection.close()
+    _configure_overlay_project(monkeypatch, project_id, project, database)
+
+    with pytest.raises(ValueError, match=message):
+        review_server.create_overlay({
+            "projectId": project_id,
+            "skill": "code-review",
+            "summaryVersions": [1],
+        })
+
+
+def test_create_overlay_rejects_duplicate_confirmed_rules(tmp_path, monkeypatch):
+    project_id = "project-duplicate-rules"
+    project = tmp_path / "project"
+    project.mkdir()
+    database = tmp_path / "overlay.sqlite"
+    rules = [{
+        "id": f"rule-{index}",
+        "stage": "FINAL_VALIDATION",
+        "status": "CONFIRMED",
+        "trigger": "Before returning the final review",
+        "instruction": "Check that every finding has direct evidence.",
+        "verification": "Verify each finding cites an exact file and line.",
+        "sourceRecordIds": ["record-1"],
+    } for index in (1, 2)]
+    connection = connect_database(database)
+    with connection:
+        _insert_releasable_v6_summary(connection, project_id=project_id, rules=rules)
+    connection.close()
+    _configure_overlay_project(monkeypatch, project_id, project, database)
+
+    with pytest.raises(ValueError, match="duplicate confirmed rules"):
+        review_server.create_overlay({
+            "projectId": project_id,
+            "skill": "code-review",
+            "summaryVersions": [1],
+        })
+
+
+@pytest.mark.parametrize(
+    ("corruption", "failed_check"),
+    [
+        ("second_source", "single_summary_source"),
+        ("summary_digest", "source_summary"),
+        ("manifest_identity", "manifest_summary"),
+        ("rule_lineage", "rule_lineage"),
+        ("generated_content", "deterministic_content"),
+    ],
+)
+def test_structural_overlay_gate_rejects_source_lineage_tampering(
+    tmp_path, monkeypatch, corruption, failed_check,
+):
+    project_id = "project-overlay-tamper"
+    project = tmp_path / "project"
+    project.mkdir()
+    database = tmp_path / "overlay.sqlite"
+    connection = connect_database(database)
+    with connection:
+        _insert_releasable_v6_summary(connection, project_id=project_id, version=1)
+        _insert_releasable_v6_summary(connection, project_id=project_id, version=2)
+    connection.close()
+    _configure_overlay_project(monkeypatch, project_id, project, database)
+    created = review_server.create_overlay({
+        "projectId": project_id,
+        "skill": "code-review",
+        "summaryVersions": [1],
+    })
+
+    connection = connect_database(database)
+    connection.row_factory = sqlite3.Row
+    with connection:
+        if corruption == "second_source":
+            summary_json = connection.execute(
+                "SELECT summary_json FROM learning_summaries WHERE id = 'summary-2'"
+            ).fetchone()[0]
+            summary_digest = "sha256:" + hashlib.sha256(summary_json.encode()).hexdigest()
+            connection.execute(
+                "INSERT INTO skill_overlay_sources (overlay_id, summary_id, summary_digest) "
+                "VALUES (?, 'summary-2', ?)",
+                (created["id"], summary_digest),
+            )
+        elif corruption == "summary_digest":
+            snapshot = json.loads(connection.execute(
+                "SELECT summary_json FROM learning_summaries WHERE id = 'summary-1'"
+            ).fetchone()[0])
+            snapshot["reviewNote"] = "changed after Overlay creation"
+            connection.execute(
+                "UPDATE learning_summaries SET summary_json = ? WHERE id = 'summary-1'",
+                (json.dumps(snapshot),),
+            )
+        elif corruption in {"manifest_identity", "rule_lineage"}:
+            manifest = json.loads(connection.execute(
+                "SELECT manifest_json FROM skill_overlays WHERE id = ?", (created["id"],)
+            ).fetchone()[0])
+            if corruption == "manifest_identity":
+                manifest["sourceSummary"]["id"] = "summary-2"
+            else:
+                manifest["rules"][0]["sourceRuleId"] = "rule-missing"
+            connection.execute(
+                "UPDATE skill_overlays SET manifest_json = ? WHERE id = ?",
+                (json.dumps(manifest), created["id"]),
+            )
+        else:
+            changed_content = created["content"] + "\n- Unsupported manual change.\n"
+            changed_digest = "sha256:" + hashlib.sha256(changed_content.encode()).hexdigest()
+            connection.execute(
+                "UPDATE skill_overlays SET content = ?, content_digest = ? WHERE id = ?",
+                (changed_content, changed_digest, created["id"]),
+            )
+        row = connection.execute(
+            "SELECT * FROM skill_overlays WHERE id = ?", (created["id"],)
+        ).fetchone()
+        evaluation = review_server._structural_overlay_evaluation(
+            connection, row, "code-review",
+        )
+    connection.close()
+
+    assert evaluation["passed"] is False
+    checks = {item["id"]: item["passed"] for item in evaluation["checks"]}
+    assert checks[failed_check] is False
+
+
 def test_structural_evaluation_failure_is_persisted_as_rejected(tmp_path, monkeypatch):
     project_id = "project-structural-rejection"
     project = tmp_path / "project"
     project.mkdir()
     database = tmp_path / "structural.sqlite"
     connection = connect_database(database)
-    snapshot = {
-        "format": "forge-skill-training-summary-v5", "status": "REVIEWED",
-        "rules": [{"id": "rule-1", "stage": "PRE_CHECK", "status": "CONFIRMED",
-                   "instruction": "Check the concrete failure path."}],
-    }
-    connection.execute(
-        "INSERT INTO learning_summaries "
-        "(id, project_id, skill, version, created_at, source_count, summary_json, lifecycle_status) "
-        "VALUES ('summary-1', ?, 'code-review', 1, '2026-09-14T00:00:00Z', 1, ?, 'REVIEWED')",
-        (project_id, json.dumps(snapshot)),
-    )
-    connection.commit()
+    with connection:
+        _insert_releasable_v6_summary(connection, project_id=project_id)
     connection.close()
     monkeypatch.setattr(review_server, "projects", lambda: [{
         "projectId": project_id, "name": "project", "path": str(project), "database": str(database),
@@ -938,6 +1525,30 @@ def test_summary_source_record_cannot_be_changed_or_deleted(tmp_path, monkeypatc
     }) == {"updated": True, "disabledOverlay": None}
 
 
+def test_delete_ai_summary_removes_generation_provenance(tmp_path, monkeypatch):
+    project_id = "project-delete-ai-summary"
+    project = tmp_path / "project"
+    project.mkdir()
+    database = tmp_path / "summary.sqlite"
+    connection = connect_database(database)
+    with connection:
+        _insert_releasable_v6_summary(connection, project_id=project_id)
+    connection.close()
+    _configure_overlay_project(monkeypatch, project_id, project, database)
+
+    result = review_server.delete_summary({
+        "projectId": project_id, "skill": "code-review", "version": 1,
+    })
+
+    assert result["deleted"] is True
+    connection = connect_database(database)
+    assert connection.execute("SELECT COUNT(*) FROM learning_summaries").fetchone()[0] == 0
+    assert connection.execute("SELECT COUNT(*) FROM summary_generation_jobs").fetchone()[0] == 0
+    assert connection.execute("SELECT COUNT(*) FROM summary_generation_sources").fetchone()[0] == 0
+    assert connection.execute("SELECT COUNT(*) FROM summary_generation_batches").fetchone()[0] == 0
+    connection.close()
+
+
 def test_overlay_auto_disables_after_more_than_ten_reviews_and_over_thirty_percent_negative(tmp_path, monkeypatch):
     project_id = "project-rollback"
     project = tmp_path / "project"
@@ -999,269 +1610,6 @@ def test_overlay_auto_disables_after_more_than_ten_reviews_and_over_thirty_perce
         assert check.execute("SELECT status FROM skill_overlays").fetchone()[0] == "DISABLED"
         assert not any(row[0] in {"overlay_review_feedback", "overlay_auto_disable_events"}
                        for row in check.execute("SELECT name FROM sqlite_master WHERE type = 'table'"))
-
-def test_code_review_summary_caps_visible_source_ids_without_losing_support_count():
-    records = [
-        {"recordId": f"record-{index:03d}", "capturedAt": f"2026-09-01T00:00:{index:02d}Z",
-         "reviewNote": "", "content": {"findings": [
-             finding("并发写入没有事务保护", "检查并发写入的事务边界。")]}}
-        for index in range(30)
-    ]
-
-    summary = build_code_review_summary(records)
-    rule = summary["rules"][0]
-
-    assert rule["supportCount"] == 30
-    assert len(rule["sourceRecordIds"]) == 20
-    assert rule["sourceIdsTruncated"] is True
-    assert encoded_size(summary) < 20_000
-
-
-def test_generic_summary_preserves_reviewed_content_as_pending_candidate():
-    summary = build_generic_summary([
-        {"recordId": "generic-1", "content": {"conclusion": "保持 API 错误码稳定。"}}
-    ], skill="page-test")
-    assert summary["quality"]["semanticInference"] is False
-    assert summary["rules"][0]["status"] == "PENDING"
-    assert "错误码" in summary["rules"][0]["instruction"]
-
-
-@pytest.mark.parametrize(("skill", "content", "expected", "stage"), [
-    ("debug", {
-        "symptom": "保存后数据偶尔消失", "rootCause": "注册表更新缺少跨进程锁",
-        "fixes": ["用同一个文件锁保护完整的读改写。"],
-        "verificationPlan": "并行启动两个写入进程并验证两条记录都存在。",
-    }, "文件锁", "PRE_CHECK"),
-    ("implement", {
-        "scope": "项目级配置保存", "decisions": ["使用临时文件替换实现原子写入。"],
-        "verification": ["覆盖并发保存和无效 JSON。"],
-    }, "原子写入", "PRE_CHECK"),
-    ("page-test", {
-        "symptom": "CI 中弹窗测试超时", "rootCause": "使用固定等待",
-        "waitStrategy": "等待弹窗可见状态，不使用固定 sleep。",
-        "executionResults": "目标用例连续运行三次通过。",
-    }, "固定 sleep", "PRE_CHECK"),
-    ("test-implementation", {
-        "testScope": "Overlay 配置门禁", "scenarios": ["关闭 Skill 后不得加载 Overlay。"],
-        "coverageGaps": ["尚未覆盖损坏的项目身份文件。"],
-    }, "不得加载", "PRE_CHECK"),
-    ("refactor", {
-        "objective": "拆分汇总提取器", "transformations": ["将 Skill 画像与通用聚类逻辑分离。"],
-        "behaviorPreservation": "保持所有候选默认 PENDING。",
-    }, "画像", "PRE_CHECK"),
-    ("explain", {
-        "concept": "Overlay", "misconceptions": ["Overlay 不会替换全局 Skill。"],
-        "keyPoints": ["它只增加项目级执行前检查和输出前校验。"],
-    }, "不会替换", "FINAL_VALIDATION"),
-    ("plan", {
-        "objective": "扩展提取器", "implementationSteps": ["先增加字段画像，再补参数化测试。"],
-        "validationPlan": ["运行汇总与完整 Forge 回归测试。"],
-    }, "字段画像", "PRE_CHECK"),
-    ("explore", {
-        "currentUnderstanding": "需要选择首批提取器", "options": ["优先覆盖高频工程 Skill。"],
-        "evidenceNeeded": ["检查实际启用记录和输出结构。"],
-        "recommendedNextStep": "确定范围后切换到实现任务。",
-    }, "高频工程", "PRE_CHECK"),
-])
-def test_common_skill_profiles_extract_reusable_pending_candidates(skill, content, expected, stage):
-    summary = build_summary([{
-        "recordId": f"record-{skill}", "capturedAt": "2026-09-15T00:00:00Z",
-        "reviewNote": "人工确认", "content": content,
-    }], skill=skill)
-
-    matching = next(rule for rule in summary["rules"] if expected in rule["instruction"])
-    assert matching["stage"] == stage
-    assert matching["status"] == "PENDING"
-    assert matching["sourceRecordIds"] == [f"record-{skill}"]
-    assert summary["quality"]["summarizer"] == f"{skill}-deterministic-v1"
-    assert summary["quality"]["semanticInference"] is False
-
-
-def test_specialized_summary_prefers_explicit_learning_signals_and_deduplicates_fallback():
-    summary = build_summary([{
-        "recordId": "record-debug", "capturedAt": "2026-09-15T00:00:00Z", "content": {
-            "fix": "校验注册路径仍指向当前项目。",
-            "learningSignals": [{
-                "title": "项目身份校验", "instruction": "校验注册路径仍指向当前项目。",
-                "rationale": "项目移动后旧路径可能失效。", "stage": "PRE_CHECK",
-            }],
-        },
-    }], skill="debug")
-
-    assert len([rule for rule in summary["rules"] if "校验注册路径" in rule["instruction"]]) == 1
-    assert summary["rules"][0]["type"] == "LEARNING_SIGNAL"
-
-
-def test_specialized_summary_does_not_extract_unrecognized_arbitrary_fields():
-    summary = build_summary([{
-        "recordId": "record-plan", "capturedAt": "2026-09-15T00:00:00Z",
-        "content": {"customerPayload": "不得被误认为训练规则"},
-    }], skill="plan")
-
-    assert summary["rules"] == []
-    assert summary["statistics"]["emptySignalResults"] == 1
-
-
-def test_specialized_summary_drops_single_unreviewed_task_output():
-    summary = build_summary([{
-        "recordId": "record-explain", "capturedAt": "2026-09-15T00:00:00Z",
-        "reviewNote": "", "content": {
-            "concept": "Summary rule status",
-            "keyPoints": ["PENDING blocks Summary review completion"],
-            "misconceptions": ["PENDING does not mean enabled"],
-        },
-    }], skill="explain")
-
-    assert summary["rules"] == []
-    assert summary["statistics"]["lowEvidenceClusters"] == 2
-
-
-def test_specialized_summary_requires_independent_runs_for_repeated_output():
-    records = [{"recordId": f"record-{index}", "runId": "same-run",
-                "capturedAt": f"2026-09-15T00:00:0{index}Z", "content": {
-                    "concept": "API errors", "keyPoints": ["Explain the error condition before its remedy."]}}
-               for index in range(2)]
-    summary = build_summary(records, skill="explain")
-    assert summary["rules"] == []
-    records[1]["runId"] = "other-run"
-    summary = build_summary(records, skill="explain")
-    assert summary["rules"][0]["supportCount"] == 2
-    assert summary["rules"][0]["confidence"] == "MEDIUM"
-
-
-def test_specialized_summary_does_not_flatten_verification_metadata_into_rules():
-    summary = build_summary([{
-        "recordId": "record-implement", "capturedAt": "2026-09-15T00:00:00Z",
-        "content": {"scope": "配置保存", "verification": {
-            "command": "pytest -q", "result": "42 passed",
-        }},
-    }], skill="implement")
-
-    assert summary["rules"] == []
-    assert summary["statistics"]["emptySignalResults"] == 1
-
-
-def test_specialized_summary_keeps_all_instruction_aliases_in_nested_objects():
-    summary = build_summary([{
-        "recordId": "record-implement", "capturedAt": "2026-09-15T00:00:00Z",
-        "reviewNote": "人工确认这些指令可复用",
-        "content": {"changes": [{
-            "instruction": "Validate the input first.",
-            "recommendation": "Preserve the original error chain.",
-        }]},
-    }], skill="implement")
-
-    assert {rule["instruction"] for rule in summary["rules"]} == {
-        "Validate the input first.", "Preserve the original error chain.",
-    }
-
-
-def test_specialized_summary_preserves_human_reviewed_plain_text():
-    summary = build_summary([{
-        "recordId": "record-debug-edit", "capturedAt": "2026-09-15T00:00:00Z",
-        "reviewNote": "人工改写为可复用检查", "content": "先验证配置来源，再判断运行时是否缺少依赖。",
-    }], skill="debug")
-
-    assert summary["rules"][0]["instruction"] == "先验证配置来源，再判断运行时是否缺少依赖。"
-    assert summary["rules"][0]["type"] == "HUMAN_REVIEWED_CANDIDATE"
-    assert summary["rules"][0]["status"] == "PENDING"
-
-
-def test_specialized_summary_keeps_all_matching_fields_from_one_result():
-    summary = build_summary([{
-        "recordId": "record-implement", "capturedAt": "2026-09-15T00:00:00Z",
-        "reviewNote": "人工确认这些指令可复用",
-        "content": {
-            "scope": "配置保存", "decisions": ["使用临时文件完成原子替换。"],
-            "changes": ["写入前递归校验配置字段。"],
-            "verification": ["覆盖并发写入。"],
-        },
-    }], skill="implement")
-
-    instructions = [rule["instruction"] for rule in summary["rules"]]
-    assert any("原子替换" in value for value in instructions)
-    assert any("递归校验" in value for value in instructions)
-    assert any("并发写入" in value for value in instructions)
-
-
-def test_create_and_review_summary_filters_ineligible_records(tmp_path, monkeypatch):
-    project = tmp_path / "project"
-    database = project / ".forge-skill" / "learning" / "learning.sqlite"
-    database.parent.mkdir(parents=True)
-    connection = connect_database(database)
-    project_id = "project-test"
-    base = (project_id, "project", str(project), "code-review", "run", "delivery", "succeeded")
-    rows = [
-        ("reviewed", *base, "2026-09-01T00:00:00Z", json.dumps({"findings": [finding("并发写入没有事务保护", "检查并发写入的事务边界。")]}), "ACTIVE", 1),
-        ("unreviewed", *base, "2026-09-02T00:00:00Z", json.dumps({"findings": [finding("未审核问题", "不应进入汇总。")]}), "ACTIVE", 0),
-        ("excluded", *base, "2026-09-03T00:00:00Z", json.dumps({"findings": [finding("已排除问题", "不应进入汇总。")]}), "EXCLUDED", 1),
-    ]
-    connection.executemany(
-        """INSERT INTO learning_records
-           (id, project_id, project_name, project_path, skill, run_id, stage, run_status,
-            captured_at, output_json, review_status, reviewed)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        rows,
-    )
-    connection.execute(
-        """INSERT INTO learning_records
-           (id, project_id, project_name, project_path, skill, run_id, stage, run_status,
-            captured_at, output_json, review_status, reviewed, capture_source, hook_status)
-           VALUES ('hook-only', ?, 'project', ?, 'code-review', 'hook-run', 'direct.host-hook',
-                   'succeeded', '2026-09-04T00:00:00Z', ?, 'ACTIVE', 1, 'HOST_HOOK', 'CAPTURED')""",
-        (
-            project_id, str(project),
-            json.dumps({"findings": [finding(
-                "Hook-only evidence must stay auxiliary",
-                "This reviewed Hook result must not enter a Summary.",
-            )]}),
-        ),
-    )
-    connection.commit()
-    connection.close()
-    registry_item = {"projectId": project_id, "name": "project", "path": str(project), "database": str(database)}
-    monkeypatch.setattr(review_server, "projects", lambda: [registry_item])
-    monkeypatch.setattr(review_server, "_enabled_skills", lambda _: {"code-review"})
-
-    created = review_server.create_summary({"projectId": project_id, "skill": "code-review"})
-
-    assert created["sourceCount"] == 1
-    assert created["summary"]["format"] == "forge-skill-training-summary-v5"
-    assert created["summary"]["status"] == "DRAFT"
-    assert created["summary"]["statistics"]["eligibleRecords"] == 1
-    rule = created["summary"]["rules"][0]
-    reviewed = review_server.review_summary({
-        "projectId": project_id, "skill": "code-review", "version": created["version"],
-        "rules": [{"id": rule["id"], "stage": "PRE_CHECK", "status": "CONFIRMED",
-                   "instruction": "检查并发写入是否具备明确的事务边界。"}],
-    })
-    assert reviewed["status"] == "REVIEWED"
-
-    with closing(sqlite3.connect(database)) as check, check:
-        assert check.execute("SELECT lifecycle_status FROM learning_summaries WHERE version = 1").fetchone()[0] == "REVIEWED"
-        assert check.execute("SELECT COUNT(*) FROM learning_summary_sources").fetchone()[0] == 1
-
-    connection = sqlite3.connect(database)
-    connection.execute(
-        "UPDATE learning_records SET captured_at = ?, is_classic = 1, classic_reason = ? WHERE id = ?",
-        ("2020-01-01T00:00:00Z", "长期保留的回归案例", "reviewed"),
-    )
-    connection.commit()
-    connection.close()
-    second = review_server.create_summary({"projectId": project_id, "skill": "code-review"})
-    assert second["version"] == 2
-    assert second["sourceCount"] == 1
-    assert second["summary"]["window"]["classicRecords"] == 1
-    deleted = review_server.delete_summary({"projectId": project_id, "skill": "code-review", "version": 2})
-    assert deleted["deleted"] is True
-    with closing(sqlite3.connect(database)) as check, check:
-        assert check.execute("SELECT COUNT(*) FROM learning_summaries WHERE version = 2").fetchone()[0] == 0
-        assert check.execute(
-            "SELECT COUNT(*) FROM learning_summary_sources s "
-            "LEFT JOIN learning_summaries v ON v.id = s.summary_id WHERE v.id IS NULL"
-        ).fetchone()[0] == 0
-
-
 def test_review_queries_and_updates_across_skill_databases(tmp_path, monkeypatch):
     project_id = "project-multi-skill"
     project = tmp_path / "project"
@@ -1692,28 +2040,6 @@ class _FakeResponse:
         chunk = self.payload[self.offset:self.offset + size]
         self.offset += len(chunk)
         return chunk
-
-
-@pytest.mark.parametrize("extra", [
-    {}, {"status": "incomplete"}, {"status": "failed"}, {"status": "queued"},
-    {"status": "completed", "error": {"message": "failed"}},
-    {"status": "completed", "incomplete_details": {"reason": "max_output_tokens"}},
-])
-def test_refine_rejects_unfinished_response_without_new_version(tmp_path, monkeypatch, extra):
-    project_id, database, version = _draft_for_refinement(tmp_path, monkeypatch)
-    review_server.save_llm_config({
-        "enabled": True, "endpoint": "https://example.test/v1/responses",
-        "model": "test-model", "wireApi": "responses", "apiKeyEnv": "TEST_KEY",
-    })
-    payload = {"output_text": json.dumps({"rules": []}), **extra}
-    monkeypatch.setattr(review_server.urllib.request, "urlopen",
-                        lambda *_args, **_kwargs: _FakeResponse(json.dumps(payload).encode()))
-    with pytest.raises(ValueError):
-        review_server.refine_summary({"projectId": project_id, "skill": "code-review", "version": version})
-    with closing(sqlite3.connect(database)) as connection, connection:
-        assert connection.execute("SELECT COUNT(*) FROM learning_summaries").fetchone()[0] == 1
-
-
 @pytest.mark.parametrize("reason", [None, "length", "content_filter", "tool_calls"])
 def test_chat_rejects_unfinished_response(monkeypatch, reason):
     payload = {"choices": [{"finish_reason": reason, "message": {"content": "{}"}}]}
@@ -1759,107 +2085,70 @@ def test_chat_rejects_refusal_even_with_stop(monkeypatch):
         review_server._call_llm({"endpoint": "https://example.test/v1/chat/completions",
                                 "model": "test-model", "wireApi": "chat_completions", "timeoutSeconds": 60},
                                "test-key", "Return JSON", {})
-
-
-def _draft_for_refinement(tmp_path, monkeypatch):
-    project = tmp_path / "refine-project"
-    database = project / ".forge-skill" / "learning" / "learning.sqlite"
-    database.parent.mkdir(parents=True)
+def test_review_summary_accepts_v6_and_preserves_ai_rule_metadata(tmp_path, monkeypatch):
+    database = tmp_path / "learning.sqlite"
     connection = connect_database(database)
-    project_id = "refine-project"
-    base = (project_id, "project", str(project), "code-review", "run-1", "delivery", "succeeded")
-    connection.execute(
-        """INSERT INTO learning_records
-           (id, project_id, project_name, project_path, skill, run_id, stage, run_status,
-            captured_at, output_json, review_status, reviewed)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', 1)""",
-        ("record-1", *base, "2026-09-01T00:00:00Z",
-         json.dumps({"findings": [finding("并发写入没有事务保护", "检查事务边界。")]})),
-    )
-    connection.commit()
+    snapshot = {
+        "format": "forge-skill-training-summary-v6",
+        "projectId": "project-v6", "skill": "code-review", "version": 1,
+        "status": "DRAFT", "sourceCount": 1,
+        "coverage": {"sourceRecords": 1, "processedRecords": 1, "finalRules": 1},
+        "rules": [{
+            "id": "rule-v6", "stage": "PRE_CHECK", "status": "PENDING",
+            "title": "Validate evidence", "instruction": "Check direct evidence.",
+            "trigger": "Before reporting a finding", "verification": "Cite an exact line.",
+            "rationale": "Unsupported findings are unreliable.", "supportCount": 1,
+            "sourceRecordIds": ["record-v6"],
+        }],
+    }
+    with connection:
+        connection.execute(
+            "INSERT INTO learning_summaries "
+            "(id, project_id, skill, version, created_at, source_count, summary_json, lifecycle_status) "
+            "VALUES ('summary-v6', 'project-v6', 'code-review', 1, 'now', 1, ?, 'DRAFT')",
+            (json.dumps(snapshot),),
+        )
     connection.close()
-    registry_item = {"projectId": project_id, "name": "project", "path": str(project), "database": str(database)}
-    monkeypatch.setattr(review_server, "projects", lambda: [registry_item])
-    monkeypatch.setattr(review_server, "_enabled_skills", lambda _: {"code-review"})
-    created = review_server.create_summary({"projectId": project_id, "skill": "code-review"})
-    config_path = tmp_path / "llm-refiner.json"
-    monkeypatch.setattr(review_server, "LLM_CONFIG_PATH", config_path)
-    monkeypatch.setattr(review_server, "_environment_value", lambda _name: "test-key")
-    original_call = review_server._call_llm
+    monkeypatch.setattr(review_server, "projects", lambda: [{
+        "projectId": "project-v6", "database": str(database),
+        "databases": {"code-review": str(database)},
+    }])
 
-    def call_with_classification(config, api_key, instruction, payload):
-        if "Classify every candidate" in instruction:
-            return json.dumps({"decisions": [
-                {"candidateId": rule["id"], "decision": "KEEP", "reason": "Reusable check"}
-                for rule in payload["candidates"]
-            ]}), {}
-        return original_call(config, api_key, instruction, payload)
-
-    monkeypatch.setattr(review_server, "_call_llm", call_with_classification)
-    return project_id, database, created["version"]
-
-
-def test_refine_uses_responses_api_and_persists_rule_sources(tmp_path, monkeypatch):
-    project_id, database, version = _draft_for_refinement(tmp_path, monkeypatch)
-    with closing(sqlite3.connect(database)) as connection, connection:
-        source_json = connection.execute(
-            "SELECT summary_json FROM learning_summaries WHERE version = ?", (version,)
-        ).fetchone()[0]
-    candidate_id = json.loads(source_json)["rules"][0]["id"]
-    review_server.save_llm_config({
-        "enabled": True, "endpoint": "https://example.test/v1/responses",
-        "model": "test-model", "wireApi": "responses", "apiKeyEnv": "TEST_KEY",
+    result = review_server.review_summary({
+        "projectId": "project-v6", "skill": "code-review", "version": 1,
+        "rules": [{
+            "id": "rule-v6", "stage": "FINAL_VALIDATION", "status": "CONFIRMED",
+            "instruction": "Verify every finding against direct evidence.",
+        }],
     })
-    calls = []
-    response_payload = {"status": "completed", "output_text": json.dumps({"rules": [{
-        "id": "rule-1", "stage": "PRE_CHECK", "type": "workflow",
-        "title": "检查事务边界", "instruction": "检查并发写入是否具备事务边界。",
-        "rationale": "重复证据", "status": "PENDING", "supportCount": 1,
-        "candidateIds": [candidate_id], "trigger": "When reviewing concurrent writes",
-        "verification": "Confirm transactions protect the write path",
-        "sourceRecordIds": ["record-1"], "confidence": "High",
-    }]}, ensure_ascii=False)}
 
-    def fake_urlopen(request, timeout):
-        calls.append((request, timeout, json.loads(request.data.decode("utf-8"))))
-        return _FakeResponse(json.dumps(response_payload).encode("utf-8"))
-
-    monkeypatch.setattr(review_server.urllib.request, "urlopen", fake_urlopen)
-    refined = review_server.refine_summary({
-        "projectId": project_id, "skill": "code-review", "version": version,
-        "language": "en",
-    })
-    assert calls[0][2]["input"]
-    assert "messages" not in calls[0][2]
-    assert "temperature" not in calls[0][2]
-    assert "stream" not in calls[0][2]
-    request_text = json.dumps(calls[0][2], ensure_ascii=False)
-    assert "Simplified Chinese" not in request_text
-    assert "English" in request_text
-    assert refined["sourceVersion"] == version
-    assert refined["version"] == version + 1
-    assert refined["summary"]["version"] == version + 1
-    assert refined["summary"]["refinement"]["mode"] == "explicit_llm"
-    assert refined["summary"]["refinement"]["outputLanguage"] == "en"
-    assert refined["summary"]["rules"][0]["confidence"] == "LOW"
-    assert refined["summary"]["candidateDecisions"][0]["decision"] == "KEEP"
-    with closing(sqlite3.connect(database)) as connection, connection:
-        assert connection.execute(
-            "SELECT summary_json FROM learning_summaries WHERE version = ?", (version,)
-        ).fetchone()[0] == source_json
-        assert connection.execute("SELECT COUNT(*) FROM learning_summaries").fetchone()[0] == 2
-        assert connection.execute("SELECT rule_id, record_id FROM learning_summary_rule_sources").fetchall() == [("rule-1", "record-1")]
-
-
-def test_refine_rejects_unsupported_output_language():
-    with pytest.raises(ValueError, match="language must be zh-CN or en"):
-        review_server.refine_summary({
-            "projectId": "project", "skill": "code-review", "version": 1,
-            "language": "fr",
+    assert result["status"] == "REVIEWED"
+    assert result["statistics"] == {
+        "pendingRules": 0, "confirmedRules": 1, "excludedRules": 0,
+    }
+    connection = connect_database(database)
+    saved = json.loads(connection.execute(
+        "SELECT summary_json FROM learning_summaries WHERE id = 'summary-v6'",
+    ).fetchone()[0])
+    connection.close()
+    assert saved["rules"][0]["trigger"] == "Before reporting a finding"
+    assert saved["rules"][0]["verification"] == "Cite an exact line."
+    assert saved["review"]["confirmedRules"] == 1
+    with pytest.raises(ValueError, match="reviewed Summary is read-only"):
+        review_server.review_summary({
+            "projectId": "project-v6", "skill": "code-review", "version": 1,
+            "rules": [{"id": "rule-v6", "stage": "PRE_CHECK", "status": "EXCLUDED",
+                       "instruction": "Unsaved change"}],
         })
+    with closing(sqlite3.connect(database)) as check:
+        stored, status = check.execute(
+            "SELECT summary_json,lifecycle_status FROM learning_summaries WHERE id='summary-v6'",
+        ).fetchone()
+    assert json.loads(stored) == saved
+    assert status == "REVIEWED"
 
 
-def test_learning_pages_share_language_asset_and_refinement_contract():
+def test_learning_pages_share_language_asset_and_ai_summary_contract():
     review_html = review_server.HTML_PATH.read_text(encoding="utf-8")
     versions_html = review_server.VERSIONS_PATH.read_text(encoding="utf-8")
     overlays_html = review_server.OVERLAYS_PATH.read_text(encoding="utf-8")
@@ -1878,7 +2167,20 @@ def test_learning_pages_share_language_asset_and_refinement_contract():
     assert "value&&$('project').selectedOptions[0]?.textContent)||tr('allProjects')" in review_html
     assert "${esc(tr('allProjects'))}" in review_html
     assert "${esc(tr('allSkills'))}" in review_html
-    assert "language:window.ForgeI18n?.language||'zh-CN'" in versions_html
+    assert "language=window.ForgeI18n?.language||'zh-CN'" in review_html
+    assert "fetch('/api/summary-generation-estimate?'" in review_html
+    assert "fetch('/api/summary-generation'" in review_html
+    assert "estimate.sourceCount" in review_html
+    assert "estimate.evidenceBytes" in review_html
+    assert "estimate.estimatedMapBatches" in review_html
+    assert "发送给已配置的 LLM" in review_html
+    assert "$('llm-model')" not in review_html
+    assert "fetch('/api/summary-generation-retry'" in review_html
+    assert "pollSummaryJob" in review_html
+    assert "summaryPollSequence" in review_html
+    assert "[data-refine]" not in versions_html
+    assert "'/api/refine'" not in versions_html
+    assert "forge-skill-training-summary-v6" in versions_html
     assert '<option value="PRE_CHECK"' in versions_html
     assert '<option value="FINAL_VALIDATION"' in versions_html
     assert '<option value="PENDING"' in versions_html
@@ -1887,12 +2189,15 @@ def test_learning_pages_share_language_asset_and_refinement_contract():
     assert "'执行前检查':'Pre-check'" in versions_html
     assert "'待审核':'Pending'" in versions_html
     assert 'data-overlay-select' in versions_html
-    assert "modern&&state==='REVIEWED'" in versions_html
+    assert "ai&&state==='REVIEWED'&&confirmed" in versions_html
+    assert "data-evidence-more" in versions_html
+    assert 'type="radio" name="overlay-summary"' in versions_html
+    assert "modern&&state==='REVIEWED'" not in versions_html
     assert "tag?.textContent==='REVIEWED'" not in versions_html
     assert 'class="danger" data-delete' in versions_html
     assert "[data-delete]" in versions_html
-    assert "if(!selected.length)" in versions_html
-    assert "overlayButton.disabled=selected===0" in versions_html
+    assert "if(!card)" in versions_html
+    assert "overlayButton.disabled=selected!==1" in versions_html
     assert "language=window.ForgeI18n?.language||'en'" in versions_html
     assert "'Skill 汇总管理':'Skill Summary Management'" in versions_html
     assert 'href="/overlays"' in review_html
@@ -1901,6 +2206,9 @@ def test_learning_pages_share_language_asset_and_refinement_contract():
     assert 'id="overlays"' in overlays_html
     assert 'href="/versions"' in overlays_html
     assert "'/api/review-overlay'" in overlays_html
+    assert "'/api/copy-overlay'" in overlays_html
+    assert "generatedOverlayDraftHint" in overlays_html
+    assert "manualCopyDraftHint" in overlays_html
     assert "'/api/evaluate-publish-overlay'" in overlays_html
     assert "'/api/activate-overlay'" in overlays_html
     assert "'/api/disable-overlay'" in overlays_html
@@ -1999,135 +2307,141 @@ def test_global_hook_configuration_validates_host_and_supports_removal(monkeypat
         })
     with pytest.raises(ValueError, match="host must be"):
         review_server.update_global_hook({"action": "REMOVE"})
-
-
-def test_refine_rejects_source_changed_while_llm_is_running(tmp_path, monkeypatch):
-    project_id, database, version = _draft_for_refinement(tmp_path, monkeypatch)
-    with closing(sqlite3.connect(database)) as connection, connection:
-        candidate_id = json.loads(connection.execute("SELECT summary_json FROM learning_summaries WHERE version = ?", (version,)).fetchone()[0])["rules"][0]["id"]
-    review_server.save_llm_config({
-        "enabled": True, "endpoint": "https://example.test/v1/responses",
-        "model": "test-model", "wireApi": "responses", "apiKeyEnv": "TEST_KEY",
-    })
-    response_payload = {"status": "completed", "output_text": json.dumps({"rules": [{
-        "id": "rule-1", "stage": "PRE_CHECK", "type": "workflow", "title": "事务边界",
-        "rationale": "重复证据", "confidence": "High", "status": "PENDING",
-        "instruction": "检查事务边界。", "sourceRecordIds": ["record-1"],
-        "candidateIds": [candidate_id], "trigger": "当审查并发写入时",
-        "verification": "确认事务边界覆盖写入路径",
-    }]})}
-
-    def change_source_then_respond(*_args, **_kwargs):
-        with closing(sqlite3.connect(database)) as connection, connection:
-            connection.execute(
-                "UPDATE learning_summaries SET lifecycle_status = 'ARCHIVED' WHERE version = ?", (version,)
-            )
-        return _FakeResponse(json.dumps(response_payload).encode("utf-8"))
-
-    monkeypatch.setattr(review_server.urllib.request, "urlopen", change_source_then_respond)
-    with pytest.raises(ValueError, match="source summary changed"):
-        review_server.refine_summary({"projectId": project_id, "skill": "code-review", "version": version})
-    with closing(sqlite3.connect(database)) as connection, connection:
-        assert connection.execute("SELECT COUNT(*) FROM learning_summaries").fetchone()[0] == 1
-        assert connection.execute(
-            "SELECT lifecycle_status FROM learning_summaries WHERE version = ?", (version,)
-        ).fetchone()[0] == "ARCHIVED"
-
-
-def test_refine_rejects_incomplete_rule_metadata(tmp_path, monkeypatch):
-    project_id, _database, version = _draft_for_refinement(tmp_path, monkeypatch)
-    review_server.save_llm_config({
-        "enabled": True, "endpoint": "https://example.test/v1/responses",
-        "model": "test-model", "wireApi": "responses", "apiKeyEnv": "TEST_KEY",
-    })
-    response_payload = {"status": "completed", "output_text": json.dumps({"rules": [{
-        "id": "rule-1", "stage": "PRE_CHECK", "status": "PENDING",
-        "instruction": "检查事务边界。", "sourceRecordIds": ["record-1"],
-    }]})}
-    monkeypatch.setattr(
-        review_server.urllib.request,
-        "urlopen",
-        lambda *_args, **_kwargs: _FakeResponse(json.dumps(response_payload).encode("utf-8")),
-    )
-    with pytest.raises(ValueError, match="rule type"):
-        review_server.refine_summary({"projectId": project_id, "skill": "code-review", "version": version})
-
-
-def test_refine_can_discard_all_non_reusable_candidates(tmp_path, monkeypatch):
-    project_id, database, version = _draft_for_refinement(tmp_path, monkeypatch)
-    review_server.save_llm_config({
-        "enabled": True, "baseUrl": "https://example.test/v1",
-        "model": "test-model", "wireApi": "responses", "apiKeyEnv": "TEST_KEY",
-    })
-    response_payload = {"status": "completed", "output_text": json.dumps({"rules": []})}
-    monkeypatch.setattr(
-        review_server.urllib.request, "urlopen",
-        lambda *_args, **_kwargs: _FakeResponse(json.dumps(response_payload).encode("utf-8")),
-    )
-
-    refined = review_server.refine_summary({
-        "projectId": project_id, "skill": "code-review", "version": version,
-    })
-
-    assert refined["summary"]["rules"] == []
-    with closing(sqlite3.connect(database)) as connection, connection:
-        assert connection.execute("SELECT COUNT(*) FROM learning_summaries").fetchone()[0] == 2
-
-
 def test_refinement_labels_cover_specialized_skills_and_known_failure():
     cases = json.loads((REPOSITORY_ROOT / "forge" / "evals" / "summary-refinement-cases.json").read_text(encoding="utf-8"))
     assert {"KEEP", "DISCARD", "CONFLICT"} <= {case["expectedDecision"] for case in cases["cases"]}
     assert {case["skill"] for case in cases["cases"]} <= set(SKILL_CRITERIA)
     assert any(case["id"] == "explain-ui-state" and case["expectedDecision"] == "DISCARD" for case in cases["cases"])
+def test_summary_decisions_get_routes_query(monkeypatch):
+    handler = object.__new__(review_server.Handler)
+    handler.path = "/api/summary-decisions?project=p&skill=plan&version=1&page=2"
+    handler.headers = {"Host": "127.0.0.1:8765"}
+    handler.server = SimpleNamespace(server_port=8765)
+    responses = []
+    handler.send_json = lambda value, status=200: responses.append((value, status))
+    monkeypatch.setattr(review_server, "summary_decisions", lambda query: {"query": query})
+    handler.do_GET()
+    assert responses == [({"query": {"project": ["p"], "skill": ["plan"], "version": ["1"], "page": ["2"]}}, 200)]
 
 
-def test_refine_discarded_candidate_never_reaches_synthesis(tmp_path, monkeypatch):
-    project_id, database, version = _draft_for_refinement(tmp_path, monkeypatch)
-    review_server.save_llm_config({"enabled": True, "baseUrl": "https://example.test/v1",
-                                   "model": "test-model", "wireApi": "responses", "apiKeyEnv": "TEST_KEY"})
-    calls = []
-
-    def classify(_config, _key, instruction, payload):
-        calls.append(payload)
-        assert "Classify every candidate" in instruction
-        assert payload["records"][0]["recordId"] == "record-1"
-        return json.dumps({"decisions": [{"candidateId": item["id"], "decision": "DISCARD",
-                                         "reason": "One-off finding"} for item in payload["candidates"]]}), {}
-
-    monkeypatch.setattr(review_server, "_call_llm", classify)
-    refined = review_server.refine_summary({"projectId": project_id, "skill": "code-review", "version": version})
-    assert len(calls) == 1
-    assert refined["summary"]["rules"] == []
-    assert refined["summary"]["candidateDecisions"][0]["sourceRecordIds"] == ["record-1"]
-    assert len(review_server.summary_evidence({"project": [project_id], "skill": ["code-review"],
-                                                "version": [str(version + 1)]})["records"]) == 1
-    with closing(sqlite3.connect(database)) as connection, connection:
-        assert connection.execute("SELECT COUNT(*) FROM learning_summary_rule_sources").fetchone()[0] == 0
-
-
-def test_refinement_rejects_missing_and_duplicated_candidate_decisions():
-    candidates = [{"id": "one"}, {"id": "two"}]
-    for decisions in ([{"candidateId": "one", "decision": "KEEP", "reason": "Useful"}],
-                      [{"candidateId": "one", "decision": "KEEP", "reason": "Useful"}] * 2):
-        with pytest.raises(ValueError, match="every candidate exactly once"):
-            validate_decisions({"decisions": decisions}, candidates)
-
-
-def test_refinement_rejects_unapproved_citations_and_computes_confidence():
-    candidates = [{"id": "candidate", "sourceRecordIds": ["record-1"]}]
-    records = [{"recordId": "record-1", "runId": "run-1", "reviewNote": ""}]
-    rule = {"id": "rule-1", "candidateIds": ["candidate"], "sourceRecordIds": ["record-1"],
-            "stage": "PRE_CHECK", "status": "PENDING", "type": "workflow", "title": "Check transaction",
-            "trigger": "When reviewing concurrent writes", "instruction": "Verify the transaction boundary.",
-            "verification": "Confirm writes use the same transaction.", "rationale": "Evidence", "confidence": "HIGH"}
-    with pytest.raises(ValueError, match="unapproved candidate IDs"):
-        validate_rules({"rules": [rule]}, [], candidates, records)
-    with pytest.raises(ValueError, match="source IDs"):
-        validate_rules({"rules": [{**rule, "sourceRecordIds": ["unrelated"]}]},
-                       [{"candidateId": "candidate"}], candidates, records)
-    assert validate_rules({"rules": [rule]}, [{"candidateId": "candidate"}], candidates, records)[0]["confidence"] == "LOW"
+def test_summary_decisions_preserve_all_stages_sources_and_pagination(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    database = tmp_path / "learning.sqlite"
+    connection = connect_database(database)
+    with connection:
+        _insert_releasable_v6_summary(connection, project_id="project-decisions", source_ids=["r1", "r2"])
+        connection.execute("DELETE FROM summary_generation_batches WHERE job_id = 'job-1'")
+        batches = [
+            ("MAP", 0, {"recordDecisions": [
+                {"recordId": "r1", "decision": "KEEP", "reason": "Reusable"},
+                {"recordId": "r2", "decision": "CONFLICT", "reason": "Contradictory evidence"},
+            ], "candidates": [{"id": "map-1", "sourceRecordIds": ["r1"]}]}),
+            ("REDUCE", 1, {"decisions": [
+                {"candidateId": "map-1", "decision": "DISCARD", "reason": "Too specific"},
+            ], "candidates": []}),
+        ]
+        for phase, level, result in batches:
+            connection.execute(
+                "INSERT INTO summary_generation_batches "
+                "(job_id,phase,level,batch_index,input_digest,status,item_count,result_json,created_at) "
+                "VALUES ('job-1',?,?,0,'digest','SUCCEEDED',1,?,'now')",
+                (phase, level, json.dumps(result)),
+            )
+    connection.close()
+    _configure_overlay_project(monkeypatch, "project-decisions", project, database)
+    query = {"project": ["project-decisions"], "skill": ["code-review"], "version": ["1"], "limit": ["2"]}
+    first = review_server.summary_decisions(query)
+    second = review_server.summary_decisions({**query, "page": ["2"]})
+    assert first["total"] == 3 and first["hasMore"] is True
+    assert first["decisions"][1]["decision"] == "CONFLICT"
+    assert first["decisions"][1]["reason"] == "Contradictory evidence"
+    assert first["decisions"][1]["sourceRecordIds"] == ["r2"]
+    assert second["decisions"][0]["phase"] == "REDUCE"
+    assert second["decisions"][0]["sourceRecordIds"] == ["r1"]
+    assert second["decisions"][0]["reason"] == "Too specific"
+    assert second["hasMore"] is False
+    with pytest.raises(ValueError, match="summary version not found"):
+        review_server.summary_decisions({**query, "version": ["2"]})
 
 
+def test_summary_decisions_resolve_final_candidate_to_all_sources(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    database = tmp_path / "learning.sqlite"
+    sources = [f"r{index}" for index in range(25)]
+    connection = connect_database(database)
+    with connection:
+        _insert_releasable_v6_summary(connection, project_id="project-decisions", source_ids=sources)
+        connection.execute("DELETE FROM summary_generation_batches WHERE job_id = 'job-1'")
+        results = [
+            ("MAP", 0, {"recordDecisions": [{"recordId": rid, "decision": "KEEP", "reason": "Reusable"} for rid in sources],
+                        "candidates": [{"id": "map-1", "sourceRecordIds": sources}]}),
+            ("REDUCE", 1, {"decisions": [{"candidateId": "map-1", "decision": "KEEP", "reason": "Merge"}],
+                           "candidates": [{"id": "reduce-1", "sourceRecordIds": sources}]}),
+            ("FINAL", 2, {"decisions": [{"candidateId": "reduce-1", "decision": "CONFLICT", "reason": "Needs review"}], "rules": []}),
+        ]
+        for phase, level, result in results:
+            connection.execute(
+                "INSERT INTO summary_generation_batches "
+                "(job_id,phase,level,batch_index,input_digest,status,item_count,result_json,created_at) "
+                "VALUES ('job-1',?,?,0,'digest','SUCCEEDED',1,?,'now')", (phase, level, json.dumps(result)),
+            )
+    connection.close()
+    _configure_overlay_project(monkeypatch, "project-decisions", project, database)
+    result = review_server.summary_decisions({"project": ["project-decisions"], "skill": ["code-review"], "version": ["1"], "limit": ["100"]})
+    assert result["decisions"][-1]["phase"] == "FINAL"
+    assert result["decisions"][-1]["sourceRecordIds"] == sources
+
+
+def test_v6_summary_evidence_uses_complete_persisted_lineage(tmp_path, monkeypatch):
+    project_id = "project-complete-evidence"
+    project = tmp_path / "project"
+    project.mkdir()
+    database = tmp_path / "evidence.sqlite"
+    source_ids = [f"record-{index:02d}" for index in range(25)]
+    full_rule = {
+        "id": "rule-many-sources",
+        "stage": "FINAL_VALIDATION",
+        "status": "CONFIRMED",
+        "trigger": "Before returning the result",
+        "instruction": "Check all accumulated evidence.",
+        "verification": "Verify the complete persisted source lineage.",
+        "sourceRecordIds": source_ids,
+        "supportCount": len(source_ids),
+        "sourceIdsTruncated": False,
+    }
+    visible_rule = dict(full_rule)
+    visible_rule["sourceRecordIds"] = source_ids[:20]
+    visible_rule["sourceIdsTruncated"] = True
+    connection = connect_database(database)
+    with connection:
+        _insert_releasable_v6_summary(
+            connection, project_id=project_id, rules=[visible_rule],
+            source_ids=source_ids, final_rules=[full_rule],
+        )
+    connection.close()
+    _configure_overlay_project(monkeypatch, project_id, project, database)
+
+    first = review_server.summary_evidence({
+        "project": [project_id], "skill": ["code-review"], "version": ["1"],
+        "page": ["1"], "limit": ["20"],
+    })
+    second = review_server.summary_evidence({
+        "project": [project_id], "skill": ["code-review"], "version": ["1"],
+        "page": ["2"], "limit": ["20"],
+    })
+
+    assert [record["recordId"] for record in first["records"]] == source_ids[:20]
+    assert [record["recordId"] for record in second["records"]] == source_ids[20:]
+    assert first | {"records": []} == {
+        "records": [], "page": 1, "pageSize": 20, "total": 25, "hasMore": True,
+    }
+    assert second["hasMore"] is False
+    assert all(
+        record["ruleIds"] == ["rule-many-sources"]
+        for record in [*first["records"], *second["records"]]
+    )
 def test_overlay_preserves_refined_trigger_and_verification():
     content = review_server._overlay_content("plan", [{"stage": "PRE_CHECK",
         "trigger": "When a plan spans multiple phases", "instruction": "List the phase dependencies.",
@@ -2152,91 +2466,6 @@ def test_refinement_reads_effective_reviewed_evidence_and_rejects_overlong_recor
         with pytest.raises(ValueError, match="truncated"):
             evidence_packet(connection, "summary", "project", "plan",
                             [{**candidate[0], "sourceIdsTruncated": True}])
-
-
-def test_refine_rejects_damaged_unicode_text(tmp_path, monkeypatch):
-    project_id, database, version = _draft_for_refinement(tmp_path, monkeypatch)
-    review_server.save_llm_config({
-        "enabled": True, "baseUrl": "https://example.test/v1",
-        "model": "test-model", "wireApi": "responses", "apiKeyEnv": "TEST_KEY",
-    })
-    response_payload = {"status": "completed", "output_text": json.dumps({"rules": [{
-        "id": "rule-1", "stage": "PRE_CHECK", "type": "workflow",
-        "title": "damaged \ufffd text", "rationale": "evidence", "confidence": "LOW",
-        "status": "PENDING", "instruction": "check input", "sourceRecordIds": ["record-1"],
-    }]})}
-    monkeypatch.setattr(
-        review_server.urllib.request, "urlopen",
-        lambda *_args, **_kwargs: _FakeResponse(json.dumps(response_payload).encode("utf-8")),
-    )
-
-    with pytest.raises(ValueError, match="damaged Unicode"):
-        review_server.refine_summary({
-            "projectId": project_id, "skill": "code-review", "version": version,
-        })
-    with closing(sqlite3.connect(database)) as connection, connection:
-        assert connection.execute("SELECT COUNT(*) FROM learning_summaries").fetchone()[0] == 1
-
-
-def test_refine_uses_chat_completions_and_rejects_empty_sources(tmp_path, monkeypatch):
-    project_id, database, version = _draft_for_refinement(tmp_path, monkeypatch)
-    with closing(sqlite3.connect(database)) as connection, connection:
-        candidate_id = json.loads(connection.execute("SELECT summary_json FROM learning_summaries WHERE version = ?", (version,)).fetchone()[0])["rules"][0]["id"]
-    review_server.save_llm_config({
-        "enabled": True, "endpoint": "https://example.test/v1/chat/completions",
-        "model": "test-model", "wireApi": "chat_completions", "apiKeyEnv": "TEST_KEY",
-    })
-    payload = {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({"rules": [{
-        "id": "rule-1", "stage": "PRE_CHECK", "type": "workflow", "title": "事务边界",
-        "rationale": "重复证据", "confidence": "High", "status": "PENDING",
-        "instruction": "检查事务边界。", "sourceRecordIds": [],
-        "candidateIds": [candidate_id], "trigger": "当审查并发写入时", "verification": "检查事务边界",
-    }]})}}]}
-    monkeypatch.setattr(review_server.urllib.request, "urlopen", lambda *_args, **_kwargs: _FakeResponse(json.dumps(payload).encode()))
-    with pytest.raises(ValueError, match="source IDs"):
-        review_server.refine_summary({"projectId": project_id, "skill": "code-review", "version": version})
-
-
-def test_refine_rejects_oversized_response_before_parsing(tmp_path, monkeypatch):
-    project_id, _database, version = _draft_for_refinement(tmp_path, monkeypatch)
-    review_server.save_llm_config({
-        "enabled": True, "endpoint": "https://example.test/v1/responses",
-        "model": "test-model", "wireApi": "responses", "apiKeyEnv": "TEST_KEY",
-    })
-    oversized = b"{" + b"x" * (review_server.MAX_LLM_RESPONSE_BYTES + 1)
-    monkeypatch.setattr(review_server.urllib.request, "urlopen", lambda *_args, **_kwargs: _FakeResponse(oversized))
-    with pytest.raises(ValueError, match="256 KB"):
-        review_server.refine_summary({"projectId": project_id, "skill": "code-review", "version": version})
-
-
-@pytest.mark.parametrize(
-    ("wire_api", "response_payload", "message"),
-    [
-        ("responses", {"output": [None]}, "Responses output"),
-        ("responses", {"output": [{"content": [None]}]}, "Responses content"),
-        ("chat_completions", {"choices": []}, "Chat Completions choices"),
-        ("chat_completions", {"choices": [{"message": []}]}, "Chat Completions message"),
-    ],
-)
-def test_refine_rejects_malformed_llm_response_shapes(
-    tmp_path, monkeypatch, wire_api, response_payload, message
-):
-    project_id, _database, version = _draft_for_refinement(tmp_path, monkeypatch)
-    endpoint = "https://example.test/v1/responses" if wire_api == "responses" else "https://example.test/v1/chat/completions"
-    review_server.save_llm_config({
-        "enabled": True, "endpoint": endpoint, "model": "test-model",
-        "wireApi": wire_api, "apiKeyEnv": "TEST_KEY",
-    })
-    monkeypatch.setattr(
-        review_server.urllib.request,
-        "urlopen",
-        lambda *_args, **_kwargs: _FakeResponse(json.dumps(response_payload).encode("utf-8")),
-    )
-
-    with pytest.raises(ValueError, match=message):
-        review_server.refine_summary({"projectId": project_id, "skill": "code-review", "version": version})
-
-
 def test_llm_http_error_preserves_bounded_provider_diagnostics(monkeypatch):
     provider_body = json.dumps({"error": {
         "message": "This account only allows Codex official clients; token=test-key",
@@ -2255,7 +2484,7 @@ def test_llm_http_error_preserves_bounded_provider_diagnostics(monkeypatch):
         "wireApi": "responses", "timeoutSeconds": 60,
     }
 
-    with pytest.raises(ValueError) as captured:
+    with pytest.raises(review_server.LlmProviderError) as captured:
         review_server._call_llm(config, "test-key", "instruction", {"message": "hello"})
 
     message = str(captured.value)
@@ -2278,7 +2507,23 @@ def test_llm_timeout_reports_configured_budget(monkeypatch, error):
         "wireApi": "responses", "timeoutSeconds": 60,
     }
 
-    with pytest.raises(ValueError, match="timed out after 60 seconds"):
+    with pytest.raises(review_server.LlmTimeoutError, match="timed out after 60 seconds"):
+        review_server._call_llm(config, "test-key", "instruction", {"message": "hello"})
+
+
+def test_llm_transport_error_preserves_failure_category(monkeypatch):
+    monkeypatch.setattr(
+        review_server.urllib.request, "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            urllib.error.URLError(ConnectionResetError("reset"))
+        ),
+    )
+    config = {
+        "endpoint": "https://example.test/v1/responses", "model": "test-model",
+        "wireApi": "responses", "timeoutSeconds": 60,
+    }
+
+    with pytest.raises(review_server.LlmTransportError, match="ConnectionResetError"):
         review_server._call_llm(config, "test-key", "instruction", {"message": "hello"})
 
 
@@ -2347,7 +2592,7 @@ def test_responses_stream_surfaces_failed_event_without_leaking_key(monkeypatch)
         "wireApi": "responses", "timeoutSeconds": 60,
     }
 
-    with pytest.raises(ValueError) as captured:
+    with pytest.raises(review_server.LlmProviderError) as captured:
         review_server._call_llm(config, "test-key", "instruction", {"message": "hello"})
 
     message = str(captured.value)
@@ -2373,7 +2618,7 @@ def test_responses_stream_surfaces_top_level_error_details(monkeypatch):
         "wireApi": "responses", "timeoutSeconds": 60,
     }
 
-    with pytest.raises(ValueError) as captured:
+    with pytest.raises(review_server.LlmProviderError) as captured:
         review_server._call_llm(config, "test-key", "instruction", {"message": "hello"})
 
     message = str(captured.value)
@@ -2416,7 +2661,7 @@ def test_responses_stream_enforces_total_duration_after_blocking_read(monkeypatc
         "wireApi": "responses", "timeoutSeconds": 60,
     }
 
-    with pytest.raises(ValueError, match="exceeded 180 seconds"):
+    with pytest.raises(review_server.LlmTimeoutError, match="exceeded 180 seconds"):
         review_server._call_llm(config, "test-key", "instruction", {"message": "hello"})
 
 
@@ -2492,8 +2737,6 @@ def test_llm_endpoints_reject_non_object_and_malformed_config(tmp_path, monkeypa
     assert review_server.llm_config_status()["configured"] is False
     with pytest.raises(ValueError, match="JSON object"):
         review_server.save_llm_config([])
-    with pytest.raises(ValueError, match="JSON object"):
-        review_server.refine_summary([])
 
 
 @pytest.mark.parametrize("registry_value", [None, [], "invalid", {"projects": {}}])

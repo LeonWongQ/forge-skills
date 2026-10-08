@@ -1,7 +1,6 @@
 """Opt-in SQLite collector for configured Forge Skills."""
 from __future__ import annotations
 
-import hashlib
 import errno
 import json
 import os
@@ -19,7 +18,7 @@ from .data_paths import forge_data_root, skill_data_root
 
 COLLECTOR_SKILL = "learning-collector"
 DATABASE_NAME = "learning.sqlite"
-DATABASE_SCHEMA_VERSION = 10
+DATABASE_SCHEMA_VERSION = 14
 CAPTURE_SOURCES = {"RUNTIME", "SKILL_CONTRACT", "HOST_HOOK"}
 HOOK_STATUSES = {"NOT_EXPECTED", "NOT_CONFIGURED", "PENDING", "CAPTURED", "MISSED"}
 _REGISTRY_LOCK = threading.Lock()
@@ -172,12 +171,22 @@ def connect_database(path: Path, *, timeout: float = 2) -> sqlite3.Connection:
         overlays_exist = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'skill_overlays'"
         ).fetchone() is not None
+        generation_tables = {
+            row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN "
+                "('summary_generation_jobs', 'summary_generation_sources', 'summary_generation_batches', 'summary_generation_submissions')"
+            )
+        }
+        generation_tables_need_migration = generation_tables != {
+            "summary_generation_jobs", "summary_generation_sources", "summary_generation_batches",
+            "summary_generation_submissions",
+        }
         overlays_need_migration = not overlays_exist
         overlay_columns = {row[1] for row in connection.execute("PRAGMA table_info(skill_overlays)")}
         overlay_columns_need_migration = overlays_exist and not {"evaluation_json", "published_at"}.issubset(overlay_columns)
         if (current_schema < DATABASE_SCHEMA_VERSION or records_need_migration
                 or summaries_need_migration or overlays_need_migration
-                or overlay_columns_need_migration):
+                or overlay_columns_need_migration or generation_tables_need_migration):
             with connection:
                 connection.execute(
                 """
@@ -363,6 +372,108 @@ def connect_database(path: Path, *, timeout: float = 2) -> sqlite3.Connection:
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_learning_summary_rule_source_record "
                     "ON learning_summary_rule_sources(record_id)"
+                )
+                connection.execute(
+                    """CREATE TABLE IF NOT EXISTS summary_generation_jobs (
+                        id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL,
+                        skill TEXT NOT NULL,
+                        status TEXT NOT NULL
+                            CHECK (status IN ('PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED', 'INTERRUPTED')),
+                        window_months INTEGER NOT NULL,
+                        cutoff_at TEXT NOT NULL,
+                        source_digest TEXT NOT NULL,
+                        skill_digest TEXT NOT NULL,
+                        model TEXT NOT NULL,
+                        provider_identity TEXT NOT NULL DEFAULT '',
+                        prompt_version TEXT NOT NULL,
+                        language TEXT NOT NULL DEFAULT 'zh-CN'
+                            CHECK (language IN ('zh-CN', 'en')),
+                        source_count INTEGER NOT NULL,
+                        total_batches INTEGER NOT NULL DEFAULT 0,
+                        completed_batches INTEGER NOT NULL DEFAULT 0,
+                        usage_json TEXT NOT NULL DEFAULT '{}',
+                        error_code TEXT,
+                        summary_id TEXT,
+                        created_at TEXT NOT NULL,
+                        started_at TEXT,
+                        completed_at TEXT
+                    )"""
+                )
+                connection.execute(
+                    """CREATE TABLE IF NOT EXISTS summary_generation_submissions (
+                        id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL,
+                        skill TEXT NOT NULL,
+                        request_json TEXT NOT NULL,
+                        status TEXT NOT NULL CHECK (status IN ('PREPARING', 'ACCEPTED', 'FAILED', 'INTERRUPTED')),
+                        job_id TEXT,
+                        error_code TEXT,
+                        created_at TEXT NOT NULL
+                    )"""
+                )
+                connection.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_one_preparing_summary_submission "
+                    "ON summary_generation_submissions(project_id, skill) WHERE status = 'PREPARING'"
+                )
+                generation_job_columns = {
+                    row["name"]
+                    for row in connection.execute("PRAGMA table_info(summary_generation_jobs)")
+                }
+                if "language" not in generation_job_columns:
+                    connection.execute(
+                        "ALTER TABLE summary_generation_jobs "
+                        "ADD COLUMN language TEXT NOT NULL DEFAULT 'zh-CN'"
+                    )
+                if "provider_identity" not in generation_job_columns:
+                    connection.execute(
+                        "ALTER TABLE summary_generation_jobs "
+                        "ADD COLUMN provider_identity TEXT NOT NULL DEFAULT ''"
+                    )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_summary_generation_scope "
+                    "ON summary_generation_jobs(project_id, skill, created_at DESC)"
+                )
+                connection.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_summary_generation "
+                    "ON summary_generation_jobs(project_id, skill) "
+                    "WHERE status IN ('PENDING', 'RUNNING')"
+                )
+                connection.execute(
+                    """CREATE TABLE IF NOT EXISTS summary_generation_sources (
+                        job_id TEXT NOT NULL,
+                        record_id TEXT NOT NULL,
+                        ordinal INTEGER NOT NULL,
+                        record_digest TEXT NOT NULL,
+                        PRIMARY KEY(job_id, record_id),
+                        UNIQUE(job_id, ordinal)
+                    )"""
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_summary_generation_source_record "
+                    "ON summary_generation_sources(record_id)"
+                )
+                connection.execute(
+                    """CREATE TABLE IF NOT EXISTS summary_generation_batches (
+                        job_id TEXT NOT NULL,
+                        phase TEXT NOT NULL CHECK (phase IN ('MAP', 'REDUCE', 'FINAL')),
+                        level INTEGER NOT NULL,
+                        batch_index INTEGER NOT NULL,
+                        input_digest TEXT NOT NULL,
+                        status TEXT NOT NULL
+                            CHECK (status IN ('PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED')),
+                        item_count INTEGER NOT NULL,
+                        result_json TEXT,
+                        usage_json TEXT,
+                        error_code TEXT,
+                        created_at TEXT NOT NULL,
+                        completed_at TEXT,
+                        PRIMARY KEY(job_id, phase, level, batch_index)
+                    )"""
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_summary_generation_batch_cache "
+                    "ON summary_generation_batches(phase, input_digest, status)"
                 )
                 connection.execute(
                     """CREATE TABLE IF NOT EXISTS skill_overlays (
@@ -557,115 +668,6 @@ def validate_no_lone_surrogates(value: Any, path: str = "$") -> None:
             validate_no_lone_surrogates(item, f"{path}[{index}]")
 
 
-def _adopt_copied_database(database: Path, previous_id: str, identity: dict[str, str], project: Path) -> None:
-    connection = connect_database(database)
-    try:
-        with connection:
-            connection.execute(
-                """
-                UPDATE learning_records
-                SET project_id = ?, project_name = ?, project_path = ?,
-                    collection_key = CASE
-                        WHEN collection_key LIKE ? THEN ? || substr(collection_key, length(?) + 1)
-                        ELSE collection_key
-                    END
-                WHERE project_id = ?
-                """,
-                (
-                    identity["projectId"], identity.get("name") or project.name, str(project),
-                    f"{previous_id}:%", identity["projectId"], previous_id, previous_id,
-                ),
-            )
-            rows = connection.execute(
-                "SELECT id, summary_json FROM learning_summaries WHERE project_id = ?", (previous_id,)
-            ).fetchall()
-            summary_digests = {}
-            for row in rows:
-                try:
-                    summary = json.loads(row["summary_json"])
-                    summary["projectId"] = identity["projectId"]
-                    summary["sourceRecords"] = [
-                        {**item, "projectId": identity["projectId"]}
-                        for item in summary.get("sourceRecords", [])
-                    ]
-                    encoded = json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
-                except (TypeError, json.JSONDecodeError) as error:
-                    raise ValueError(f"cannot migrate summary {row['id']}: invalid summary_json") from error
-                connection.execute(
-                    "UPDATE learning_summaries SET project_id = ?, summary_json = ? WHERE id = ?",
-                    (identity["projectId"], encoded, row["id"]),
-                )
-                summary_digests[row["id"]] = "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-            # A copied project inherits reviewed candidates, but activating a
-            # training version always requires a new explicit human action.
-            connection.execute(
-                "UPDATE learning_summaries SET lifecycle_status = "
-                "CASE WHEN lifecycle_status = 'REVIEWED' THEN 'REVIEWED' ELSE 'ARCHIVED' END "
-                "WHERE project_id = ?",
-                (identity["projectId"],),
-            )
-            connection.executemany(
-                "UPDATE skill_overlay_sources SET summary_digest = ? WHERE summary_id = ?",
-                ((digest, summary_id) for summary_id, digest in summary_digests.items()),
-            )
-            # Copies retain their candidate content, never an approval or an
-            # evaluation made for the original project's scope.
-            for row in connection.execute(
-                "SELECT id, manifest_json FROM skill_overlays WHERE project_id = ?", (previous_id,)
-            ).fetchall():
-                try:
-                    manifest = json.loads(row["manifest_json"])
-                    if not isinstance(manifest, dict):
-                        raise ValueError("overlay manifest must be an object")
-                    manifest["projectId"] = identity["projectId"]
-                except (TypeError, ValueError, json.JSONDecodeError) as error:
-                    raise ValueError(f"cannot clone overlay {row['id']}: invalid manifest") from error
-                connection.execute(
-                    """UPDATE skill_overlays SET project_id = ?, manifest_json = ?, status = 'DRAFT',
-                       reviewed_at = NULL, enabled_at = NULL, disabled_at = NULL,
-                       evaluation_json = NULL, published_at = NULL WHERE id = ?""",
-                    (identity["projectId"], json.dumps(manifest, ensure_ascii=False, separators=(",", ":")), row["id"]),
-                )
-    finally:
-        connection.close()
-
-
-def _clone_project_learning_data(
-    forge_root: Path,
-    entry: dict[str, Any],
-    previous_id: str,
-    identity: dict[str, str],
-    project: Path,
-) -> dict[str, str]:
-    """Clone inherited Skill learning data without modifying the source project."""
-    databases = entry.get("databases")
-    sources = databases if isinstance(databases, dict) else {}
-    if not sources and isinstance(entry.get("database"), str):
-        sources = {"code-review": entry["database"]}
-    cloned: dict[str, str] = {}
-    for skill, source_value in sources.items():
-        if not isinstance(skill, str) or not isinstance(source_value, str):
-            continue
-        source = Path(source_value)
-        if not source.is_file():
-            continue
-        target = _project_database(forge_root, identity["projectId"], skill)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if not target.exists():
-            temporary = target.with_suffix(f".{os.getpid()}.sqlite.tmp")
-            source_connection = sqlite3.connect(source, timeout=2)
-            destination = sqlite3.connect(temporary)
-            try:
-                source_connection.backup(destination)
-            finally:
-                destination.close()
-                source_connection.close()
-            temporary.replace(target)
-        _adopt_copied_database(target, previous_id, identity, project)
-        cloned[skill] = str(target)
-    return cloned
-
-
 def _update_project_location(entry: dict[str, Any], project_id: str, project: Path) -> None:
     databases = entry.get("databases")
     values = databases.values() if isinstance(databases, dict) else [entry.get("database")]
@@ -712,41 +714,21 @@ def _register_project_locked(forge_root: Path, project: Path, database: Path, id
     projects = registry.setdefault("projects", [])
     pid = identity["projectId"]
     entry = next((item for item in projects if item.get("projectId", item.get("id")) == pid), None)
-    inherited_databases: dict[str, str] = {}
     if entry is not None:
         previous_path = Path(str(entry.get("path", "")))
         if previous_path.resolve(strict=False) != project.resolve(strict=False) and previous_path.exists():
-            previous_id = pid
             identity = _fork_project_identity(project, identity)
             pid = identity["projectId"]
-            inherited_databases = _clone_project_learning_data(
-                forge_root, entry, previous_id, identity, project
-            )
             database = _project_database(forge_root, pid, skill)
             entry = None
         elif previous_path.resolve(strict=False) != project.resolve(strict=False):
             _update_project_location(entry, pid, project)
-    if (isinstance(identity.get("copiedFromProjectId"), str)
-            and not inherited_databases
-            and (entry is None or not entry.get("databases"))):
-        source_entry = next(
-            (
-                item for item in projects
-                if item.get("projectId", item.get("id")) == identity["copiedFromProjectId"]
-            ),
-            None,
-        )
-        if isinstance(source_entry, dict):
-            inherited_databases = _clone_project_learning_data(
-                forge_root, source_entry, identity["copiedFromProjectId"], identity, project
-            )
-            database = _project_database(forge_root, pid, skill)
     value: dict[str, Any] = {
         "projectId": pid,
         "name": identity.get("name") or project.name,
         "path": str(project),
         "database": str(database),
-        "databases": {**inherited_databases, skill: str(database)},
+        "databases": {skill: str(database)},
         "status": "ACTIVE",
         "disabledAt": None,
         "unavailableSince": None,
@@ -760,6 +742,9 @@ def _register_project_locked(forge_root: Path, project: Path, database: Path, id
     else:
         existing_databases = entry.get("databases") if isinstance(entry.get("databases"), dict) else {}
         value["databases"] = {**existing_databases, skill: str(database)}
+        if entry.get("status") == "DISABLED":
+            value["status"] = "DISABLED"
+            value["disabledAt"] = entry.get("disabledAt")
         stable_fields = (
             "projectId", "name", "path", "database", "databases", "status",
             "copiedFromProjectId", "disabledAt", "unavailableSince", "healthReason",
@@ -807,10 +792,10 @@ def collect_imported_result(
             identity = _project_identity(project)
             if identity is None:
                 return None
-            _migrate_legacy_learning_database(forge_root, project, identity["projectId"])
             database = _project_database(forge_root, identity["projectId"], skill)
-            database.parent.mkdir(parents=True, exist_ok=True)
             identity = _register_project_locked(forge_root, project, database, identity, skill)
+            if not identity.get("copiedFromProjectId"):
+                _migrate_legacy_learning_database(forge_root, project, identity["projectId"])
     database = _project_database(forge_root, identity["projectId"], skill)
     database.parent.mkdir(parents=True, exist_ok=True)
     timestamp = _now()

@@ -64,7 +64,7 @@ The project keeps only `.forge-skill/learning/config.json` and `project.json`.
 The global `forge-data/project-registry.json` enables cross-project review;
 databases remain physically isolated under their project ID.
 Summary versions are training knowledge only. They are never loaded directly
-at runtime; a project Overlay references one or more reviewed summaries and is
+at runtime; a project Overlay references exactly one reviewed v6 Summary and is
 the only runtime correction layer.
 
 On first collection, create `.forge-skill/learning/project.json` with a stable
@@ -76,9 +76,10 @@ the situation:
 
 - Old path missing: treat it as a move, preserve the ID, and update the registry.
 - Old path still present: treat it as a copy, generate a new ID for the copy,
-  register it separately, and migrate the copied SQLite records to the new ID.
+  register it separately, and start with an independent learning history.
 
-Copied history remains available in both projects; subsequent records diverge.
+The copy does not inherit collected records, Summaries, or Overlays from the
+original project. Moving a project preserves its identity and learning history.
 Registry health states are `ACTIVE`, `UNAVAILABLE`, `CONFLICT`, and `DISABLED`.
 The review service persists availability changes with `unavailableSince` and
 `healthReason`, so missing or moved projects remain diagnosable between runs.
@@ -86,9 +87,9 @@ An operator may archive a project registration from the dashboard. Archiving
 sets it to `DISABLED` and excludes it from unfiltered cross-project scans; it
 does not delete any project configuration, records, summaries, Overlays, or
 evaluation artifacts. An explicitly selected archived project remains
-inspectable and can be restored. A later collection from that project may
-reactivate its registration because the project's `enabledSkills` config is
-the source of truth. Conflicting identities must be resolved before their
+inspectable and can be restored. Later collection still follows the project's
+`enabledSkills` configuration but preserves its archived registration. Only an
+explicit restore action returns it to default scans. Conflicting identities must be resolved before their
 registration status can be changed.
 
 Records are `ACTIVE` by default. Review may mark them `EXCLUDED`, edit their
@@ -105,48 +106,32 @@ Run `scripts/review_server.py` to open a loopback-only dashboard. It reads all
 registered project databases and applies review changes transactionally to the
 owning project database.
 
-The dashboard can generate a versioned training summary for one selected
-project and Skill. A summary includes only records that are both `ACTIVE` and
-reviewed, normally from the last six months plus records marked as classic
-cases. The common layer controls this time window, classic-case retention,
-size limits, and source traceability. Each Skill may provide a specialized
-extractor; Skills without one use a generic evidence candidate and remain
-pending refinement. Dedicated deterministic profiles currently cover
-`code-review`, `debug`, `implement`, `page-test`, `test-implementation`,
-`refactor`, `explain`, `plan`, and `explore`. They extract only recognized
-structured fields, explicit `learningSignals`, or human-reviewed plain-text
-edits. Within these specialized extractors, a candidate derived from ordinary
-Skill output needs evidence from at least two independent records unless an
-explicit `learningSignal` or a human review note confirms that it is reusable.
-This keeps one-off task answers, current UI descriptions, and project facts out
-of their training rules. All generated rules start as `PENDING`.
+The dashboard can generate a versioned training Summary for one selected
+project and Skill. Generation sends all meaningful records that are both
+`ACTIVE` and reviewed to the configured LLM, normally from the last six months
+plus records marked as classic cases. It does not create a deterministic
+Summary first. Before confirmation, the dashboard shows the source count,
+evidence bytes, and estimated MAP batches. Per-record, whole-job evidence, and
+total-batch limits fail explicitly instead of truncating evidence.
+
+The direct AI pipeline assigns every source record a `KEEP`, `DISCARD`,
+`CONFLICT`, or `NO_LEARNING`, then consolidates only candidates sourced by
+`KEEP` evidence. `CONFLICT` is retained for audit and human review but cannot
+source a candidate or final rule. Every source and candidate is dispositioned
+exactly once, source IDs remain traceable through MAP, REDUCE, and FINAL, and
+all generated rules start as `PENDING`. Empty rules are valid when the reviewed
+evidence contains no reusable Skill adjustment.
 
 The separate `/versions` page allows an operator to edit each rule, confirm or
 exclude it, and permanently delete non-archived versions. A Summary is training
 knowledge only: it is never enabled or loaded directly at runtime. An operator
-may generate a project Overlay from one or more reviewed Summary versions; the
+may generate a project Overlay from exactly one reviewed v6 Summary; the
 result requires separate review, evaluation, publication, and activation.
 While an Overlay references a Summary, that Summary cannot be edited or deleted;
 delete the non-active Overlay first when its source needs to be replaced.
-Summary generation is deterministic by default and does not invoke a model
-automatically. The `/versions` page exposes an explicit LLM refinement action
-and local configuration. The API base URL, model, enabled state, wire API, request
-timeout, and API-key environment-variable name are stored in
-`llm-refiner.json`; the secret stays in the host environment. Refinement uses a
-`DRAFT` as its immutable
-source and creates a new version. It forces all returned rules to `PENDING`,
-allows an empty rule set when no reusable adjustment remains, and rejects
-invalid, oversized, unknown, damaged-Unicode, or concurrently changed source
-output without changing the source version.
-Refinement sends bounded, reviewed effective source content and review notes
-to the configured LLM only after an explicit confirmation. The model first
-classifies every candidate as KEEP, DISCARD, or CONFLICT; only KEEP candidates
-enter a second synthesis call. The resulting draft holds at most six executable
-rules with triggers, verification guidance, evidence IDs, and operator-visible
-classification reasons. The model cannot choose confidence or cite rejected
-candidates. Large records and evidence packets fail explicitly instead of
-silently dropping sources. No refined rule is automatically confirmed or loaded.
-Responses API refinement and evaluation
+The API base URL, model, enabled state, wire API, request timeout, and API-key
+environment-variable name are stored in `llm-refiner.json`; the secret stays in
+the host environment. AI Summary generation and evaluation
 share the same relay-compatible request shape and do not request streaming or
 send a temperature override. If a compatible relay returns an event stream
 anyway, streamed text is accepted only after a valid
@@ -156,16 +141,16 @@ The configured base URL excludes the operation path. The server appends
 `/responses` for the Responses API or `/chat/completions` for Chat Completions;
 legacy full endpoints are normalized so the operation path is never duplicated.
 The review and versions pages share a browser-local Chinese/English interface
-preference. This preference affects labels and explicit LLM refinement output,
-not the language of collected evidence. Each refinement request sends the
+preference. This preference affects labels and explicit AI Summary output,
+not the language of collected evidence. Each Summary generation request sends the
 selected `zh-CN` or `en` language to the server, which constrains human-readable
-rule titles, instructions, and rationales and records the choice in the new
-Summary version metadata.
+rule titles, instructions, and rationales and records the choice in Summary
+generation metadata.
 
 The phase table above is the authoritative Overlay lifecycle. The dashboard
 must not collapse generation, review, evaluation, publication, and activation
 into one transition. Model execution occurs only after the operator selects the
-explicit evaluation or refinement action. Cases requiring real writes, shell,
+explicit Summary generation or evaluation action. Cases requiring real writes, shell,
 or browser execution are not simulated through the HTTP evaluator. A missing
 compatible case, fewer than three compatible cases, failed structural check,
 concurrent Overlay change, or concurrent Baseline switch prevents publication.
